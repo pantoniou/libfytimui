@@ -45,7 +45,7 @@ static void trace_write_(int fd, const char *tag, const unsigned char *b, size_t
         else { line[o++] = '\\'; line[o++] = 'x'; line[o++] = hex[c >> 4]; line[o++] = hex[c & 15]; }
     }
     if(o < sizeof line) line[o++] = '\n';
-    (void)write(fd, line, o);
+    { ssize_t wr = write(fd, line, o); (void)wr; }
 }
 static void ui_event_cb(void *ctx, const TimuiEvent *ev){
     Timui *ui = (Timui *)ctx;
@@ -356,7 +356,7 @@ TIMUI_API void timui_restore_terminal(Timui *ui){
     if(ui->screen_active) timui_screen_exit(&ui->transport, &ui->screen);
 }
 static void timui_signal_write_(int fd, const char *s, size_t n){
-    if(fd >= 0) (void)write(fd, s, n);
+    if(fd >= 0){ ssize_t wr = write(fd, s, n); (void)wr; }
 }
 #define TIMUI_SIG_EMIT(ui, lit) timui_signal_write_((ui)->fd.write_fd, (lit), sizeof(lit) - 1)
 static void timui_signal_screen_exit_(Timui *ui){
@@ -1328,7 +1328,10 @@ TIMUI_API TimuiRect timui_inset(TimuiRect r, int n){
 }
 TIMUI_API TimuiRect timui_pad(TimuiRect r, int l, int t, int rr, int b){
     int64_t sw, sh;
-    if(l < 0) l = 0; if(t < 0) t = 0; if(rr < 0) rr = 0; if(b < 0) b = 0;
+    if(l < 0) l = 0;
+    if(t < 0) t = 0;
+    if(rr < 0) rr = 0;
+    if(b < 0) b = 0;
     sw = (int64_t)l + (int64_t)rr;
     sh = (int64_t)t + (int64_t)b;
     r.x = timui_clamp_i64_to_int_((int64_t)r.x + (int64_t)l);
