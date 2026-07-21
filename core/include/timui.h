@@ -162,7 +162,12 @@ typedef enum {
      * blocks: it reads whatever input is already pending and returns. Use
      * timui_poll_fd()/timui_poll_timeout_ms() to add timui to the host's poll
      * set. Without this flag timui performs its own bounded internal wait. */
-    TIMUI_FLAG_EXTERNAL_POLL   = 1u << 9
+    TIMUI_FLAG_EXTERNAL_POLL   = 1u << 9,
+    /* Button-event tracking (?1002) on top of TIMUI_FLAG_MOUSE, so motion is
+     * reported while a button is held and a drag can be followed. Required to
+     * implement selection in-application; plain TIMUI_FLAG_MOUSE reports only
+     * press and release. Ignored without TIMUI_FLAG_MOUSE. */
+    TIMUI_FLAG_MOUSE_DRAG      = 1u << 10
 } TimuiFlags;
 
 typedef struct {
@@ -198,6 +203,10 @@ TIMUI_API void        timui_close(Timui *ui);
  * transport, or a NULL ui). timui_poll_timeout_ms returns the maximum time the
  * host should block before calling timui_begin again so animations and escape
  * timeouts still advance; -1 for a NULL ui. */
+/* The transport this Timui owns, or NULL for a NULL ui / one opened without a
+ * transport. Exposed so an application can reach transport-level services --
+ * timui_clipboard_set (OSC 52) in particular -- without opening its own. */
+TIMUI_API TimuiTransport *timui_transport(Timui *ui);
 TIMUI_API int         timui_poll_fd(const Timui *ui);
 TIMUI_API int         timui_poll_timeout_ms(const Timui *ui);
 /* Restore the terminal (screen exit + termios). Call from normal control flow
@@ -1012,6 +1021,11 @@ TIMUI_API TimuiStr timui_text_input(const TimuiFrame *f);
 TIMUI_API int      timui_mouse_wheel(const TimuiFrame *f);
 /* 1 (+ 0-based cell in out_x/out_y) if a button was pressed this frame. */
 TIMUI_API int      timui_mouse_clicked(const TimuiFrame *f, int *out_x, int *out_y);
+/* Current pointer cell and whether a button is held, as tracked by the frame.
+ * Returns 1 when the state is valid (0 for a NULL/detached frame); every
+ * out-pointer is optional. timui_mouse_clicked reports only the press edge --
+ * this is what following a drag needs. */
+TIMUI_API int      timui_mouse_state(const TimuiFrame *f, int *out_x, int *out_y, int *out_down);
 /* URL of the OSC 8 hyperlink under cell (x,y) in the frame just drawn, else NULL
  * — e.g. to open a link on click when mouse reporting intercepts it. */
 TIMUI_API const char *timui_hyperlink_at(const TimuiFrame *f, int x, int y);

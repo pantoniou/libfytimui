@@ -523,6 +523,10 @@ TIMUI_API void timui_close(Timui *ui){
     al = ui->alloc;
     al.free(al.userdata, ui, sizeof *ui);
 }
+TIMUI_API TimuiTransport *timui_transport(Timui *ui){
+    if(!ui || !ui->have_transport) return NULL;
+    return &ui->transport;
+}
 TIMUI_API int timui_poll_fd(const Timui *ui){
     /* -1 also covers fake/test transports, which set read_fd to -1. */
     return ui ? ui->fd.read_fd : -1;
@@ -863,6 +867,13 @@ TIMUI_API int timui_mouse_clicked(const TimuiFrame *f, int *out_x, int *out_y){
     if(!f || !f->ui || !f->ui->mouse_clicked) return 0;
     if(out_x) *out_x = f->ui->mouse_click_x;
     if(out_y) *out_y = f->ui->mouse_click_y;
+    return 1;
+}
+TIMUI_API int timui_mouse_state(const TimuiFrame *f, int *out_x, int *out_y, int *out_down){
+    if(!f || !f->ui) return 0;
+    if(out_x)    *out_x = f->ui->mouse_x;
+    if(out_y)    *out_y = f->ui->mouse_y;
+    if(out_down) *out_down = f->ui->ia.mouse_down ? 1 : 0;
     return 1;
 }
 /* URL of the OSC 8 hyperlink under cell (x,y) in the frame just drawn, or NULL.

@@ -112,7 +112,13 @@ TIMUI_API void timui_screen_enter(TimuiTransport *t, TimuiScreenMode *m, uint32_
     if(flags & TIMUI_FLAG_ALT_SCREEN)      TIMUI_EMIT(t, "\x1b[?1049h");
     if(flags & TIMUI_FLAG_KITTY_KEYBOARD)  TIMUI_EMIT(t, "\x1b[>1u");
     if(flags & TIMUI_FLAG_HIDE_CURSOR)     TIMUI_EMIT(t, "\x1b[?25l");
-    if(flags & TIMUI_FLAG_MOUSE){          TIMUI_EMIT(t, "\x1b[?1000h"); TIMUI_EMIT(t, "\x1b[?1006h"); }
+    if(flags & TIMUI_FLAG_MOUSE){
+        TIMUI_EMIT(t, "\x1b[?1000h");
+        /* ?1002 must sit between ?1000 and ?1006: it extends the tracking mode
+         * enabled above, and ?1006 then selects how all of it is encoded. */
+        if(flags & TIMUI_FLAG_MOUSE_DRAG) TIMUI_EMIT(t, "\x1b[?1002h");
+        TIMUI_EMIT(t, "\x1b[?1006h");
+    }
     if(flags & TIMUI_FLAG_BRACKETED_PASTE) TIMUI_EMIT(t, "\x1b[?2004h");
     if(flags & TIMUI_FLAG_FOCUS_EVENTS)    TIMUI_EMIT(t, "\x1b[?1004h");
 }
@@ -120,7 +126,11 @@ TIMUI_API void timui_screen_exit(TimuiTransport *t, TimuiScreenMode *m){
     uint32_t flags = m ? m->flags : 0;
     if(flags & TIMUI_FLAG_FOCUS_EVENTS)    TIMUI_EMIT(t, "\x1b[?1004l");
     if(flags & TIMUI_FLAG_BRACKETED_PASTE) TIMUI_EMIT(t, "\x1b[?2004l");
-    if(flags & TIMUI_FLAG_MOUSE){          TIMUI_EMIT(t, "\x1b[?1006l"); TIMUI_EMIT(t, "\x1b[?1000l"); }
+    if(flags & TIMUI_FLAG_MOUSE){
+        TIMUI_EMIT(t, "\x1b[?1006l");
+        if(flags & TIMUI_FLAG_MOUSE_DRAG) TIMUI_EMIT(t, "\x1b[?1002l");
+        TIMUI_EMIT(t, "\x1b[?1000l");
+    }
     if(flags & TIMUI_FLAG_KITTY_KEYBOARD)  TIMUI_EMIT(t, "\x1b[<u");
     TIMUI_EMIT(t, "\x1b[?25h");
     if(flags & TIMUI_FLAG_ALT_SCREEN)      TIMUI_EMIT(t, "\x1b[?1049l");
