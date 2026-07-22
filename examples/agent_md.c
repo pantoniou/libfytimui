@@ -98,19 +98,26 @@ static struct job jobs[JOBS_MAX];
 static int job_seq;
 
 /* Re-render the accumulated output through md4c's fenced-block renderer
- * and refresh the band. The renderer's own line limit (FYMD_LLM_SCROLL)
- * windows the LIVE view to the newest rows; the band cap only trims what
- * the limited render already produced. */
-static void job_render(struct job *j)
+ * and refresh the band. LINE mode: only complete lines render while the
+ * tool runs -- a read can end mid-line (or mid-UTF-8-sequence) and the
+ * torn bytes flash as artifacts; the partial line waits in acc for its
+ * '\n' (whole == true renders everything, for EOF). The renderer's own
+ * line limit (FYMD_LLM_SCROLL) windows the LIVE view to the newest rows;
+ * the band cap only trims what the limited render already produced. */
+static void job_render(struct job *j, int whole)
 {
     struct fymd_fenced_block_opts opts;
     char *out = NULL;
-    size_t out_len = 0;
+    size_t out_len = 0, len = j->acc_len;
     if(!j->r) return;
+    if(!whole){
+        while(len && j->acc[len - 1] != '\n') len--;
+        if(!len) return;                   /* no complete line yet */
+    }
     memset(&opts, 0, sizeof opts);
     opts.language = "text";
     opts.flags = FYMD_FBF_STYLE;
-    if(fymd_render_fenced_block(j->r, j->acc, j->acc_len, &opts,
+    if(fymd_render_fenced_block(j->r, j->acc, len, &opts,
                                 &out, &out_len) != 0)
         return;
     while(out_len && out[out_len - 1] == '\n') out_len--;
@@ -123,7 +130,7 @@ static void job_push(struct job *j, const char *buf, size_t len)
     if(len > sizeof j->acc - j->acc_len) len = sizeof j->acc - j->acc_len;
     memcpy(j->acc + j->acc_len, buf, len);
     j->acc_len += len;
-    job_render(j);
+    job_render(j, 0);
 }
 
 static void job_spawn(struct fytim *ft, int count)
@@ -160,7 +167,7 @@ static void job_spawn(struct fytim *ft, int count)
         ll.mode = FYMD_LLM_SCROLL;
         ll.max_lines = JOB_LIVE_ROWS;
         if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
-        job_render(j);
+        job_render(j, 0);
     }
     fytim_workband_set_max_rows(j->wb, JOB_LIVE_ROWS);
     fytim_workband_set_top(j->wb, "");             /* a rule above the band */
@@ -323,10 +330,11 @@ static void md_tick(struct fytim *ft, struct mdstream *s)
     s->next_ms = now_ms() + s->delay_ms;
 
     if(s->off < s->doc_len){
-        /* a few bytes per tick, like a token stream; the LIBRARY applies
-         * the update -- frozen rows to scrollback, the rest to the tail */
-        n = s->doc_len - s->off;
-        if(n > 7) n = 7;
+        /* LINE mode: one whole source line per tick. Fixed-size chunks can
+         * split a UTF-8 sequence (or an escape) across pushes and the torn
+         * bytes flash as artifacts in the live render. */
+        const char *nl = memchr(s->doc + s->off, '\n', s->doc_len - s->off);
+        n = nl ? (size_t)(nl - (s->doc + s->off)) + 1 : s->doc_len - s->off;
         if(fymd_render_push(s->r, s->doc + s->off, n, &upd) != 0) goto fail;
         s->off += n;
         if(fytim_tail_apply(ft, upd.backtrack, upd.content,
