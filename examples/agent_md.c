@@ -502,7 +502,9 @@ int main(void)
                         pending_push(ft, &pq, ev.text);
                         break;
                     }
-                    if(!s.r){
+                    if(!s.r && ev.text[0] != '/'){
+                        /* slash commands are not echoed: a tool call's own
+                         * header line is its transcript record */
                         char echo[512];
                         snprintf(echo, sizeof echo, "\x1b[1m>\x1b[0m %.*s",
                                  (int)ev.text_len, ev.text);
