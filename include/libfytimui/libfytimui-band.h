@@ -111,6 +111,15 @@ enum fytim_result fytim_workband_set_top(struct fytim_workband *wb,
 enum fytim_result fytim_workband_set_bottom(struct fytim_workband *wb,
                                             const char *text) FYTIM_EXPORT;
 
+/* What the band commits can differ from what it shows live: an optional
+ * commit payload replaces the live content in fytim_workband_commit --
+ * e.g. the tool's output re-rendered as a fenced markdown block while the
+ * band showed a live progressive view. Same SGR-only contract as
+ * fytim_workband_set; on rejection the previous payload is retained.
+ * NULL (or empty) clears it, falling back to committing the live content. */
+enum fytim_result fytim_workband_set_commit(struct fytim_workband *wb,
+                                            const char *buf, size_t len) FYTIM_EXPORT;
+
 /* Commit the band's content into the transcript (batched like
  * fytim_commit) and retire the band. The handle is invalid after. While
  * the transcript tail is streaming, the commit is DEFERRED so it cannot

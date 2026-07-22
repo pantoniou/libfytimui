@@ -42,6 +42,7 @@ struct fytim_workband {
     struct fytim_workband *next;
     struct fytim          *owner;
     char *content;                 /* live SGR-styled rows, '\n'-separated */
+    char *commit;                  /* commits instead of content when set */
     char *top, *bottom;            /* optional chrome rows; "" draws a rule */
     int   max_rows;                /* content-row cap, >= 1 */
     /* committed while the transcript tail was streaming: the final render
@@ -241,6 +242,7 @@ static void wb_free(struct fytim_workband *wb)
 {
     if(!wb) return;
     free(wb->content);
+    free(wb->commit);
     free(wb->top);
     free(wb->bottom);
     free(wb);
@@ -561,24 +563,39 @@ static void wb_retire(struct fytim_workband *wb)
     wb_free(wb);
 }
 
-enum fytim_result fytim_workband_set(struct fytim_workband *wb,
-                                     const char *buf, size_t len)
+/* Validate and dup an SGR-only byte range into *slot; NULL/empty clears.
+ * On rejection the previous value is retained. */
+static enum fytim_result wb_set_slot(char **slot, const char *buf, size_t len)
 {
     char *dup;
-    if(!wb || (!buf && len)) return FYTIM_ERR_INVALID;
+    if(!buf && len) return FYTIM_ERR_INVALID;
     if(buf && len && !sgr_only(buf, len)) return FYTIM_ERR_INVALID;
     if(!buf || len == 0){
-        free(wb->content);
-        wb->content = NULL;
+        free(*slot);
+        *slot = NULL;
         return FYTIM_OK;
     }
     dup = malloc(len + 1);
     if(!dup) return FYTIM_ERR_NOMEM;
     memcpy(dup, buf, len);
     dup[len] = '\0';
-    free(wb->content);
-    wb->content = dup;
+    free(*slot);
+    *slot = dup;
     return FYTIM_OK;
+}
+
+enum fytim_result fytim_workband_set(struct fytim_workband *wb,
+                                     const char *buf, size_t len)
+{
+    if(!wb) return FYTIM_ERR_INVALID;
+    return wb_set_slot(&wb->content, buf, len);
+}
+
+enum fytim_result fytim_workband_set_commit(struct fytim_workband *wb,
+                                            const char *buf, size_t len)
+{
+    if(!wb) return FYTIM_ERR_INVALID;
+    return wb_set_slot(&wb->commit, buf, len);
 }
 
 enum fytim_result fytim_workband_set_max_rows(struct fytim_workband *wb, int rows)
@@ -614,9 +631,13 @@ enum fytim_result fytim_workband_commit(struct fytim_workband *wb)
         wb->finish_seq = ++wb->owner->wb_finish_seq;
         return FYTIM_OK;
     }
-    if(wb->content){
-        TimuiStr s = { wb->content, strlen(wb->content) };
-        timui_inline_commit(wb->owner->ui, s);   /* batched, like fytim_commit */
+    {
+        /* the commit payload, when set, replaces the live render */
+        const char *out = wb->commit ? wb->commit : wb->content;
+        if(out){
+            TimuiStr s = { (char *)out, strlen(out) };
+            timui_inline_commit(wb->owner->ui, s);   /* batched, like fytim_commit */
+        }
     }
     wb_retire(wb);
     return FYTIM_OK;
@@ -632,9 +653,12 @@ static void wb_flush_finished(struct fytim *ft)
             if(wb->finished && (!best || wb->finish_seq < best->finish_seq))
                 best = wb;
         if(!best) return;
-        if(best->content){
-            TimuiStr s = { best->content, strlen(best->content) };
-            timui_inline_commit(ft->ui, s);
+        {
+            const char *out = best->commit ? best->commit : best->content;
+            if(out){
+                TimuiStr s = { (char *)out, strlen(out) };
+                timui_inline_commit(ft->ui, s);
+            }
         }
         wb_retire(best);
     }

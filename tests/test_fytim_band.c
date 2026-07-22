@@ -429,6 +429,62 @@ static void test_workband_defer_survives_empty_tail(void)
 }
 
 /* The SGR-only contract holds for live work-band content too. */
+/* What a band commits can differ from what it shows live: the host sets a
+ * commit payload (e.g. the tool output re-rendered as a fenced markdown
+ * block) and the live render never reaches the transcript. */
+static void test_workband_commit_payload(void)
+{
+    struct harness h;
+    struct fytim_workband *wb;
+    char buf[16384];
+    size_t n;
+    if(!h_open(&h)){ CHECK(0); return; }
+    wb = fytim_workband_create(h.ft);
+    CHECK(wb != NULL);
+    CHECK(fytim_workband_set(wb, "LIVEROW", 7) == FYTIM_OK);
+    CHECK(fytim_workband_set_commit(wb, "FENCEDPAY", 9) == FYTIM_OK);
+    /* the payload has the same SGR-only contract; rejection keeps the old */
+    CHECK(fytim_workband_set_commit(wb, "x\x1b[2Jy", 6) == FYTIM_ERR_INVALID);
+    CHECK(fytim_workband_commit(wb) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "FENCEDPAY\x1b[0m\x1b[K"));  /* payload committed */
+    CHECK(!contains(buf, n, "LIVEROW\x1b[0m\x1b[K"));   /* live render not */
+    h_close(&h);
+}
+
+/* The payload survives a deferred commit, and clearing it (NULL) falls
+ * back to committing the live content. */
+static void test_workband_commit_payload_defers(void)
+{
+    struct harness h;
+    struct fytim_workband *wb, *wb2;
+    char buf[16384];
+    size_t n;
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_tail_set(h.ft, "STREAMING", 9) == FYTIM_OK);
+    wb = fytim_workband_create(h.ft);
+    wb2 = fytim_workband_create(h.ft);
+    CHECK(wb != NULL && wb2 != NULL);
+    CHECK(fytim_workband_set(wb, "LIVEROW", 7) == FYTIM_OK);
+    CHECK(fytim_workband_set_commit(wb, "FENCEDPAY", 9) == FYTIM_OK);
+    CHECK(fytim_workband_set(wb2, "OTHERLIVE", 9) == FYTIM_OK);
+    CHECK(fytim_workband_set_commit(wb2, "GONE", 4) == FYTIM_OK);
+    CHECK(fytim_workband_set_commit(wb2, NULL, 0) == FYTIM_OK); /* clear */
+    CHECK(fytim_workband_commit(wb) == FYTIM_OK);    /* mid-stream: defer */
+    CHECK(fytim_workband_commit(wb2) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    CHECK(fytim_tail_set(h.ft, NULL, 0) == FYTIM_OK);    /* stream done */
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "FENCEDPAY\x1b[0m\x1b[K"));
+    CHECK(!contains(buf, n, "LIVEROW\x1b[0m\x1b[K"));
+    CHECK(contains(buf, n, "OTHERLIVE\x1b[0m\x1b[K"));  /* fallback: live */
+    CHECK(!contains(buf, n, "GONE\x1b[0m\x1b[K"));
+    h_close(&h);
+}
+
 static void test_workband_rejects_disallowed(void)
 {
     struct harness h;
@@ -696,6 +752,8 @@ int main(int argc, char **argv)
         { "workband_top_bottom", test_workband_top_bottom },
         { "workband_order_and_independence", test_workband_order_and_independence },
         { "workband_rejects_disallowed", test_workband_rejects_disallowed },
+        { "workband_commit_payload", test_workband_commit_payload },
+        { "workband_commit_payload_defers", test_workband_commit_payload_defers },
         { "workband_commit_defers_during_stream",
           test_workband_commit_defers_during_stream },
         { "workband_defer_survives_empty_tail",

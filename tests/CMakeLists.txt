@@ -123,6 +123,7 @@ foreach(t create_paints_inline commit_batches_into_pump
           workband_order_and_independence workband_rejects_disallowed
           workband_commit_defers_during_stream
           workband_defer_survives_empty_tail
+          workband_commit_payload workband_commit_payload_defers
           workband_shed_oldest ctrl_g_edit_and_suspend
           regression_idle_band_keeps_status size_accessor sync_brackets_updates
           transcript_tail tail_apply null_safety)
