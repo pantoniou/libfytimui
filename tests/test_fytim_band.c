@@ -485,6 +485,34 @@ static void test_workband_commit_payload_defers(void)
     h_close(&h);
 }
 
+/* The transcript is ONE continuous SGR stream: a style opened in one
+ * commit is still open when the next commit's first row lands (a fenced
+ * block freezes row by row, each row a separate commit). The running
+ * state must be re-opened at the head of every commit, not only after
+ * row breaks within one. */
+static void test_sgr_carries_across_commits(void)
+{
+    struct harness h;
+    char buf[16384];
+    size_t n;
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+
+    CHECK(fytim_commit(h.ft, "\x1b[2mCC1", 7) == FYTIM_OK);   /* dim opened */
+    CHECK(fytim_commit(h.ft, "CC2", 3) == FYTIM_OK);          /* still dim  */
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "\x1b[2mCC2"));
+    CHECK(fytim_commit(h.ft, "CC3\x1b[0m", 7) == FYTIM_OK);   /* closes    */
+    CHECK(fytim_commit(h.ft, "CC4", 3) == FYTIM_OK);          /* plain now */
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "\x1b[2mCC3"));
+    CHECK(!contains(buf, n, "\x1b[2mCC4"));
+    h_close(&h);
+}
+
 /* Output is buffered and flushed once per frame (a frame split across
  * many small writes flickers on terminals without DEC 2026). A commit
  * larger than the transport buffer takes the flush-then-spill path and
@@ -798,6 +826,7 @@ int main(int argc, char **argv)
         { "workband_order_and_independence", test_workband_order_and_independence },
         { "workband_rejects_disallowed", test_workband_rejects_disallowed },
         { "large_commit_spills_intact", test_large_commit_spills_intact },
+        { "sgr_carries_across_commits", test_sgr_carries_across_commits },
         { "workband_commit_payload", test_workband_commit_payload },
         { "workband_commit_payload_defers", test_workband_commit_payload_defers },
         { "workband_commit_defers_during_stream",

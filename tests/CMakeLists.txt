@@ -124,7 +124,7 @@ foreach(t create_paints_inline commit_batches_into_pump
           workband_commit_defers_during_stream
           workband_defer_survives_empty_tail
           workband_commit_payload workband_commit_payload_defers
-          large_commit_spills_intact
+          large_commit_spills_intact sgr_carries_across_commits
           workband_shed_oldest ctrl_g_edit_and_suspend
           regression_idle_band_keeps_status size_accessor sync_brackets_updates
           transcript_tail tail_apply null_safety)

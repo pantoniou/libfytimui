@@ -114,6 +114,8 @@ struct fytim {
     int band_rows;
     int band_w;                    /* width the frame was last sized to */
     int pending_commit_rows;       /* rows committed since the last pump */
+    /* running SGR state of the transcript stream, carried across commits */
+    struct fytim_sgr_parser commit_sgr;
 };
 
 const char *fytim_version_string(void)
@@ -205,6 +207,7 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
     ft->pst.text  = ft->input;
     ft->pst.cap   = sizeof ft->input;
     ft->comps.owner = ft;
+    fytim_sgr_init(&ft->commit_sgr);
     ft->term_w = 80;
     ft->term_h = 24;
     (void)timui_term_size(tcfg.output_fd, &ft->term_w, &ft->term_h);
@@ -451,19 +454,27 @@ static bool sgr_sink_(void *user, const char *text, size_t len,
     return true;
 }
 
-static char *sgr_rowsafe(const char *buf, size_t len, size_t *out_len)
+static char *sgr_rowsafe(struct fytim_sgr_parser *p, const char *buf,
+                         size_t len, size_t *out_len)
 {
-    struct fytim_sgr_parser p;
     char seq[64], *out = NULL, *grown;
     size_t cap = 0, o = 0, start = 0, in_done = 0, i, n;
 
-    if(!memchr(buf, '\n', len)) return NULL;
-    fytim_sgr_init(&p);
+    /* the parser PERSISTS across commits -- the transcript is one
+     * continuous SGR stream, and a style opened by an earlier commit is
+     * still open at this buffer's first row */
+    n = fytim_sgr_style_emit(&p->style, seq, sizeof seq);
+    if(n > 0){
+        cap = (n + len + 64) * 2;
+        out = malloc(cap);
+        if(!out) n = 0;
+        else { memcpy(out, seq, n); o = n; }
+    }
     for(i = 0; i < len; i++){
         if(buf[i] != '\n') continue;
-        fytim_sgr_feed(&p, buf + start, i + 1 - start, sgr_sink_, NULL);
+        fytim_sgr_feed(p, buf + start, i + 1 - start, sgr_sink_, NULL);
         start = i + 1;
-        n = fytim_sgr_style_emit(&p.style, seq, sizeof seq);
+        n = fytim_sgr_style_emit(&p->style, seq, sizeof seq);
         if(n == 0 && !out) continue;       /* nothing carried, nothing yet */
         /* worst case: all pending input plus this re-open */
         if(cap < o + n + (len - in_done)){
@@ -481,6 +492,10 @@ static char *sgr_rowsafe(const char *buf, size_t len, size_t *out_len)
         memcpy(out + o, seq, n);
         o += n;
     }
+    /* keep the state current through the final partial row, for the NEXT
+     * commit's head */
+    if(start < len)
+        fytim_sgr_feed(p, buf + start, len - start, sgr_sink_, NULL);
     if(!out) return NULL;
     memcpy(out + o, buf + in_done, len - in_done);   /* cap reserved the tail */
     *out_len = o + (len - in_done);
@@ -494,7 +509,7 @@ static char *sgr_rowsafe(const char *buf, size_t len, size_t *out_len)
 static void commit_norm(struct fytim *ft, const char *buf, size_t len)
 {
     size_t nlen = 0, i;
-    char *norm = sgr_rowsafe(buf, len, &nlen);
+    char *norm = sgr_rowsafe(&ft->commit_sgr, buf, len, &nlen);
     TimuiStr s;
     s.ptr = norm ? norm : (char *)buf;
     s.len = norm ? nlen : len;
