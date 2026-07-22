@@ -130,6 +130,34 @@ foreach(t create_paints_inline commit_batches_into_pump
     add_test(NAME fytim.band.${t} COMMAND test_fytim_band ${t})
 endforeach()
 
+# The bubble invariant against the REAL renderer: only when libfymd4c is
+# ALSO installed. Streams actual markdown through fymd_render_push into
+# fytim_tail_apply and asserts the chrome row after every pump.
+if(VTERM_FOUND)
+    find_package(libfymd4c CONFIG QUIET)
+    if(libfymd4c_FOUND)
+        add_executable(test_fytim_md_vt test_fytim_md_vt.c
+                       ${CMAKE_SOURCE_DIR}/src/libfytimui.c
+                       ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c
+                       ${CMAKE_SOURCE_DIR}/src/fytim_layout.c
+                       $<TARGET_OBJECTS:fytimui-core>)
+        target_include_directories(test_fytim_md_vt PRIVATE
+            ${CMAKE_SOURCE_DIR}/include
+            ${CMAKE_SOURCE_DIR}/src
+            ${CMAKE_SOURCE_DIR}/core/include
+            ${VTERM_INCLUDE_DIRS})
+        target_link_libraries(test_fytim_md_vt PRIVATE
+            libfymd4c::fymd4c ${VTERM_LIBRARIES} util)
+        if(ASAN_C_FLAGS)
+            target_compile_options(test_fytim_md_vt PRIVATE ${ASAN_C_FLAGS})
+            target_link_options(test_fytim_md_vt PRIVATE ${ASAN_C_FLAGS})
+        endif()
+        foreach(t bubble_pinned_bytes bubble_pinned_lines bubble_pinned_single)
+            add_test(NAME fytim.mdvt.${t} COMMAND test_fytim_md_vt ${t})
+        endforeach()
+    endif()
+endif()
+
 # Visual tests over libvterm: the public surface replayed into a real VT
 # emulator, asserting on the screen grid. Only when libvterm is available;
 # uses the pkg-config probe from the core-test section above.
@@ -152,6 +180,7 @@ if(VTERM_FOUND)
     foreach(t regression_workband_cap_keeps_chrome
               regression_resize_repaints_width
               regression_bubble_pinned_while_streaming
+              regression_unmatched_shrink_held
               regression_settle_compacts
               regression_sgr_carries_across_rows
               regression_sgr_survives_freeze_cut)

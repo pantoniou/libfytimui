@@ -113,6 +113,7 @@ struct fytim {
     int term_w, term_h;
     int band_rows;
     int band_w;                    /* width the frame was last sized to */
+    int pending_commit_rows;       /* rows committed since the last pump */
 };
 
 const char *fytim_version_string(void)
@@ -486,14 +487,21 @@ static char *sgr_rowsafe(const char *buf, size_t len, size_t *out_len)
     return out;
 }
 
-/* The single funnel into the transcript: normalize, then batch. */
+/* The single funnel into the transcript: normalize, then batch. Every
+ * committed row is counted -- the pump may shrink the frame only by as
+ * many rows as this pump commits, so shrink and scroll cancel and the
+ * bubble stays pinned. */
 static void commit_norm(struct fytim *ft, const char *buf, size_t len)
 {
-    size_t nlen = 0;
+    size_t nlen = 0, i;
     char *norm = sgr_rowsafe(buf, len, &nlen);
     TimuiStr s;
     s.ptr = norm ? norm : (char *)buf;
     s.len = norm ? nlen : len;
+    for(i = 0; i < len; i++)
+        if(buf[i] == '\n') ft->pending_commit_rows++;
+    if(len && buf[len - 1] != '\n')
+        ft->pending_commit_rows++;    /* the emit appends the final '\n' */
     timui_inline_commit(ft->ui, s);   /* copies; batched until the pump */
     free(norm);
 }
@@ -1288,12 +1296,18 @@ enum fytim_result fytim_pump(struct fytim *ft)
             timui_full_redraw(ft->ui);
         }
         want = FYTIM_CHROME_ROWS + wb_rows_total(ft) + (prompt_lines(ft) - 1);
-        /* The frame tracks the need EXACTLY, mid-stream shrinks included:
-         * a freeze's commits (+k text scroll) and its frame shrink (-k)
-         * land in this same pump and cancel, so the bubble never moves --
-         * all motion is text scrolling. The invariant rests on tail_rows()
-         * counting only visible rows; a phantom row has no commit to
-         * cancel against and bounces the bubble. */
+        /* Growth is immediate; a shrink is allowed only up to the rows
+         * COMMITTED in this same pump, so shrink and scroll cancel and the
+         * bubble never moves -- all motion is text scrolling. An
+         * unmatched shrink (a heal retracting rows: no commit to cancel
+         * against) is HELD until later commits cover it; the stream-end
+         * settle takes whatever remains in one atomic hop. tail_rows()
+         * counting only visible rows is part of the same invariant. */
+        if(ft->tail_streaming && want < ft->band_rows){
+            int floor_rows = ft->band_rows - ft->pending_commit_rows;
+            if(want < floor_rows) want = floor_rows;
+        }
+        ft->pending_commit_rows = 0;
         if(want > ft->term_h) want = ft->term_h;
         /* a WIDTH change must resize the frame too, not only a row change */
         if(want != ft->band_rows || ft->term_w != ft->band_w){

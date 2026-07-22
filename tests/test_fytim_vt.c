@@ -304,6 +304,9 @@ static void test_regression_bubble_pinned_while_streaming(void)
     CHECK(fytim_tail_apply(h.ft, 2, "\x1b[0mA1\nA2\nA3\n", 14, 0) == FYTIM_OK);
     vth_pump(&h);
     CHECK(vth_find_row(&h, "HDRMARK") == y0);
+    /* the tail sits DIRECTLY above the chrome while streaming: counting
+     * the trailing-'\n' cursor row would wedge a phantom blank row in */
+    CHECK(vth_find_row(&h, "HDRMARK") == vth_find_row(&h, "A3") + 1);
     CHECK(fytim_tail_apply(h.ft, 3, "A1\nA2\nA3\n\n", 10, 4) == FYTIM_OK);
     vth_pump(&h);
     CHECK(vth_find_row(&h, "HDRMARK") == y0);
@@ -324,6 +327,52 @@ static void test_regression_bubble_pinned_while_streaming(void)
     vth_pump(&h);
     CHECK(vth_find_row(&h, "HDRMARK") == y0);
     CHECK(vth_find_row(&h, "HDRMARK") == vth_find_row(&h, "B1") + 2);
+    vth_close(&h);
+}
+
+/* ---- regression: an unmatched shrink is held, not resized --------------- *
+ * The renderer's active region can lose rows WITHOUT freezing anything (a
+ * heal retracting, a block re-wrapping). Such a shrink has no commit to
+ * cancel against, so resizing to it moves the bubble up and back down.
+ * The frame may only shrink by as many rows as were committed in the same
+ * pump; the excess is held until commits (or the settle) cover it. */
+static void test_regression_unmatched_shrink_held(void)
+{
+    struct vth h;
+    char line[32];
+    int i, y0;
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_header(h.ft, " HDRMARK") == FYTIM_OK);
+    for(i = 0; i < 30; i++){
+        snprintf(line, sizeof line, "F%02d", i);
+        CHECK(fytim_commit(h.ft, line, strlen(line)) == FYTIM_OK);
+    }
+    vth_pump(&h);
+    y0 = vth_find_row(&h, "HDRMARK");
+    CHECK(y0 > 0);
+
+    CHECK(fytim_tail_set(h.ft, "C1\nC2\nC3\nC4\nC5", 14) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "HDRMARK") == y0);   /* growth scrolls, pinned */
+
+    /* a heal retracts three rows: no commits, so the frame holds */
+    CHECK(fytim_tail_set(h.ft, "C1\nC2", 5) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "HDRMARK") == y0);
+
+    /* commits arrive (a tool's deferred flush, frozen rows): they release
+     * the hold row for row, still without moving the bubble */
+    CHECK(fytim_commit(h.ft, "D1\nD2\nD3", 8) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "HDRMARK") == y0);
+    CHECK(vth_find_row(&h, "D3") > 0);
+
+    /* stream end: the two remaining tail rows give way to the single
+     * spare breath row -- ONE settle hop, and only at stream end */
+    CHECK(fytim_tail_set(h.ft, NULL, 0) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "HDRMARK") == y0 - 1);
+    CHECK(vth_find_row(&h, "HDRMARK") == vth_find_row(&h, "D3") + 2);
     vth_close(&h);
 }
 
@@ -407,6 +456,8 @@ int main(int argc, char **argv)
           test_regression_resize_repaints_width },
         { "regression_bubble_pinned_while_streaming",
           test_regression_bubble_pinned_while_streaming },
+        { "regression_unmatched_shrink_held",
+          test_regression_unmatched_shrink_held },
         { "regression_settle_compacts",
           test_regression_settle_compacts },
         { "regression_sgr_carries_across_rows",
