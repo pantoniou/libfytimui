@@ -59,6 +59,13 @@ struct Timui {
     size_t            inline_pending_len;
     size_t            inline_pending_cap;
     int               inline_dirty;
+    /* Hardware cursor parked inside the band for a focused input: shown
+     * state, its cell, and the row it rests on so any later band output
+     * (paint, commit, exit erase) can first return to the anchor. */
+    int               inline_cursor_shown;
+    int               inline_cursor_x;
+    int               inline_cursor_y;
+    int               inline_parked_row;
     TimuiRenderer     renderer;
     TimuiInputParser  input;
     TimuiMpsc         postq;     /* thread-safe message queue (timui_post) */

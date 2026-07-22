@@ -343,6 +343,20 @@ TIMUI_API void timui_open_fail_fsetfl_for_test(int on){ g_fsetfl_fail_for_test =
  * (no transport abstraction, no poll/retry loop that can hang in a handler). */
 static Timui *g_sig_restore_ui = NULL;
 
+/* Minimal relative cursor move for the inline band ('A' up, 'B' down,
+ * 'C' right). No stdio; mirrors the renderer's hand formatting. */
+static void inline_rel_move_(TimuiTransport *t, int n, char dir){
+    char buf[16];
+    char tmp[8];
+    int bn = 0, tn = 0, i;
+    if(!t || !t->write || n <= 0) return;
+    buf[bn++] = 0x1b; buf[bn++] = '[';
+    while(n){ tmp[tn++] = (char)('0' + n % 10); n /= 10; }
+    for(i = tn - 1; i >= 0; i--) buf[bn++] = tmp[i];
+    buf[bn++] = dir;
+    (void)t->write(t, buf, (size_t)bn);
+}
+
 static void timui_restore_input_flags(Timui *ui){
     if(!ui || !ui->input_flags_saved) return;
     (void)fcntl(ui->fd.read_fd, F_SETFL, ui->input_flags);
@@ -353,6 +367,12 @@ TIMUI_API void timui_restore_terminal(Timui *ui){
     if(!ui) return;
     timui_restore_input_flags(ui);
     if(ui->termios_active) timui_termios_restore(&ui->termios);
+    /* Inline: a cursor parked inside the band must return to the anchor
+     * first, or screen_exit's erase-down misses the band rows above it. */
+    if(ui->have_transport && ui->inline_parked_row > 0){
+        inline_rel_move_(&ui->transport, ui->inline_parked_row, 'A');
+        ui->inline_parked_row = 0;
+    }
     if(ui->screen_active) timui_screen_exit(&ui->transport, &ui->screen);
 }
 static void timui_signal_write_(int fd, const char *s, size_t n){
@@ -781,12 +801,27 @@ TIMUI_API void timui_end(TimuiFrame *frame){
          * only the touched rows and never erases the band. */
         int full = ui->inline_dirty || ui->inline_pending_len > 0 ||
                    ui->prev.w != ui->curr.w || ui->prev.h != ui->curr.h;
-        int changed = full ||
+        int cells_changed = full ||
                       memcmp(ui->prev.cells, ui->curr.cells,
                              (size_t)ui->curr.w * (size_t)ui->curr.h *
                              sizeof(TimuiCell)) != 0;
-        if(!changed) return;
+        /* Hardware cursor for a focused input: park it at the requested cell
+         * (F1.4 sets cursor_visible/x/y each frame). A cursor move alone --
+         * Left/Right with no cell change -- must reach the terminal too. */
+        int want_cursor = ui->cursor_visible &&
+                          ui->cursor_x >= 0 && ui->cursor_x < ui->w &&
+                          ui->cursor_y >= 0 && ui->cursor_y < ui->h;
+        int cursor_moved = want_cursor != ui->inline_cursor_shown ||
+                           (want_cursor && (ui->cursor_x != ui->inline_cursor_x ||
+                                            ui->cursor_y != ui->inline_cursor_y));
+        if(!cells_changed && !cursor_moved) return;
         if(sync) timui_sync_begin(&ui->transport);
+        /* a parked cursor first returns to the anchor: every paint below
+         * assumes its row arithmetic starts there */
+        if(ui->inline_parked_row > 0){
+            inline_rel_move_(&ui->transport, ui->inline_parked_row, 'A');
+            ui->inline_parked_row = 0;
+        }
         if(full){
             if(ui->inline_pending_len > 0){
                 TimuiStr lines = { ui->inline_pending, ui->inline_pending_len };
@@ -794,8 +829,21 @@ TIMUI_API void timui_end(TimuiFrame *frame){
                 ui->inline_pending_len = 0;
             }
             timui_inline_paint(&ui->transport, &ui->curr);
-        }else{
+        }else if(cells_changed){
             timui_inline_paint_diff(&ui->transport, &ui->prev, &ui->curr);
+        }
+        if(want_cursor){
+            if(ui->transport.write) (void)ui->transport.write(&ui->transport, "\r", 1);
+            inline_rel_move_(&ui->transport, ui->cursor_y, 'B');
+            inline_rel_move_(&ui->transport, ui->cursor_x, 'C');
+            if(!ui->inline_cursor_shown) timui_show_cursor(&ui->transport);
+            ui->inline_cursor_shown = 1;
+            ui->inline_cursor_x = ui->cursor_x;
+            ui->inline_cursor_y = ui->cursor_y;
+            ui->inline_parked_row = ui->cursor_y;
+        }else if(ui->inline_cursor_shown){
+            timui_hide_cursor(&ui->transport);
+            ui->inline_cursor_shown = 0;
         }
         if(sync) timui_sync_end(&ui->transport);
         if(ui->transport.flush) ui->transport.flush(&ui->transport);
