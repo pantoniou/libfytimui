@@ -76,6 +76,7 @@ struct mdstream {
     size_t doc_len;
     char *owned;                   /* freed when the stream ends (file case) */
     size_t off;                    /* bytes already pushed */
+    int byte_mode;                 /* chunk pushes instead of whole lines */
     int delay_ms;                  /* pacing between chunks */
     long long next_ms;             /* next push not before this */
 };
@@ -297,7 +298,8 @@ static long long now_ms(void)
 }
 
 static void md_start(struct fytim *ft, struct mdstream *s,
-                     const char *doc, size_t len, char *owned, int delay_ms)
+                     const char *doc, size_t len, char *owned, int delay_ms,
+                     int byte_mode)
 {
     struct fymd_renderer_cfg cfg;
     int w = 80;
@@ -305,6 +307,7 @@ static void md_start(struct fytim *ft, struct mdstream *s,
     s->doc = doc;
     s->doc_len = len;
     s->owned = owned;
+    s->byte_mode = byte_mode;
     s->delay_ms = delay_ms > 0 ? delay_ms : 60;
     s->next_ms = 0;
     fytim_size(ft, &w, NULL);
@@ -330,11 +333,25 @@ static void md_tick(struct fytim *ft, struct mdstream *s)
     s->next_ms = now_ms() + s->delay_ms;
 
     if(s->off < s->doc_len){
-        /* LINE mode: one whole source line per tick. Fixed-size chunks can
-         * split a UTF-8 sequence (or an escape) across pushes and the torn
-         * bytes flash as artifacts in the live render. */
-        const char *nl = memchr(s->doc + s->off, '\n', s->doc_len - s->off);
-        n = nl ? (size_t)(nl - (s->doc + s->off)) + 1 : s->doc_len - s->off;
+        if(s->byte_mode){
+            /* BYTE mode: a few bytes per tick like a token stream, but
+             * never ending inside a UTF-8 sequence -- the torn bytes
+             * would flash as artifacts in the live render */
+            n = s->doc_len - s->off;
+            if(n > 7){
+                n = 7;
+                while(n > 1 && (s->doc[s->off + n] & 0xC0) == 0x80) n--;
+                if((s->doc[s->off + n] & 0xC0) == 0x80)   /* long codepoint */
+                    while(s->off + n < s->doc_len &&
+                          (s->doc[s->off + n] & 0xC0) == 0x80) n++;
+            }
+        }else{
+            /* LINE mode (default): one whole source line per tick */
+            const char *nl = memchr(s->doc + s->off, '\n',
+                                    s->doc_len - s->off);
+            n = nl ? (size_t)(nl - (s->doc + s->off)) + 1
+                   : s->doc_len - s->off;
+        }
         if(fymd_render_push(s->r, s->doc + s->off, n, &upd) != 0) goto fail;
         s->off += n;
         if(fytim_tail_apply(ft, upd.backtrack, upd.content,
@@ -369,21 +386,24 @@ fail:
     fytim_commit(ft, "render error", 12);
 }
 
-/* /stream FILE [DELAY_MS]: stream a markdown file through the renderer. */
+/* /stream FILE [DELAY_MS] [byte]: stream a markdown file through the
+ * renderer; "byte" pushes UTF-8-safe byte chunks instead of whole lines. */
 static void cmd_stream(struct fytim *ft, struct mdstream *s, const char *args)
 {
-    char path[512], msg[600];
-    int delay = 0;
+    char path[512], msg[600], mode[16];
+    int delay = 0, byte_mode;
     FILE *fp;
     char *doc = NULL;
     long fl;
     size_t rd;
 
     while(*args == ' ') args++;
-    if(sscanf(args, "%511s %d", path, &delay) < 1){
-        fytim_commit(ft, "usage: /stream FILE [DELAY_MS]", 30);
+    mode[0] = '\0';
+    if(sscanf(args, "%511s %d %15s", path, &delay, mode) < 1){
+        fytim_commit(ft, "usage: /stream FILE [DELAY_MS] [byte]", 37);
         return;
     }
+    byte_mode = strcmp(mode, "byte") == 0;
     fp = fopen(path, "r");
     if(!fp || fseek(fp, 0, SEEK_END) != 0 || (fl = ftell(fp)) < 0){
         if(fp) fclose(fp);
@@ -397,10 +417,10 @@ static void cmd_stream(struct fytim *ft, struct mdstream *s, const char *args)
     rd = fread(doc, 1, (size_t)fl, fp);
     fclose(fp);
     doc[rd] = '\0';
-    snprintf(msg, sizeof msg, "\x1b[2mstreaming %s (%zu bytes, %d ms)\x1b[0m",
-             path, rd, delay > 0 ? delay : 60);
+    snprintf(msg, sizeof msg, "\x1b[2mstreaming %s (%zu bytes, %d ms, %s)\x1b[0m",
+             path, rd, delay > 0 ? delay : 60, byte_mode ? "byte" : "line");
     fytim_commit(ft, msg, strlen(msg));
-    md_start(ft, s, doc, rd, doc, delay);
+    md_start(ft, s, doc, rd, doc, delay, byte_mode);
 }
 
 static void complete_cb(void *user, const char *text,
@@ -474,7 +494,7 @@ int main(void)
                         if(dn > 60) dn = 60;
                         job_spawn(ft, dn);
                     }else{
-                        md_start(ft, &s, md_doc, sizeof md_doc - 1, NULL, 60);
+                        md_start(ft, &s, md_doc, sizeof md_doc - 1, NULL, 60, 0);
                     }
                     break;
                 case FYTIM_EVENT_QUIT:
@@ -494,7 +514,7 @@ int main(void)
                 char echo[512];
                 snprintf(echo, sizeof echo, "\x1b[1m>\x1b[0m %s", line);
                 fytim_commit(ft, echo, strlen(echo));
-                md_start(ft, &s, md_doc, sizeof md_doc - 1, NULL, 60);
+                md_start(ft, &s, md_doc, sizeof md_doc - 1, NULL, 60, 0);
                 free(line);
             }
         }
