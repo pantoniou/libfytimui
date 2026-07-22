@@ -499,6 +499,56 @@ TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf)
     }
     if(t->flush) t->flush(t);
 }
+/* Row-diff repaint (see timui.h): rewrite only changed rows, in place. The
+ * cursor starts and ends at the band anchor; movement is CUD/CUU + "\r"
+ * only, and each rewritten row is cleared to EOL with EL after its content
+ * -- the band is never erased wholesale, so unchanged rows cannot flicker. */
+static void inline_move_rows_(TimuiTransport *t, int delta, char dir){
+    char nb[16];
+    int n = 0;
+    if(delta <= 0) return;
+    nb[n++] = 0x1b; nb[n++] = '[';
+    n += fmt_uint(nb + n, (unsigned)delta);
+    nb[n++] = dir;
+    r_emit(t, nb, (size_t)n);
+}
+TIMUI_API void timui_inline_paint_diff(TimuiTransport *t,
+                                       const TimuiCellBuffer *prev,
+                                       const TimuiCellBuffer *curr){
+    TimuiRenderer r;
+    int x, y, cur_row = 0, any = 0;
+    if(!t || !prev || !curr || !prev->cells || !curr->cells) return;
+    if(prev->w != curr->w || prev->h != curr->h) return;   /* band moved: full repaint owns it */
+    if(curr->w <= 0 || curr->h <= 0) return;
+    timui_renderer_reset(&r);
+    for(y = 0; y < curr->h; y++){
+        const TimuiCell *pr = &prev->cells[(size_t)y * prev->w];
+        const TimuiCell *cr = &curr->cells[(size_t)y * curr->w];
+        int end;
+        if(memcmp(pr, cr, (size_t)curr->w * sizeof(TimuiCell)) == 0) continue;
+        any = 1;
+        inline_move_rows_(t, y - cur_row, 'B');
+        cur_row = y;
+        R_EMIT(t, "\r");
+        end = inline_row_end_(curr, y);
+        for(x = 0; x < end; x++){
+            const TimuiCell *c = &cr[x];
+            char gb[4];
+            int gn;
+            if(c->flags & TIMUI_CELL_CONTINUATION) continue;   /* wide glyph tail */
+            emit_sgr(t, &r, c);
+            gn = timui_utf8_encode_(render_safe_cp(c->codepoint), gb);
+            r_emit(t, gb, (size_t)gn);
+        }
+        R_EMIT(t, "\x1b[0m\x1b[K");              /* default-style clear to EOL */
+        timui_renderer_reset(&r);                /* the reset above voided SGR state */
+    }
+    if(!any) return;
+    inline_move_rows_(t, cur_row, 'A');          /* back to the band anchor */
+    R_EMIT(t, "\r");
+    if(t->flush) t->flush(t);
+}
+
 /* Scroll finished lines out of the band into native scrollback. Embedded
  * '\n' separates lines; every line is terminated "\r\n" exactly once. */
 TIMUI_API void timui_inline_commit_emit(TimuiTransport *t, TimuiStr text){

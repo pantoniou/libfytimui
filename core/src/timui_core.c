@@ -775,19 +775,28 @@ TIMUI_API void timui_end(TimuiFrame *frame){
      * and queued commits flush here so erase + lines + repaint are one
      * update inside a single sync bracket. */
     if(ui->cfg.flags & TIMUI_FLAG_INLINE){
-        int changed = ui->inline_dirty || ui->inline_pending_len > 0 ||
-                      ui->prev.w != ui->curr.w || ui->prev.h != ui->curr.h ||
+        /* Full repaint only when the band's position or size changed (open,
+         * resize, redraw request) or lines are scrolling out; a plain content
+         * change -- a keystroke -- takes the row-diff path, which rewrites
+         * only the touched rows and never erases the band. */
+        int full = ui->inline_dirty || ui->inline_pending_len > 0 ||
+                   ui->prev.w != ui->curr.w || ui->prev.h != ui->curr.h;
+        int changed = full ||
                       memcmp(ui->prev.cells, ui->curr.cells,
                              (size_t)ui->curr.w * (size_t)ui->curr.h *
                              sizeof(TimuiCell)) != 0;
         if(!changed) return;
         if(sync) timui_sync_begin(&ui->transport);
-        if(ui->inline_pending_len > 0){
-            TimuiStr lines = { ui->inline_pending, ui->inline_pending_len };
-            timui_inline_commit_emit(&ui->transport, lines);
-            ui->inline_pending_len = 0;
+        if(full){
+            if(ui->inline_pending_len > 0){
+                TimuiStr lines = { ui->inline_pending, ui->inline_pending_len };
+                timui_inline_commit_emit(&ui->transport, lines);
+                ui->inline_pending_len = 0;
+            }
+            timui_inline_paint(&ui->transport, &ui->curr);
+        }else{
+            timui_inline_paint_diff(&ui->transport, &ui->prev, &ui->curr);
         }
-        timui_inline_paint(&ui->transport, &ui->curr);
         if(sync) timui_sync_end(&ui->transport);
         if(ui->transport.flush) ui->transport.flush(&ui->transport);
         ui->inline_dirty = 0;

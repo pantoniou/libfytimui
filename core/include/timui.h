@@ -712,6 +712,14 @@ TIMUI_API void timui_render_cursor(TimuiTransport *t, int x, int y, int visible)
  * terminal width; auto-wrap is off (DECAWM). timui_inline_commit_emit is the
  * raw immediate emitter underneath (used by timui_end and by tests). */
 TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf);
+/* Row-diff repaint: rewrites only the rows that differ between prev and curr,
+ * in place (relative moves + EL), never erasing the band -- this is what a
+ * keystroke costs. Only valid between two frames of the same geometry with
+ * the band position unchanged; a size mismatch emits nothing (the full
+ * repaint owns that case, as it does commits and resizes). */
+TIMUI_API void timui_inline_paint_diff(TimuiTransport *t,
+                                       const TimuiCellBuffer *prev,
+                                       const TimuiCellBuffer *curr);
 TIMUI_API void timui_inline_commit_emit(TimuiTransport *t, TimuiStr text);
 TIMUI_API void timui_inline_commit(Timui *ui, TimuiStr text);
 
