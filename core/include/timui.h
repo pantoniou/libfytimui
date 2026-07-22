@@ -714,7 +714,13 @@ TIMUI_API void timui_render_cursor(TimuiTransport *t, int x, int y, int visible)
  * single sync bracket. An unchanged band with no pending commits emits
  * nothing at all. Committed lines must already be hard-wrapped to the
  * terminal width; auto-wrap is off (DECAWM). timui_inline_commit_emit is the
- * raw immediate emitter underneath (used by timui_end and by tests). */
+ * raw immediate emitter underneath (used by timui_end and by tests).
+ *
+ * Known limits: the band paints SGR cells only -- OSC 8 hyperlinks and image
+ * placements are not emitted in inline mode. The async-signal restore path
+ * cannot un-park a cursor parked inside the band, so a SIGTERM-style exit
+ * may leave the band rows above the cursor on screen (normal exit and
+ * timui_restore_terminal un-park correctly). */
 TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf);
 /* Row-diff repaint: rewrites only the rows that differ between prev and curr,
  * in place (relative moves + EL), never erasing the band -- this is what a

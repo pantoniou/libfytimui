@@ -474,7 +474,9 @@ TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf)
     int x, y;
     if(!t || !buf || !buf->cells || buf->w <= 0 || buf->h <= 0) return;
     timui_renderer_reset(&r);
-    R_EMIT(t, "\r\x1b[J");                       /* home the column, erase down */
+    /* close any inherited style first: BCE terminals erase with the CURRENT
+     * background, and the first paint runs on whatever the shell left */
+    R_EMIT(t, "\x1b[0m\r\x1b[J");                /* home the column, erase down */
     for(y = 0; y < buf->h; y++){
         int end = inline_row_end_(buf, y);
         /* close the style before the row break: the LF may scroll the
@@ -572,7 +574,7 @@ TIMUI_API void timui_inline_paint_diff(TimuiTransport *t,
 TIMUI_API void timui_inline_commit_emit(TimuiTransport *t, TimuiStr text){
     size_t i = 0;
     if(!t || !text.ptr || text.len == 0) return;
-    R_EMIT(t, "\r\x1b[J");                       /* the band gives way */
+    R_EMIT(t, "\x1b[0m\r\x1b[J");                /* style closed, band gives way */
     while(i < text.len){
         size_t start = i;
         while(i < text.len && text.ptr[i] != '\n') i++;
