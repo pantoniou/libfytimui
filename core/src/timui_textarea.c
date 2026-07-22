@@ -25,6 +25,21 @@ static int text_area_enter_submits_(uint32_t mods, uint32_t flags){
     if(!(flags & TIMUI_TEXT_AREA_ENTER_SUBMITS)) return 0;
     return !(mods & TIMUI_MOD_SHIFT);
 }
+/* Word boundaries for the readline chords: a word is a run of non-blank
+ * characters; newlines count as blanks so the chords cross lines the way
+ * they cross spaces. */
+static int text_area_blank_(char c){ return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
+static size_t text_area_word_left_(const char *s, size_t c){
+    while(c > 0 && text_area_blank_(s[c-1])) c--;
+    while(c > 0 && !text_area_blank_(s[c-1])) c--;
+    return c;
+}
+static size_t text_area_word_right_(const char *s, size_t c){
+    size_t len = strlen(s);
+    while(c < len && text_area_blank_(s[c])) c++;
+    while(c < len && !text_area_blank_(s[c])) c++;
+    return c;
+}
 static void text_area_apply_key_(TimuiTextAreaState *st, unsigned key, TimuiTextAreaResult *res){
     if(key == TIMUI_KEYIN_LEFT)  st->cursor = utf8_drop_last(st->text, st->cursor);
     if(key == TIMUI_KEYIN_RIGHT) st->cursor = utf8_next_(st->text, st->cursor, strlen(st->text));
@@ -40,6 +55,56 @@ static void text_area_apply_key_(TimuiTextAreaState *st, unsigned key, TimuiText
         if(nxt > st->cursor){
             (void)text_erase_(st->text, st->cursor, nxt);
             res->changed = 1;
+        }
+    }
+    if(key == TIMUI_KEYIN_KILL_EOL){
+        size_t end = line_end_(st->text, st->cursor);
+        if(end == st->cursor && st->text[end] == '\n') end++;  /* at EOL: join */
+        if(end > st->cursor){
+            (void)text_erase_(st->text, st->cursor, end);
+            res->changed = 1;
+        }
+    }
+    if(key == TIMUI_KEYIN_KILL_BOL){
+        size_t start = line_start_(st->text, st->cursor);
+        if(start < st->cursor){
+            st->cursor = text_erase_(st->text, start, st->cursor);
+            res->changed = 1;
+        }
+    }
+    if(key == TIMUI_KEYIN_KILL_WORD){
+        size_t w = text_area_word_left_(st->text, st->cursor);
+        if(w < st->cursor){
+            st->cursor = text_erase_(st->text, w, st->cursor);
+            res->changed = 1;
+        }
+    }
+    if(key == TIMUI_KEYIN_KILL_WORD_FWD){
+        size_t w = text_area_word_right_(st->text, st->cursor);
+        if(w > st->cursor){
+            (void)text_erase_(st->text, st->cursor, w);
+            res->changed = 1;
+        }
+    }
+    if(key == TIMUI_KEYIN_WORD_LEFT)  st->cursor = text_area_word_left_(st->text, st->cursor);
+    if(key == TIMUI_KEYIN_WORD_RIGHT) st->cursor = text_area_word_right_(st->text, st->cursor);
+    if(key == TIMUI_KEYIN_TRANSPOSE){
+        /* readline: swap the clusters around the cursor and advance; at the
+         * end of the text swap the last two and stay. */
+        size_t len = strlen(st->text);
+        size_t b = st->cursor, a, n;
+        char tmp[8];
+        if(len >= 2 && b > 0){
+            if(b >= len) b = utf8_drop_last(st->text, len);   /* at end: back up */
+            a = utf8_drop_last(st->text, b);
+            n = utf8_next_(st->text, b, len);
+            if(n - b <= sizeof tmp && b - a > 0 && n > b){
+                memcpy(tmp, st->text + b, n - b);              /* second cluster */
+                memmove(st->text + a + (n - b), st->text + a, b - a);
+                memcpy(st->text + a, tmp, n - b);
+                st->cursor = n;
+                res->changed = 1;
+            }
         }
     }
 }

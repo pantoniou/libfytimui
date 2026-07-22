@@ -733,6 +733,16 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
                         case 'k': ui->key_in |= TIMUI_KEYIN_KILL_EOL;  timui_edit_add_key_(ui, TIMUI_KEYIN_KILL_EOL,  ev.as.key.mods); break;  /* kill to EOL    */
                         case 'u': ui->key_in |= TIMUI_KEYIN_KILL_BOL;  timui_edit_add_key_(ui, TIMUI_KEYIN_KILL_BOL,  ev.as.key.mods); break;  /* kill to BOL    */
                         case 'w': ui->key_in |= TIMUI_KEYIN_KILL_WORD; timui_edit_add_key_(ui, TIMUI_KEYIN_KILL_WORD, ev.as.key.mods); break;  /* kill word back */
+                        case 't': ui->key_in |= TIMUI_KEYIN_TRANSPOSE; timui_edit_add_key_(ui, TIMUI_KEYIN_TRANSPOSE, ev.as.key.mods); break;  /* swap chars   */
+                        default: break;
+                    }
+                }
+                else if(ev.as.key.key == TIMUI_KEY_UNKNOWN && (ev.as.key.mods & TIMUI_MOD_ALT)){
+                    /* emacs / readline word chords (ESC-prefixed letters) */
+                    switch(ev.as.key.codepoint){
+                        case 'b': ui->key_in |= TIMUI_KEYIN_WORD_LEFT;     timui_edit_add_key_(ui, TIMUI_KEYIN_WORD_LEFT,     ev.as.key.mods); break;
+                        case 'f': ui->key_in |= TIMUI_KEYIN_WORD_RIGHT;    timui_edit_add_key_(ui, TIMUI_KEYIN_WORD_RIGHT,    ev.as.key.mods); break;
+                        case 'd': ui->key_in |= TIMUI_KEYIN_KILL_WORD_FWD; timui_edit_add_key_(ui, TIMUI_KEYIN_KILL_WORD_FWD, ev.as.key.mods); break;
                         default: break;
                     }
                 }
