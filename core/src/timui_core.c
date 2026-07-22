@@ -1035,6 +1035,11 @@ TIMUI_API int timui_key_pressed_mods(TimuiFrame *f, TimuiKey key, uint32_t mods)
 TIMUI_API uint32_t timui_key_codepoint(const TimuiFrame *f){
     return (f && f->ui) ? f->ui->key_cp : 0;
 }
+TIMUI_API TimuiStyle timui_slot_style(const Timui *ui, TimuiStyleSlot slot){
+    TimuiStyle z = {0, 0, 0};
+    if(!ui) return z;
+    return timui_theme_style(&ui->theme, slot);   /* handles slot range */
+}
 /* Typed characters this frame that a focused input has not consumed (digits,
  * space, and letters arrive as text, not TimuiKey events — so apps can read
  * single-key commands without reaching into internals). */

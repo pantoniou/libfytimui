@@ -477,7 +477,13 @@ TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf)
     R_EMIT(t, "\r\x1b[J");                       /* home the column, erase down */
     for(y = 0; y < buf->h; y++){
         int end = inline_row_end_(buf, y);
-        if(y > 0) R_EMIT(t, "\r\n");             /* LF at the bottom row scrolls */
+        /* close the style before the row break: the LF may scroll the
+         * screen, and BCE terminals fill the revealed line with the CURRENT
+         * background -- an open row background would bleed into it */
+        if(y > 0){
+            R_EMIT(t, "\x1b[0m\r\n");            /* LF at the bottom row scrolls */
+            timui_renderer_reset(&r);
+        }
         for(x = 0; x < end; x++){
             const TimuiCell *c = &buf->cells[(size_t)y * buf->w + x];
             char gb[4];

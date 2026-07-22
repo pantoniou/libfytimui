@@ -744,6 +744,10 @@ typedef struct {
 
 TIMUI_API TimuiTheme timui_theme_builtin(TimuiBuiltinTheme t);
 TIMUI_API TimuiStyle timui_theme_style(const TimuiTheme *th, TimuiStyleSlot slot);
+/* The slot style from the theme this ui actually resolved at open, so
+ * application chrome can match widget styling without re-deriving the theme
+ * from the config. Zero style for a NULL ui or an out-of-range slot. */
+TIMUI_API TimuiStyle timui_slot_style(const Timui *ui, TimuiStyleSlot slot);
 
 /* ---- Stylesheets (small TCSS-like parser/resolver) -------------------- */
 typedef enum {
