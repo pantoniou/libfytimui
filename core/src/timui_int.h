@@ -100,6 +100,7 @@ struct Timui {
     unsigned          key_in;
     TimuiKey          key_pressed;
     uint32_t          key_mods;     /* modifiers of the last key event */
+    uint32_t          key_cp;       /* codepoint of the last key event (0 = none) */
     int               mouse_wheel;  /* accumulated wheel delta this frame (+up/-down) */
     int               mouse_wheel_x, mouse_wheel_y; /* cell of the wheel event */
     int               mouse_x, mouse_y;   /* last reported cell (0-based) */

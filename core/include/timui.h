@@ -1043,6 +1043,10 @@ TIMUI_API void    timui_input_flush_esc(TimuiInputParser *p, uint64_t now_ms, Ti
 TIMUI_API uint64_t timui_now_ms(void);   /* monotonic milliseconds */
 TIMUI_API int    timui_key_pressed(TimuiFrame *f, TimuiKey key);
 TIMUI_API int    timui_key_pressed_mods(TimuiFrame *f, TimuiKey key, uint32_t mods);
+/* Codepoint carried by this frame's key event (0 if none). For chords the
+ * table above cannot name: a control byte arrives as TIMUI_KEY_UNKNOWN +
+ * TIMUI_MOD_CTRL and this reports which letter -- e.g. Ctrl-L refresh. */
+TIMUI_API uint32_t timui_key_codepoint(const TimuiFrame *f);
 /* Typed text this frame not yet consumed by a focused input — digits, space, and
  * letters arrive as text, not TimuiKey events. timui_char_pressed scans for a
  * specific ASCII char; timui_text_input returns the raw run (a view into a

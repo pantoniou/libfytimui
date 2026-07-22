@@ -656,6 +656,7 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
     }
     ui->key_in = 0;
     ui->key_pressed = TIMUI_KEY_UNKNOWN;
+    ui->key_cp = 0;
     ui->key_mods = 0;
     ui->mouse_wheel = 0;
     ui->mouse_wheel_x = -1;
@@ -691,6 +692,7 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
                 }
             } else if(ev.kind == TIMUI_EVENT_KEY){
                 ui->key_pressed = ev.as.key.key;   /* app-level key detection */
+                ui->key_cp = ev.as.key.codepoint;
                 ui->key_mods = ev.as.key.mods;
                 if(ev.as.key.key == TIMUI_KEY_TAB) timui_interact_set_keys(&ui->ia, 1, 0);
                 else if(ev.as.key.key == TIMUI_KEY_ENTER){
@@ -1019,6 +1021,9 @@ TIMUI_API int timui_key_pressed(TimuiFrame *f, TimuiKey key){
 TIMUI_API int timui_key_pressed_mods(TimuiFrame *f, TimuiKey key, uint32_t mods){
     return (f && f->ui && f->ui->key_pressed == key &&
             (f->ui->key_mods & mods) == mods);
+}
+TIMUI_API uint32_t timui_key_codepoint(const TimuiFrame *f){
+    return (f && f->ui) ? f->ui->key_cp : 0;
 }
 /* Typed characters this frame that a focused input has not consumed (digits,
  * space, and letters arrive as text, not TimuiKey events — so apps can read
