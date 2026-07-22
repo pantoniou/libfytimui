@@ -159,12 +159,12 @@ static void job_show(struct job *j, const char *dot_sgr, const char *status)
     if(out) fymd_free(out);
 }
 
-/* The running dot BLINKS: bright and dim yellow alternate on a host-side
- * timer (SGR blink is unreliable across terminals). */
+/* The running dot BLINKS: yellow and blank alternate on a host-side
+ * timer (SGR blink -- and even dim -- is unreliable across terminals). */
 static long long now_ms(void);
 static const char *job_dot_running(void)
 {
-    return (now_ms() / 500) & 1 ? "\x1b[2;33m\xe2\x97\x8f\x1b[0m"
+    return (now_ms() / 500) & 1 ? " "
                                 : "\x1b[33m\xe2\x97\x8f\x1b[0m";
 }
 
