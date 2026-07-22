@@ -847,12 +847,35 @@ TIMUI_API void timui_end(TimuiFrame *frame){
             ui->inline_parked_row = 0;
         }
         if(full){
+            int committed = 0;
+            /* trust protocol: an untrusted screen (first paint, ^L,
+             * resume) is claimed with ONE erase-down; a trusted one is
+             * overwritten in place and never blanked */
+            if(!ui->inline_trusted && ui->transport.write)
+                (void)ui->transport.write(&ui->transport, "\x1b[0m\r\x1b[J", 8);
             if(ui->inline_pending_len > 0){
                 TimuiStr lines = { ui->inline_pending, ui->inline_pending_len };
+                size_t ci;
+                for(ci = 0; ci < lines.len; ci++)
+                    if(lines.ptr[ci] == '\n') committed++;
                 timui_inline_commit_emit(&ui->transport, lines);
                 ui->inline_pending_len = 0;
             }
             timui_inline_paint(&ui->transport, &ui->curr);
+            if(ui->inline_trusted){
+                /* the committed lines shifted the anchor down and the band
+                 * may have shrunk: erase what the old extent still covers
+                 * below the new band, then return to the anchor */
+                int stale = ui->inline_prev_rows - (committed + ui->curr.h);
+                if(stale > 0){
+                    inline_rel_move_(&ui->transport, ui->curr.h, 'B');
+                    if(ui->transport.write)
+                        (void)ui->transport.write(&ui->transport, "\r\x1b[J", 4);
+                    inline_rel_move_(&ui->transport, ui->curr.h, 'A');
+                }
+            }
+            ui->inline_trusted = 1;
+            ui->inline_prev_rows = ui->curr.h;
         }else if(cells_changed){
             timui_inline_paint_diff(&ui->transport, &ui->prev, &ui->curr);
         }
@@ -1003,6 +1026,7 @@ TIMUI_API void timui_full_redraw(Timui *ui){
     if(!ui) return;
     timui_invalidate(ui);
     ui->inline_dirty = 1;
+    ui->inline_trusted = 0;   /* whatever is on screen is no longer ours */
     if(!ui->have_buffers || !ui->prev.cells || ui->prev.w <= 0 || ui->prev.h <= 0) return;
     n = (size_t)ui->prev.w * (size_t)ui->prev.h;
     timui_cells_clear(&ui->prev);

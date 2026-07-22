@@ -711,16 +711,21 @@ TIMUI_API void timui_render_cursor(TimuiTransport *t, int x, int y, int visible)
 
 /* ---- inline band mode (TIMUI_FLAG_INLINE) ------------------------------- *
  * The cursor anchor contract: between frames the physical cursor sits at the
- * band's top-left, column 0. A paint is "\r" + erase-down + the band rows
- * (CRLF-separated, ending SGR-reset) + a cursor-up back to the anchor; the
- * line feeds at the screen bottom scroll naturally, so space for the band is
- * reserved implicitly. timui_inline_commit QUEUES finished lines; they flush
- * inside the next timui_end, where erase + lines (each ending "\r\n",
- * scrolling into native scrollback) + band repaint form one update inside a
- * single sync bracket. An unchanged band with no pending commits emits
- * nothing at all. Committed lines must already be hard-wrapped to the
- * terminal width; auto-wrap is off (DECAWM). timui_inline_commit_emit is the
- * raw immediate emitter underneath (used by timui_end and by tests).
+ * band's top-left, column 0. A paint OVERWRITES the band in place: each row
+ * is EL-cleared (style closed) and rewritten, rows CRLF-separated, then a
+ * cursor-up back to the anchor; the line feeds at the screen bottom scroll
+ * naturally, so space for the band is reserved implicitly. The band is
+ * never blanked wholesale -- the trust protocol in timui_end erases down
+ * exactly once when the screen below the anchor is untrusted (first paint,
+ * timui_full_redraw, resume), and a shrink cleans the uncovered rows with a
+ * targeted erase after the repaint. timui_inline_commit QUEUES finished
+ * lines; they flush inside the next timui_end, each overwriting a band row
+ * (line + SGR-reset + EL + "\r\n", scrolling into native scrollback) ahead
+ * of the band repaint, all inside a single sync bracket. An unchanged band
+ * with no pending commits emits nothing at all. Committed lines must
+ * already be hard-wrapped to the terminal width; auto-wrap is off (DECAWM).
+ * timui_inline_commit_emit is the raw immediate emitter underneath (used by
+ * timui_end and by tests).
  *
  * Known limits: the band paints SGR cells only -- OSC 8 hyperlinks and image
  * placements are not emitted in inline mode. The async-signal restore path

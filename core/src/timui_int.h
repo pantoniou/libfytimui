@@ -69,6 +69,13 @@ struct Timui {
     /* Terminal released to a child process (timui_suspend): frames neither
      * read input nor write output until timui_resume takes it back. */
     int               suspended;
+    /* Trust protocol for flicker-free streaming: while the screen below the
+     * anchor is OUR OWN painting (trusted), paints overwrite in place and
+     * never erase; open/^L/resume distrust it and the next full paint
+     * erases once. inline_prev_rows is the on-screen band extent, so a
+     * shrink can clean up the rows it uncovered with a targeted erase. */
+    int               inline_trusted;
+    int               inline_prev_rows;
     TimuiRenderer     renderer;
     TimuiInputParser  input;
     TimuiMpsc         postq;     /* thread-safe message queue (timui_post) */

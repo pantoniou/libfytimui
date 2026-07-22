@@ -474,9 +474,13 @@ TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf)
     int x, y;
     if(!t || !buf || !buf->cells || buf->w <= 0 || buf->h <= 0) return;
     timui_renderer_reset(&r);
-    /* close any inherited style first: BCE terminals erase with the CURRENT
-     * background, and the first paint runs on whatever the shell left */
-    R_EMIT(t, "\x1b[0m\r\x1b[J");                /* home the column, erase down */
+    /* Overwrite in place: each row is EL-cleared (with the style closed --
+     * BCE terminals fill an EL with the CURRENT background) and rewritten.
+     * NEVER erase-down here: blanking the band before repainting it is a
+     * visible flash on every streaming tick. When the screen below the
+     * anchor is untrusted (first paint, ^L, resume) the CALLER erases once
+     * before this runs (timui_end's trust protocol). */
+    R_EMIT(t, "\x1b[0m\r");                      /* close style, home column */
     for(y = 0; y < buf->h; y++){
         int end = inline_row_end_(buf, y);
         /* close the style before the row break: the LF may scroll the
@@ -486,6 +490,7 @@ TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf)
             R_EMIT(t, "\x1b[0m\r\n");            /* LF at the bottom row scrolls */
             timui_renderer_reset(&r);
         }
+        R_EMIT(t, "\x1b[K");                     /* clear, then rewrite the row */
         for(x = 0; x < end; x++){
             const TimuiCell *c = &buf->cells[(size_t)y * buf->w + x];
             char gb[4];
@@ -570,16 +575,20 @@ TIMUI_API void timui_inline_paint_diff(TimuiTransport *t,
 }
 
 /* Scroll finished lines out of the band into native scrollback. Embedded
- * '\n' separates lines; every line is terminated "\r\n" exactly once. */
+ * '\n' separates lines. Each line OVERWRITES a band row in place -- written,
+ * style-closed, EL-cleared to remove any residue of the old row, then
+ * "\r\n" -- so the band is never blanked wholesale (that flash was the
+ * streaming flicker). The following band repaint (same flush) rewrites the
+ * rows below. */
 TIMUI_API void timui_inline_commit_emit(TimuiTransport *t, TimuiStr text){
     size_t i = 0;
     if(!t || !text.ptr || text.len == 0) return;
-    R_EMIT(t, "\x1b[0m\r\x1b[J");                /* style closed, band gives way */
+    R_EMIT(t, "\x1b[0m\r");                      /* style closed, column 0 */
     while(i < text.len){
         size_t start = i;
         while(i < text.len && text.ptr[i] != '\n') i++;
         r_emit(t, text.ptr + start, i - start);
-        R_EMIT(t, "\r\n");
+        R_EMIT(t, "\x1b[0m\x1b[K\r\n");
         if(i < text.len) i++;                    /* skip the separator */
     }
     if(t->flush) t->flush(t);
