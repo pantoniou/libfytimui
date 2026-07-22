@@ -169,7 +169,7 @@ static long long now_ms(void);
 static const char *job_dot_running(void)
 {
     return (now_ms() / 500) & 1 ? " "
-                                : "\x1b[33m\xe2\x97\x8f\x1b[0m";
+                                : "\x1b[93m\xe2\x97\x8f\x1b[0m";
 }
 
 static void job_push(struct job *j, const char *buf, size_t len)

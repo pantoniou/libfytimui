@@ -978,6 +978,10 @@ static void complete_tab(struct fytim *ft)
 struct draw_run_ctx {
     TimuiCellBuffer *buf;
     int x, y, max_x;
+    /* colors an SGR run leaves unset fall back to this base style, so
+     * styled text on a filled row (the prompt marker) keeps the row's
+     * background instead of punching through to the terminal default */
+    TimuiStyle base;
 };
 /* Indexed (16/256-palette) colors pass through AS INDEXED: the core
  * emits the classic 30-37/90-97 codes, so the terminal's own theme
@@ -997,8 +1001,10 @@ static bool draw_run_(void *user, const char *text, size_t len,
     TimuiStyle st;
     TimuiStr s;
     size_t i, start = 0;
-    st.fg = sgr_color_(style->fg);
-    st.bg = sgr_color_(style->bg);
+    st.fg = style->fg == FYTIM_COLOR_DEFAULT ? ctx->base.fg
+                                             : sgr_color_(style->fg);
+    st.bg = style->bg == FYTIM_COLOR_DEFAULT ? ctx->base.bg
+                                             : sgr_color_(style->bg);
     st.attrs = 0;
     if(style->attrs & FYTIM_ATTR_BOLD)      st.attrs |= TIMUI_ATTR_BOLD;
     if(style->attrs & FYTIM_ATTR_DIM)       st.attrs |= TIMUI_ATTR_DIM;
@@ -1066,6 +1072,7 @@ static void draw_row_styled(TimuiFrame *f, TimuiCellBuffer *buf,
         struct draw_run_ctx ctx;
         struct fytim_sgr_parser sp;
         ctx.buf = buf; ctx.x = x; ctx.y = y; ctx.max_x = x + w;
+        ctx.base = plain;
         fytim_sgr_init(&sp);
         fytim_sgr_feed(&sp, text, strlen(text), draw_run_, &ctx);
     }else{
@@ -1226,6 +1233,8 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                 if(tgive > 0 && p){
                     ctx.buf = buf; ctx.x = r->x; ctx.y = y;
                     ctx.max_x = r->x + r->w;
+                    ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT,
+                                                TIMUI_COLOR_DEFAULT, 0);
                     fytim_sgr_init(&sp);
                     fytim_sgr_feed(&sp, p, strlen(p), draw_run_, &ctx);
                 }
@@ -1265,6 +1274,8 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                     if(p){
                         ctx.buf = buf; ctx.x = r->x; ctx.y = y;
                         ctx.max_x = r->x + r->w;
+                        ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT,
+                                                    TIMUI_COLOR_DEFAULT, 0);
                         fytim_sgr_init(&sp);
                         fytim_sgr_feed(&sp, p, strlen(p), draw_run_, &ctx);
                     }

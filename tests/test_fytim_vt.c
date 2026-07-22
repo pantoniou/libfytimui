@@ -375,12 +375,17 @@ static void test_regression_marker_sgr(void)
     y = vth_find_row(&h, "typing");
     CHECK(y >= 0);
     CHECK(vth_find_row(&h, "[33m") < 0);   /* no raw escape bytes as text */
-    {   /* the dot occupies the marker cell on the prompt row */
-        VTermScreenCell cell;
+    {   /* the dot occupies the marker cell on the prompt row, and its
+         * BACKGROUND matches the input row's fill -- an SGR marker must
+         * not punch a default-background hole in the prompt */
+        VTermScreenCell mcell, icell;
         VTermPos p = { y, 0 };
-        vterm_screen_get_cell(h.vs, p, &cell);
-        CHECK(cell.chars[0] == 0x25CF);
-        CHECK(VTERM_COLOR_IS_INDEXED(&cell.fg) && cell.fg.indexed.idx == 3);
+        vterm_screen_get_cell(h.vs, p, &mcell);
+        CHECK(mcell.chars[0] == 0x25CF);
+        CHECK(VTERM_COLOR_IS_INDEXED(&mcell.fg) && mcell.fg.indexed.idx == 3);
+        p.col = 3;                       /* inside "typing" */
+        vterm_screen_get_cell(h.vs, p, &icell);
+        CHECK(memcmp(&mcell.bg, &icell.bg, sizeof mcell.bg) == 0);
     }
     vth_close(&h);
 }
