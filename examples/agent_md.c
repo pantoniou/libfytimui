@@ -233,7 +233,7 @@ static void job_tick(struct fytim *ft)
             ll.max_lines = JOB_DONE_ROWS;
             if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
             job_show(j,
-                     ok ? "\x1b[97m" : "\x1b[31m",
+                     ok ? "\x1b[32m" : "\x1b[31m",
                      ok ? " \x1b[2mOK\x1b[0m" : " \x1b[1;31mERROR\x1b[0m");
             if(j->r){ fymd_renderer_destroy(j->r); j->r = NULL; }
             /* mid-stream this DEFERS: the final render stays until the
