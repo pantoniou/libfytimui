@@ -167,7 +167,15 @@ typedef enum {
      * reported while a button is held and a drag can be followed. Required to
      * implement selection in-application; plain TIMUI_FLAG_MOUSE reports only
      * press and release. Ignored without TIMUI_FLAG_MOUSE. */
-    TIMUI_FLAG_MOUSE_DRAG      = 1u << 10
+    TIMUI_FLAG_MOUSE_DRAG      = 1u << 10,
+    /* Inline band mode: instead of owning the alt screen, timui manages a band
+     * of cfg.inline_rows rows anchored at the physical cursor, on the normal
+     * screen. Finished lines are pushed above the band into the terminal's
+     * native scrollback with timui_inline_commit, so scrolling, selection and
+     * copy stay with the terminal. Overrides TIMUI_FLAG_ALT_SCREEN. The band
+     * is fully repainted each frame (no cell diffing); cfg.inline_rows must be
+     * > 0. Between frames the cursor rests at the band anchor, column 0. */
+    TIMUI_FLAG_INLINE          = 1u << 11
 } TimuiFlags;
 
 typedef struct {
@@ -184,6 +192,7 @@ typedef struct {
     size_t            persistent_state_bytes;
     size_t            message_queue_bytes;
     void             *userdata;
+    int               inline_rows;   /* band height for TIMUI_FLAG_INLINE */
 } TimuiConfig;
 
 /* ---- Convenience macros ------------------------------------------------ */
@@ -192,7 +201,7 @@ typedef struct {
 #define TIMUI_ID(s)          timui_id_from_cstr(s)
 #define TIMUI_CONFIG_INIT    ((TimuiConfig){ sizeof(TimuiConfig), TIMUI_API_VERSION, NULL, 0, 1, \
                                              TIMUI_PROFILE_AUTO, TIMUI_FLAG_RESTORE_ON_EXIT, \
-                                             TIMUI_THEME_MODERN_DARK, {0}, 0, 0, 0, NULL })
+                                             TIMUI_THEME_MODERN_DARK, {0}, 0, 0, 0, NULL, 0 })
 
 /* ---- Lifecycle (POSIX terminal backend; Win32 ConPTY transport) -------- */
 TIMUI_API void        timui_config_init(TimuiConfig *cfg);
@@ -689,6 +698,19 @@ TIMUI_API void timui_render_diff(TimuiTransport *t, const TimuiCellBuffer *prev,
 /* After a frame: position the logical cursor (for text input) and show it,
  * or hide it. Call after timui_render_diff. */
 TIMUI_API void timui_render_cursor(TimuiTransport *t, int x, int y, int visible);
+
+/* ---- inline band mode (TIMUI_FLAG_INLINE) ------------------------------- *
+ * The cursor anchor contract: between frames the physical cursor sits at the
+ * band's top-left, column 0. A paint is "\r" + erase-down + the band rows
+ * (CRLF-separated, ending SGR-reset) + a cursor-up back to the anchor; the
+ * line feeds at the screen bottom scroll naturally, so space for the band is
+ * reserved implicitly. A commit erases the band, writes the finished lines
+ * (each ending "\r\n", scrolling them into native scrollback) and leaves the
+ * cursor at the new anchor for the next paint. Committed lines must already
+ * be hard-wrapped to the terminal width; auto-wrap is off (DECAWM). */
+TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf);
+TIMUI_API void timui_inline_commit_emit(TimuiTransport *t, TimuiStr text);
+TIMUI_API void timui_inline_commit(Timui *ui, TimuiStr text);
 
 /* ---- Style/theme system ---------------------------------------------- */
 typedef enum {

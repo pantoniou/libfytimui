@@ -453,6 +453,68 @@ TIMUI_API void timui_render_diff(TimuiTransport *t, const TimuiCellBuffer *prev,
     }
     if(t->flush) t->flush(t);
 }
+/* ---- inline band mode --------------------------------------------------- *
+ * Full repaint of a small band anchored at the physical cursor (see the
+ * contract in timui.h). No CUP: everything is relative -- "\r", line feeds
+ * and a final cursor-up -- because the band's absolute row on the normal
+ * screen is unknown and may change as commits scroll the terminal. */
+static int inline_row_end_(const TimuiCellBuffer *buf, int y){
+    int x;
+    for(x = buf->w; x > 0; x--){
+        const TimuiCell *c = &buf->cells[(size_t)y * buf->w + (x - 1)];
+        if(c->flags & TIMUI_CELL_CONTINUATION) return x;   /* keep the wide pair */
+        if(c->codepoint != 0 && c->codepoint != ' ') return x;
+        if(c->fg != TIMUI_COLOR_DEFAULT || c->bg != TIMUI_COLOR_DEFAULT ||
+           c->attrs != 0) return x;                        /* styled blank shows */
+    }
+    return 0;
+}
+TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf){
+    TimuiRenderer r;
+    int x, y;
+    if(!t || !buf || !buf->cells || buf->w <= 0 || buf->h <= 0) return;
+    timui_renderer_reset(&r);
+    R_EMIT(t, "\r\x1b[J");                       /* home the column, erase down */
+    for(y = 0; y < buf->h; y++){
+        int end = inline_row_end_(buf, y);
+        if(y > 0) R_EMIT(t, "\r\n");             /* LF at the bottom row scrolls */
+        for(x = 0; x < end; x++){
+            const TimuiCell *c = &buf->cells[(size_t)y * buf->w + x];
+            char gb[4];
+            int gn;
+            if(c->flags & TIMUI_CELL_CONTINUATION) continue;   /* wide glyph tail */
+            emit_sgr(t, &r, c);
+            gn = timui_utf8_encode_(render_safe_cp(c->codepoint), gb);
+            r_emit(t, gb, (size_t)gn);
+        }
+    }
+    R_EMIT(t, "\x1b[0m\r");                      /* reset so commits stay clean */
+    if(buf->h > 1){                              /* re-home to the band anchor */
+        char nb[16];
+        int n = 0;
+        nb[n++] = 0x1b; nb[n++] = '[';
+        n += fmt_uint(nb + n, (unsigned)(buf->h - 1));
+        nb[n++] = 'A';
+        r_emit(t, nb, (size_t)n);
+    }
+    if(t->flush) t->flush(t);
+}
+/* Scroll finished lines out of the band into native scrollback. Embedded
+ * '\n' separates lines; every line is terminated "\r\n" exactly once. */
+TIMUI_API void timui_inline_commit_emit(TimuiTransport *t, TimuiStr text){
+    size_t i = 0;
+    if(!t || !text.ptr || text.len == 0) return;
+    R_EMIT(t, "\r\x1b[J");                       /* the band gives way */
+    while(i < text.len){
+        size_t start = i;
+        while(i < text.len && text.ptr[i] != '\n') i++;
+        r_emit(t, text.ptr + start, i - start);
+        R_EMIT(t, "\r\n");
+        if(i < text.len) i++;                    /* skip the separator */
+    }
+    if(t->flush) t->flush(t);
+}
+
 TIMUI_API void timui_render_cursor(TimuiTransport *t, int x, int y, int visible){
     if(!t) return;
     if(visible){

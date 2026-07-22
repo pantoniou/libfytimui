@@ -109,7 +109,10 @@ TIMUI_API void timui_screen_enter(TimuiTransport *t, TimuiScreenMode *m, uint32_
      * scrolls the screen when that cell is the bottom-right), desyncing the
      * renderer from the terminal. This is standard for cell-based TUIs. */
     TIMUI_EMIT(t, "\x1b[?7l");
-    if(flags & TIMUI_FLAG_ALT_SCREEN)      TIMUI_EMIT(t, "\x1b[?1049h");
+    /* Inline band mode lives on the normal screen: the alt screen would take
+     * committed scrollback lines with it on exit, so TIMUI_FLAG_INLINE wins. */
+    if((flags & TIMUI_FLAG_ALT_SCREEN) && !(flags & TIMUI_FLAG_INLINE))
+        TIMUI_EMIT(t, "\x1b[?1049h");
     if(flags & TIMUI_FLAG_KITTY_KEYBOARD)  TIMUI_EMIT(t, "\x1b[>1u");
     if(flags & TIMUI_FLAG_HIDE_CURSOR)     TIMUI_EMIT(t, "\x1b[?25l");
     if(flags & TIMUI_FLAG_MOUSE){
@@ -132,8 +135,12 @@ TIMUI_API void timui_screen_exit(TimuiTransport *t, TimuiScreenMode *m){
         TIMUI_EMIT(t, "\x1b[?1000l");
     }
     if(flags & TIMUI_FLAG_KITTY_KEYBOARD)  TIMUI_EMIT(t, "\x1b[<u");
+    /* Inline: erase the band (prompt/status chrome) so only committed history
+     * remains -- the clean-CLI ending. Must precede showing the cursor. */
+    if(flags & TIMUI_FLAG_INLINE)          TIMUI_EMIT(t, "\r\x1b[J");
     TIMUI_EMIT(t, "\x1b[?25h");
-    if(flags & TIMUI_FLAG_ALT_SCREEN)      TIMUI_EMIT(t, "\x1b[?1049l");
+    if((flags & TIMUI_FLAG_ALT_SCREEN) && !(flags & TIMUI_FLAG_INLINE))
+        TIMUI_EMIT(t, "\x1b[?1049l");
     TIMUI_EMIT(t, "\x1b[?7h");             /* restore auto-wrap on exit */
 }
 

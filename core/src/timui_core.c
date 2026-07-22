@@ -440,6 +440,9 @@ TIMUI_API TimuiResult timui_open(const TimuiConfig *cfg, Timui **out_ui){
     if(cfg->struct_size != sizeof(TimuiConfig) || cfg->api_version != TIMUI_API_VERSION)
         return TIMUI_ERR_INVALID_ARGUMENT;
     if(cfg->input_fd < 0 || cfg->output_fd < 0) return TIMUI_ERR_INVALID_ARGUMENT;
+    /* Inline band mode needs a band height; a zero-row band is a config bug. */
+    if((cfg->flags & TIMUI_FLAG_INLINE) && cfg->inline_rows <= 0)
+        return TIMUI_ERR_INVALID_ARGUMENT;
     input_flags = fcntl(cfg->input_fd, F_GETFL, 0);
     if(input_flags < 0) return TIMUI_ERR_OS;
     if(fcntl(cfg->output_fd, F_GETFL, 0) < 0) return TIMUI_ERR_OS;
@@ -474,6 +477,10 @@ TIMUI_API TimuiResult timui_open(const TimuiConfig *cfg, Timui **out_ui){
         w = 80; h = 24; px_w = 0; px_h = 0;
     }
     if(w <= 0 || h <= 0){ w = 80; h = 24; px_w = 0; px_h = 0; }
+    /* Inline: the frame is the band, not the screen -- width x inline_rows,
+     * clamped to the terminal so the band always fits on it. */
+    if(cfg->flags & TIMUI_FLAG_INLINE && cfg->inline_rows < h)
+        h = cfg->inline_rows;
     ui->input_flags = input_flags;
     ui->input_flags_saved = 1;
     if(g_fsetfl_fail_for_test || fcntl(cfg->input_fd, F_SETFL, input_flags | O_NONBLOCK) < 0){
@@ -526,6 +533,10 @@ TIMUI_API void timui_close(Timui *ui){
 TIMUI_API TimuiTransport *timui_transport(Timui *ui){
     if(!ui || !ui->have_transport) return NULL;
     return &ui->transport;
+}
+TIMUI_API void timui_inline_commit(Timui *ui, TimuiStr text){
+    if(!ui || !ui->have_transport) return;
+    timui_inline_commit_emit(&ui->transport, text);
 }
 TIMUI_API int timui_poll_fd(const Timui *ui){
     /* -1 also covers fake/test transports, which set read_fd to -1. */
@@ -736,6 +747,16 @@ TIMUI_API void timui_end(TimuiFrame *frame){
      * Unsupported terminals lack the cap and ignore the markers anyway. */
     sync = (ui->caps.flags & TIMUI_CAP_SYNC_OUTPUT) ||
            (ui->cfg.flags  & TIMUI_FLAG_SYNC_OUTPUT);
+    /* Inline band mode: no diffing, no images, no cursor management -- the
+     * band is small and fully repainted relative to the cursor anchor. */
+    if(ui->cfg.flags & TIMUI_FLAG_INLINE){
+        if(sync) timui_sync_begin(&ui->transport);
+        timui_inline_paint(&ui->transport, &ui->curr);
+        if(sync) timui_sync_end(&ui->transport);
+        if(ui->transport.flush) ui->transport.flush(&ui->transport);
+        tmp = ui->prev; ui->prev = ui->curr; ui->curr = tmp;
+        return;
+    }
     if(sync) timui_sync_begin(&ui->transport);
     timui_render_diff(&ui->transport, &ui->prev, &ui->curr, &ui->renderer);
     /* Kitty-graphics images drawn ON TOP of the diffed cells. Also run when the
