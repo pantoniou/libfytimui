@@ -159,12 +159,20 @@ static void job_show(struct job *j, const char *dot_sgr, const char *status)
     if(out) fymd_free(out);
 }
 
+/* The running dot BLINKS: bright and dim yellow alternate on a host-side
+ * timer (SGR blink is unreliable across terminals). */
+static long long now_ms(void);
+static const char *job_dot_running(void)
+{
+    return (now_ms() / 500) & 1 ? "\x1b[2;33m" : "\x1b[33m";
+}
+
 static void job_push(struct job *j, const char *buf, size_t len)
 {
     if(len > sizeof j->acc - j->acc_len) len = sizeof j->acc - j->acc_len;
     memcpy(j->acc + j->acc_len, buf, len);
     j->acc_len += len;
-    job_show(j, "\x1b[33m", "");                   /* yellow: running */
+    job_show(j, job_dot_running(), "");
 }
 
 static void job_spawn(struct fytim *ft, const char *tool, const char *display,
@@ -206,17 +214,21 @@ static void job_spawn(struct fytim *ft, const char *tool, const char *display,
         if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
     }
     fytim_workband_set_max_rows(j->wb, JOB_LIVE_ROWS + 1);   /* + header */
-    job_show(j, "\x1b[33m", "");
+    job_show(j, job_dot_running(), "");
 }
 
 static void job_tick(struct fytim *ft)
 {
+    static long long last_phase = -1;
+    long long phase = (now_ms() / 500) & 1;
     int i;
     for(i = 0; i < JOBS_MAX; i++){
         struct job *j = &jobs[i];
         char chunk[512];
         ssize_t n;
         if(!j->fp) continue;
+        if(phase != last_phase)                    /* blink the activity dot */
+            job_show(j, job_dot_running(), "");
         while((n = read(fileno(j->fp), chunk, sizeof chunk)) > 0)
             job_push(j, chunk, (size_t)n);
         if(n == 0){                                /* EOF: the tool is done */
@@ -242,6 +254,7 @@ static void job_tick(struct fytim *ft)
             j->wb = NULL;
         }
     }
+    last_phase = phase;
 }
 
 /* Prompts submitted while a turn is still streaming: slash commands run

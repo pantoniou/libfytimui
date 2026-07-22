@@ -330,6 +330,35 @@ static void test_regression_bubble_pinned_while_streaming(void)
     vth_close(&h);
 }
 
+/* ---- regression: indexed SGR colors must reach the screen --------------- *
+ * (Bug: the run-to-cell conversion mapped indexed (16/256-palette) colors
+ * to the default, so \x1b[31m..\x1b[33m content rendered colorless --
+ * an agent's red/green/yellow status dots all looked the same.) */
+static void test_regression_indexed_colors_mapped(void)
+{
+    struct vth h;
+    struct fytim_workband *wb;
+    int y;
+    VTermScreenCell cell;
+    VTermPos p;
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wb = fytim_workband_create(h.ft);
+    CHECK(wb != NULL);
+    CHECK(fytim_workband_set(wb, "\x1b[31mRED\x1b[0m \x1b[32mGRN", 21) == FYTIM_OK);
+    vth_pump(&h);
+    y = vth_find_row(&h, "RED");
+    CHECK(y >= 0);
+    p.row = y; p.col = 0;
+    vterm_screen_get_cell(h.vs, p, &cell);
+    CHECK(VTERM_COLOR_IS_RGB(&cell.fg));
+    CHECK(cell.fg.rgb.red > 100 && cell.fg.rgb.green < 80);
+    p.col = 4;                                       /* the GRN run */
+    vterm_screen_get_cell(h.vs, p, &cell);
+    CHECK(VTERM_COLOR_IS_RGB(&cell.fg));
+    CHECK(cell.fg.rgb.green > 100 && cell.fg.rgb.red < 80);
+    vth_close(&h);
+}
+
 /* ---- regression: an unmatched shrink is held, not resized --------------- *
  * The renderer's active region can lose rows WITHOUT freezing anything (a
  * heal retracting, a block re-wrapping). Such a shrink has no commit to
@@ -456,6 +485,8 @@ int main(int argc, char **argv)
           test_regression_resize_repaints_width },
         { "regression_bubble_pinned_while_streaming",
           test_regression_bubble_pinned_while_streaming },
+        { "regression_indexed_colors_mapped",
+          test_regression_indexed_colors_mapped },
         { "regression_unmatched_shrink_held",
           test_regression_unmatched_shrink_held },
         { "regression_settle_compacts",

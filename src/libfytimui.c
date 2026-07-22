@@ -979,6 +979,37 @@ struct draw_run_ctx {
     TimuiCellBuffer *buf;
     int x, y, max_x;
 };
+/* Map an indexed (16/256-palette) color to RGB with the standard xterm
+ * palette: dropping them to the default rendered \x1b[31m..\x1b[33m
+ * content colorless. */
+static uint32_t idx_rgb_(uint32_t c)
+{
+    static const uint32_t base16[16] = {
+        0x000000, 0xCD0000, 0x00CD00, 0xCDCD00,
+        0x0000EE, 0xCD00CD, 0x00CDCD, 0xE5E5E5,
+        0x7F7F7F, 0xFF0000, 0x00FF00, 0xFFFF00,
+        0x5C5CFF, 0xFF00FF, 0x00FFFF, 0xFFFFFF,
+    };
+    static const uint32_t cube[6] = { 0, 95, 135, 175, 215, 255 };
+    unsigned idx = c & 0xFFu;
+    if(idx < 16) return base16[idx];
+    if(idx < 232){
+        unsigned v = idx - 16;
+        return (cube[v / 36] << 16) | (cube[(v / 6) % 6] << 8) | cube[v % 6];
+    }
+    {
+        unsigned g = 8 + (idx - 232) * 10;
+        return (g << 16) | (g << 8) | g;
+    }
+}
+
+static uint32_t sgr_color_(uint32_t c)
+{
+    if(c == FYTIM_COLOR_DEFAULT) return TIMUI_COLOR_DEFAULT;
+    if(c & FYTIM_COLOR_INDEXED)  return idx_rgb_(c);
+    return c;
+}
+
 static bool draw_run_(void *user, const char *text, size_t len,
                       const struct fytim_sgr_style *style)
 {
@@ -986,10 +1017,8 @@ static bool draw_run_(void *user, const char *text, size_t len,
     TimuiStyle st;
     TimuiStr s;
     size_t i, start = 0;
-    st.fg = (style->fg == FYTIM_COLOR_DEFAULT || (style->fg & FYTIM_COLOR_INDEXED))
-            ? TIMUI_COLOR_DEFAULT : style->fg;
-    st.bg = (style->bg == FYTIM_COLOR_DEFAULT || (style->bg & FYTIM_COLOR_INDEXED))
-            ? TIMUI_COLOR_DEFAULT : style->bg;
+    st.fg = sgr_color_(style->fg);
+    st.bg = sgr_color_(style->bg);
     st.attrs = 0;
     if(style->attrs & FYTIM_ATTR_BOLD)      st.attrs |= TIMUI_ATTR_BOLD;
     if(style->attrs & FYTIM_ATTR_DIM)       st.attrs |= TIMUI_ATTR_DIM;

@@ -181,6 +181,7 @@ if(VTERM_FOUND)
     foreach(t regression_workband_cap_keeps_chrome
               regression_resize_repaints_width
               regression_bubble_pinned_while_streaming
+              regression_indexed_colors_mapped
               regression_unmatched_shrink_held
               regression_settle_compacts
               regression_sgr_carries_across_rows
