@@ -485,6 +485,51 @@ static void test_workband_commit_payload_defers(void)
     h_close(&h);
 }
 
+/* Output is buffered and flushed once per frame (a frame split across
+ * many small writes flickers on terminals without DEC 2026). A commit
+ * larger than the transport buffer takes the flush-then-spill path and
+ * must arrive complete and in order. */
+static void test_large_commit_spills_intact(void)
+{
+    struct harness h;
+    static char big[40960], out[65536];
+    size_t n, o = 0;
+    int i;
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, out, sizeof out);
+
+    for(i = 0; i < 500; i++)
+        o += (size_t)snprintf(big + o, sizeof big - o,
+                              "row%03d 456789012345678901234567890123456789012345678901234567890123456789012\n",
+                              i);
+    CHECK(fytim_commit(h.ft, big, o) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, out, sizeof out);
+    CHECK(contains(out, n, "row000 "));
+    CHECK(contains(out, n, "row250 "));
+    CHECK(contains(out, n, "row499 "));
+    /* ordering survived the buffer boundary */
+    CHECK(strstr(out, "row000") < strstr(out, "row499"));
+    /* and EXACTLY once each: a flush that forgets to reset duplicates
+     * rows, a skipped flush drops them */
+    {
+        int cnt = 0;
+        const char *p = out;
+        while((p = strstr(p, "row")) != NULL){ cnt++; p += 3; }
+        if(cnt != 500){
+            char needle[16];
+            printf("    (rows seen: %d, bytes: %zu)\n", cnt, n);
+            for(i = 0; i < 500; i++){
+                snprintf(needle, sizeof needle, "row%03d ", i);
+                if(!contains(out, n, needle)) printf("    missing %s\n", needle);
+            }
+        }
+        CHECK(cnt == 500);
+    }
+    h_close(&h);
+}
+
 static void test_workband_rejects_disallowed(void)
 {
     struct harness h;
@@ -752,6 +797,7 @@ int main(int argc, char **argv)
         { "workband_top_bottom", test_workband_top_bottom },
         { "workband_order_and_independence", test_workband_order_and_independence },
         { "workband_rejects_disallowed", test_workband_rejects_disallowed },
+        { "large_commit_spills_intact", test_large_commit_spills_intact },
         { "workband_commit_payload", test_workband_commit_payload },
         { "workband_commit_payload_defers", test_workband_commit_payload_defers },
         { "workband_commit_defers_during_stream",

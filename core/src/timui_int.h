@@ -14,7 +14,17 @@
 #endif
 
 /* Internal structs (completed only in the implementing TU). */
-typedef struct { int read_fd; int write_fd; } TimuiFdCtx;
+/* Output is BUFFERED and flushed once per frame: a terminal without DEC
+ * 2026 renders between write()s, so a frame split across dozens of small
+ * writes flickers. Writes larger than the buffer spill through directly
+ * (after a flush), keeping ordering. */
+#define TIMUI_FD_OBUF_CAP 32768
+typedef struct {
+    int read_fd;
+    int write_fd;
+    unsigned char obuf[TIMUI_FD_OBUF_CAP];
+    size_t olen;
+} TimuiFdCtx;
 
 enum { TIMUI_EDIT_TEXT = 1, TIMUI_EDIT_KEY = 2 };
 #define TIMUI_EDIT_KEY_ENTER_ 0x80000000u

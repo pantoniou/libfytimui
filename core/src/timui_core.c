@@ -232,9 +232,31 @@ TIMUI_API int timui_write_all_(int fd, const void *d, size_t n){
     }
     return (off == 0 && n > 0) ? -1 : (int)off;
 }
+/* timui_write_all_ returns BYTES WRITTEN (or -1), so success is "wrote it
+ * all", never zero -- the flush maps that to 0/-1 for its own callers. */
+static int fd_flush(TimuiTransport *t){
+    TimuiFdCtx *c = (TimuiFdCtx *)t->ctx;
+    if(c->olen){
+        size_t want = c->olen;
+        int r = timui_write_all_(c->write_fd, c->obuf, c->olen);
+        c->olen = 0;
+        if(r < 0 || (size_t)r != want) return -1;
+    }
+    return 0;
+}
 static int fd_write(TimuiTransport *t, const void *d, size_t n){
     TimuiFdCtx *c = (TimuiFdCtx *)t->ctx;
-    return timui_write_all_(c->write_fd, d, n);
+    /* buffer; flush-then-spill anything that cannot fit, in order */
+    if(n > sizeof c->obuf - c->olen){
+        if(fd_flush(t) != 0) return -1;
+        if(n > sizeof c->obuf){
+            int r = timui_write_all_(c->write_fd, d, n);
+            return (r < 0 || (size_t)r != n) ? -1 : (int)n;
+        }
+    }
+    memcpy(c->obuf + c->olen, d, n);
+    c->olen += n;
+    return (int)n;
 }
 static int fd_read(TimuiTransport *t, void *b, size_t cap){
     TimuiFdCtx *c = (TimuiFdCtx *)t->ctx;
@@ -247,7 +269,6 @@ static int fd_read(TimuiTransport *t, void *b, size_t cap){
     if(errno == EAGAIN || errno == EWOULDBLOCK) return 0;
     return -1;
 }
-static int fd_flush(TimuiTransport *t){ (void)t; return 0; }
 static void fd_close(TimuiTransport *t){ (void)t; }
 
 /* Wire up the buffers/renderer/input/msgq/id-stack for a given size. */
@@ -374,6 +395,8 @@ TIMUI_API void timui_restore_terminal(Timui *ui){
         ui->inline_parked_row = 0;
     }
     if(ui->screen_active) timui_screen_exit(&ui->transport, &ui->screen);
+    if(ui->have_transport && ui->transport.flush)
+        ui->transport.flush(&ui->transport);   /* buffered: nothing may linger */
 }
 static void timui_signal_write_(int fd, const char *s, size_t n){
     if(fd >= 0){ ssize_t wr = write(fd, s, n); (void)wr; }
@@ -520,6 +543,7 @@ TIMUI_API TimuiResult timui_open(const TimuiConfig *cfg, Timui **out_ui){
     if(output_is_tty){
         timui_screen_enter(&ui->transport, &ui->screen, cfg->flags, timui_str_from_cstr(cfg->title));
         ui->screen_active = 1;
+        if(ui->transport.flush) ui->transport.flush(&ui->transport);
     }
     r = timui_setup(ui, w, h);
     if(r != TIMUI_OK){
@@ -1020,6 +1044,7 @@ TIMUI_API TimuiResult timui_resume(Timui *ui){
     if(ui->screen_active)
         timui_screen_enter(&ui->transport, &ui->screen, ui->cfg.flags,
                            timui_str_from_cstr(ui->cfg.title));
+    if(ui->transport.flush) ui->transport.flush(&ui->transport);
     ui->suspended = 0;
     timui_full_redraw(ui);
     return TIMUI_OK;
