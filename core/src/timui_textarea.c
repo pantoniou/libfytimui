@@ -183,6 +183,9 @@ TIMUI_API TimuiTextAreaResult timui_text_area_ex(TimuiFrame *f, TimuiId id, Timu
          if(cursor_row >= st.scroll_y + r.h) st.scroll_y = cursor_row - r.h + 1;
          if(st.scroll_y < 0) st.scroll_y = 0;
       }
+      /* paint the whole rect first: an input box reads as a box because its
+       * empty cells share the background, not only the glyph cells */
+      timui_draw_fill(&ui->curr, r, sst);
       content = timui_scroll_begin(f, r, st.scroll_y);
       i = 0;
       while(i < st.cap && st.text[i]){
