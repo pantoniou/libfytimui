@@ -126,7 +126,8 @@ static size_t job_header(const struct job *j, char *buf, size_t cap,
  * the partial line waits in acc for its '\n' (whole renders everything).
  * The renderer's HEAD_TAIL limit windows the LIVE body around an
  * omission separator. */
-static void job_show(struct job *j, const char *dot_sgr, const char *status)
+static void job_show(struct job *j, const char *dot_sgr, const char *status,
+                     int final)
 {
     struct fymd_fenced_block_opts opts;
     char head[256], *full;
@@ -146,14 +147,20 @@ static void job_show(struct job *j, const char *dot_sgr, const char *status)
             out = NULL;
         while(out && out_len && out[out_len - 1] == '\n') out_len--;
     }
-    full = malloc(hlen + 1 + out_len + 1);
+    full = malloc(1 + hlen + 1 + out_len + 1);
     if(full){
-        memcpy(full, head, hlen);
+        size_t flen;
+        full[0] = '\n';               /* breath ahead of the committed block */
+        memcpy(full + 1, head, hlen);
+        flen = 1 + hlen;
         if(out_len){
-            full[hlen] = '\n';
-            memcpy(full + hlen + 1, out, out_len);
+            full[flen++] = '\n';
+            memcpy(full + flen, out, out_len);
+            flen += out_len;
         }
-        fytim_workband_set(j->wb, full, hlen + (out_len ? 1 + out_len : 0));
+        fytim_workband_set(j->wb, full + 1, flen - 1);   /* live: no blank */
+        if(final)
+            fytim_workband_set_commit(j->wb, full, flen);
         free(full);
     }
     if(out) fymd_free(out);
@@ -173,7 +180,7 @@ static void job_push(struct job *j, const char *buf, size_t len)
     if(len > sizeof j->acc - j->acc_len) len = sizeof j->acc - j->acc_len;
     memcpy(j->acc + j->acc_len, buf, len);
     j->acc_len += len;
-    job_show(j, job_dot_running(), "");
+    job_show(j, job_dot_running(), "", 0);
 }
 
 static void job_spawn(struct fytim *ft, const char *tool, const char *display,
@@ -215,7 +222,7 @@ static void job_spawn(struct fytim *ft, const char *tool, const char *display,
         if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
     }
     fytim_workband_set_max_rows(j->wb, JOB_LIVE_ROWS + 1);   /* + header */
-    job_show(j, job_dot_running(), "");
+    job_show(j, job_dot_running(), "", 0);
 }
 
 static void job_tick(struct fytim *ft)
@@ -229,7 +236,7 @@ static void job_tick(struct fytim *ft)
         ssize_t n;
         if(!j->fp) continue;
         if(phase != last_phase)                    /* blink the activity dot */
-            job_show(j, job_dot_running(), "");
+            job_show(j, job_dot_running(), "", 0);
         while((n = read(fileno(j->fp), chunk, sizeof chunk)) > 0)
             job_push(j, chunk, (size_t)n);
         if(n == 0){                                /* EOF: the tool is done */
@@ -246,7 +253,7 @@ static void job_tick(struct fytim *ft)
             ll.max_lines = JOB_DONE_ROWS;
             if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
             job_show(j, ok ? "\x1b[32m\xe2\x97\x8f\x1b[0m"
-                           : "\x1b[31m\xe2\x97\x8f\x1b[0m", "");
+                           : "\x1b[31m\xe2\x97\x8f\x1b[0m", "", 1);
             if(j->r){ fymd_renderer_destroy(j->r); j->r = NULL; }
             /* mid-stream this DEFERS: the final render stays until the
              * transcript stream ends, then commits in finish order */
