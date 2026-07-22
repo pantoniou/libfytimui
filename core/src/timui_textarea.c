@@ -103,6 +103,16 @@ TIMUI_API TimuiTextAreaResult timui_text_area_ex(TimuiFrame *f, TimuiId id, Timu
           ir.focused ? TIMUI_SLOT_INPUT_FOCUSED : TIMUI_SLOT_INPUT,
           ir.focused ? TIMUI_STYLE_STATE_FOCUSED : 0);
       {  int cursor_row = text_area_cursor_row_(&st);
+         /* scroll back when the viewport grew: the view may not waste rows
+          * below the last line while earlier lines sit hidden above
+          * (regression/textarea-scroll-on-grow) */
+         {  TimuiTextAreaState all = st;
+            int total_rows;
+            all.cursor = text_len_bounded_(st.text, st.cap);
+            total_rows = text_area_cursor_row_(&all) + 1;
+            if(r.h > 0 && st.scroll_y > total_rows - r.h)
+                st.scroll_y = total_rows - r.h;
+         }
          if(st.scroll_y < 0) st.scroll_y = 0;
          if(cursor_row < st.scroll_y) st.scroll_y = cursor_row;
          if(cursor_row >= st.scroll_y + r.h) st.scroll_y = cursor_row - r.h + 1;
