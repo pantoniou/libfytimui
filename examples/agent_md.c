@@ -168,7 +168,13 @@ static void job_spawn(struct fytim *ft, int count)
         mc.width = w;
         j->r = fymd_renderer_create(&mc);
         memset(&ll, 0, sizeof ll);
-        ll.mode = FYMD_LLM_SCROLL;
+        /* HEAD_TAIL keeps the block's chrome under the limit: the header
+         * rule stays pinned (head of 1), the omission separator counts
+         * the hidden rows, and the tail shows the newest lines plus the
+         * footer rule once the block closes. */
+        ll.mode = FYMD_LLM_HEAD_TAIL;
+        ll.split = FYMD_LLS_HEAD_COUNT;
+        ll.head_lines = 1;
         ll.max_lines = JOB_LIVE_ROWS;
         if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
         job_render(j, 0);
