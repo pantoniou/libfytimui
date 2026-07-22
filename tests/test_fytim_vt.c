@@ -194,6 +194,79 @@ static void test_regression_workband_cap_keeps_chrome(void)
     vth_close(&h);
 }
 
+/* True when the first cell of the row containing needle is drawn bold. */
+static int vth_row_is_bold(struct vth *h, const char *needle)
+{
+    int y = vth_find_row(h, needle);
+    VTermScreenCell cell;
+    VTermPos p = { y, 0 };
+    if(y < 0) return -1;
+    /* the needle's own cell, not column 0 (rows may be indented) */
+    {
+        char line[512];
+        char *at;
+        vth_row(h, y, line, sizeof line);
+        at = strstr(line, needle);
+        p.col = (int)(at - line);
+    }
+    vterm_screen_get_cell(h->vs, p, &cell);
+    return cell.attrs.bold ? 1 : 0;
+}
+
+/* ---- regression: SGR state must carry across content rows --------------- *
+ * libfymd4c opens a style once and relies on SGR carry-over across '\n'
+ * (e.g. a fenced block body is one leading \x1b[2m). Rows are painted and
+ * committed independently, so the library must re-open the running state
+ * at each row start. (Bug: a work-band or tail lost all styling after its
+ * first row, and committed lines after the first lost it in scrollback.) */
+static void test_regression_sgr_carries_across_rows(void)
+{
+    struct vth h;
+    struct fytim_workband *wb;
+    if(!vth_open(&h)){ CHECK(0); return; }
+
+    /* work-band: dim opened on row 1 must still be live on rows 2 and 3 */
+    wb = fytim_workband_create(h.ft);
+    CHECK(wb != NULL);
+    CHECK(fytim_workband_set(wb, "\x1b[1mWA1\nWA2\nWA3", 15) == FYTIM_OK);
+    /* the transcript tail relies on the same carry-over */
+    CHECK(fytim_tail_set(h.ft, "\x1b[1mTA1\nTA2", 11) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_row_is_bold(&h, "WA1") == 1);
+    CHECK(vth_row_is_bold(&h, "WA2") == 1);
+    CHECK(vth_row_is_bold(&h, "WA3") == 1);
+    CHECK(vth_row_is_bold(&h, "TA1") == 1);
+    CHECK(vth_row_is_bold(&h, "TA2") == 1);
+    fytim_workband_destroy(wb);
+    CHECK(fytim_tail_set(h.ft, NULL, 0) == FYTIM_OK);
+
+    /* committed lines: the per-line reset in scrollback must re-open the
+     * carried state on every following line */
+    CHECK(fytim_commit(h.ft, "\x1b[1mCA1\nCA2\nCA3\x1b[0m plain", 25) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_row_is_bold(&h, "CA1") == 1);
+    CHECK(vth_row_is_bold(&h, "CA2") == 1);
+    CHECK(vth_row_is_bold(&h, "CA3") == 1);
+    CHECK(vth_row_is_bold(&h, "plain") == 0);   /* the reset still resets */
+    vth_close(&h);
+}
+
+/* A freeze cut mid-style: the frozen rows keep the style in scrollback AND
+ * the remaining tail re-opens it, even though the cut dropped the bytes
+ * that carried it. */
+static void test_regression_sgr_survives_freeze_cut(void)
+{
+    struct vth h;
+    if(!vth_open(&h)){ CHECK(0); return; }
+    /* one dim block of three rows; freeze the first two */
+    CHECK(fytim_tail_apply(h.ft, 0, "\x1b[1mFA1\nFA2\nFA3", 15, 2) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_row_is_bold(&h, "FA1") == 1);     /* committed */
+    CHECK(vth_row_is_bold(&h, "FA2") == 1);     /* committed */
+    CHECK(vth_row_is_bold(&h, "FA3") == 1);     /* still the live tail */
+    vth_close(&h);
+}
+
 /* ---- regression: a width-only resize must repaint at the new width ------ *
  * (Bug: the pump resized the frame only when the ROW count changed, so a
  * width change left the band painted at the stale width and the status
@@ -246,6 +319,10 @@ int main(int argc, char **argv)
           test_regression_workband_cap_keeps_chrome },
         { "regression_resize_repaints_width",
           test_regression_resize_repaints_width },
+        { "regression_sgr_carries_across_rows",
+          test_regression_sgr_carries_across_rows },
+        { "regression_sgr_survives_freeze_cut",
+          test_regression_sgr_survives_freeze_cut },
     };
     size_t i, n = sizeof(tests) / sizeof(tests[0]);
 

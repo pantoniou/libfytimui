@@ -5,6 +5,7 @@
  */
 #include "fytim_sgr.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #define MAX_PARAMS 32
@@ -242,4 +243,48 @@ void fytim_sgr_feed(struct fytim_sgr_parser *p, const char *buf, size_t len,
         buf += chunk;
         len -= chunk;
     }
+}
+
+size_t fytim_sgr_style_emit(const struct fytim_sgr_style *style,
+                            char *out, size_t cap)
+{
+    static const struct { uint32_t attr; unsigned code; } attrs[] = {
+        { FYTIM_ATTR_BOLD, 1 },      { FYTIM_ATTR_DIM, 2 },
+        { FYTIM_ATTR_ITALIC, 3 },    { FYTIM_ATTR_UNDERLINE, 4 },
+        { FYTIM_ATTR_REVERSE, 7 },   { FYTIM_ATTR_STRIKE, 9 },
+    };
+    char seq[64];
+    size_t o = 0, i;
+    int n;
+    uint32_t v;
+
+    if(!style || !out) return 0;
+    if(style->attrs == 0 && style->fg == FYTIM_COLOR_DEFAULT &&
+       style->bg == FYTIM_COLOR_DEFAULT)
+        return 0;                          /* the default: nothing to re-open */
+
+    for(i = 0; i < sizeof attrs / sizeof attrs[0]; i++)
+        if(style->attrs & attrs[i].attr)
+            o += (size_t)snprintf(seq + o, sizeof seq - o, ";%u",
+                                  attrs[i].code);
+    v = style->fg;
+    if(v != FYTIM_COLOR_DEFAULT)
+        o += (v & FYTIM_COLOR_INDEXED)
+           ? (size_t)snprintf(seq + o, sizeof seq - o, ";38;5;%u", v & 0xFFu)
+           : (size_t)snprintf(seq + o, sizeof seq - o, ";38;2;%u;%u;%u",
+                              (v >> 16) & 0xFFu, (v >> 8) & 0xFFu, v & 0xFFu);
+    v = style->bg;
+    if(v != FYTIM_COLOR_DEFAULT)
+        o += (v & FYTIM_COLOR_INDEXED)
+           ? (size_t)snprintf(seq + o, sizeof seq - o, ";48;5;%u", v & 0xFFu)
+           : (size_t)snprintf(seq + o, sizeof seq - o, ";48;2;%u;%u;%u",
+                              (v >> 16) & 0xFFu, (v >> 8) & 0xFFu, v & 0xFFu);
+
+    /* seq holds ";p;p;..."; the leading ';' is dropped below */
+    n = snprintf(out, cap, "\x1b[%sm", seq + 1);
+    if(n < 0 || (size_t)n >= cap){         /* would truncate: emit nothing */
+        if(cap) out[0] = '\0';
+        return 0;
+    }
+    return (size_t)n;
 }

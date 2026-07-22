@@ -150,7 +150,9 @@ if(VTERM_FOUND)
         target_link_options(test_fytim_vt PRIVATE ${ASAN_C_FLAGS})
     endif()
     foreach(t regression_workband_cap_keeps_chrome
-              regression_resize_repaints_width)
+              regression_resize_repaints_width
+              regression_sgr_carries_across_rows
+              regression_sgr_survives_freeze_cut)
         add_test(NAME fytim.vt.${t} COMMAND test_fytim_vt ${t})
     endforeach()
 endif()
@@ -159,6 +161,7 @@ foreach(t plain_text bold_run combined_params truecolor indexed_color
           style_persists_across_feeds escape_split_across_feeds
           disallowed_sequences_flagged osc8_hyperlink_allowed
           other_osc_still_disallowed malformed_input_safe
-          overlong_escape_safe null_and_empty_safe)
+          overlong_escape_safe null_and_empty_safe
+          style_emit_roundtrip style_emit_default_and_tiny)
     add_test(NAME fytim.sgr.${t} COMMAND test_fytim_sgr ${t})
 endforeach()

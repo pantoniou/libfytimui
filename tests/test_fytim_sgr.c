@@ -226,6 +226,43 @@ static void test_overlong_escape_safe(void)
     CHECK(!0);
 }
 
+/* Parse -> emit -> parse must reach the same style: the emitter is what
+ * re-opens carried state after a per-row reset. */
+static void test_style_emit_roundtrip(void)
+{
+    struct capture c = {0};
+    struct fytim_sgr_parser p, q;
+    char seq[64];
+    size_t n;
+
+    fytim_sgr_init(&p);
+    fytim_sgr_feed(&p, "\x1b[1;3;38;5;196;48;2;10;20;30mX", 30, cap_run, &c);
+    n = fytim_sgr_style_emit(&p.style, seq, sizeof seq);
+    CHECK(n > 0 && n == strlen(seq));
+    fytim_sgr_init(&q);
+    fytim_sgr_feed(&q, seq, n, cap_run, &c);
+    CHECK(q.style.attrs == p.style.attrs);
+    CHECK(q.style.fg == p.style.fg);
+    CHECK(q.style.bg == p.style.bg);
+}
+
+static void test_style_emit_default_and_tiny(void)
+{
+    struct fytim_sgr_parser p;
+    char seq[64];
+    fytim_sgr_init(&p);
+    /* the default state emits nothing */
+    CHECK(fytim_sgr_style_emit(&p.style, seq, sizeof seq) == 0);
+    /* a would-truncate cap emits nothing rather than a broken escape */
+    p.style.attrs = FYTIM_ATTR_BOLD | FYTIM_ATTR_UNDERLINE;
+    CHECK(fytim_sgr_style_emit(&p.style, seq, 4) == 0);
+    CHECK(fytim_sgr_style_emit(&p.style, NULL, 0) == 0);
+    CHECK(fytim_sgr_style_emit(NULL, seq, sizeof seq) == 0);
+    /* and with room it round-trips the attrs */
+    CHECK(fytim_sgr_style_emit(&p.style, seq, sizeof seq) > 0);
+    CHECK(strcmp(seq, "\x1b[1;4m") == 0);
+}
+
 static void test_null_and_empty_safe(void)
 {
     struct capture c = {0};
@@ -253,6 +290,8 @@ int main(int argc, char **argv)
         { "malformed_input_safe", test_malformed_input_safe },
         { "overlong_escape_safe", test_overlong_escape_safe },
         { "null_and_empty_safe", test_null_and_empty_safe },
+        { "style_emit_roundtrip", test_style_emit_roundtrip },
+        { "style_emit_default_and_tiny", test_style_emit_default_and_tiny },
     };
     size_t i, n = sizeof(tests) / sizeof(tests[0]);
 

@@ -435,15 +435,75 @@ bool fytim_next_event(struct fytim *ft, struct fytim_event *out)
 
 /* ---- band content ------------------------------------------------------- */
 
+/* Committed lines land in scrollback each ending in a hard SGR reset, but
+ * libfymd4c opens a style once and relies on carry-over across '\n' (a
+ * fenced block body is one leading escape). Re-open the running state at
+ * every row start so the carry survives the per-row reset. Returns a
+ * malloc'd normalized copy with *out_len set, or NULL when the input needs
+ * no rewriting (single row, or no carried state at any row break). */
+/* State-tracking feed only: runs are discarded (feed treats a NULL cb as
+ * a no-op, so an explicit sink is needed). */
+static bool sgr_sink_(void *user, const char *text, size_t len,
+                      const struct fytim_sgr_style *style)
+{
+    (void)user; (void)text; (void)len; (void)style;
+    return true;
+}
+
+static char *sgr_rowsafe(const char *buf, size_t len, size_t *out_len)
+{
+    struct fytim_sgr_parser p;
+    char seq[64], *out = NULL, *grown;
+    size_t cap = 0, o = 0, start = 0, in_done = 0, i, n;
+
+    if(!memchr(buf, '\n', len)) return NULL;
+    fytim_sgr_init(&p);
+    for(i = 0; i < len; i++){
+        if(buf[i] != '\n') continue;
+        fytim_sgr_feed(&p, buf + start, i + 1 - start, sgr_sink_, NULL);
+        start = i + 1;
+        n = fytim_sgr_style_emit(&p.style, seq, sizeof seq);
+        if(n == 0 && !out) continue;       /* nothing carried, nothing yet */
+        /* worst case: all pending input plus this re-open */
+        if(cap < o + n + (len - in_done)){
+            cap = (o + n + (len - in_done)) * 2;
+            grown = realloc(out, cap);
+            if(!grown){ free(out); return NULL; }
+            out = grown;
+        }
+        /* everything up to the row break not yet materialized, then the
+         * re-open (o counts output bytes; input bytes lag by the inserted
+         * escapes, tracked via `start` against `in_done`) */
+        memcpy(out + o, buf + in_done, start - in_done);
+        o += start - in_done;
+        in_done = start;
+        memcpy(out + o, seq, n);
+        o += n;
+    }
+    if(!out) return NULL;
+    memcpy(out + o, buf + in_done, len - in_done);   /* cap reserved the tail */
+    *out_len = o + (len - in_done);
+    return out;
+}
+
+/* The single funnel into the transcript: normalize, then batch. */
+static void commit_norm(struct fytim *ft, const char *buf, size_t len)
+{
+    size_t nlen = 0;
+    char *norm = sgr_rowsafe(buf, len, &nlen);
+    TimuiStr s;
+    s.ptr = norm ? norm : (char *)buf;
+    s.len = norm ? nlen : len;
+    timui_inline_commit(ft->ui, s);   /* copies; batched until the pump */
+    free(norm);
+}
+
 enum fytim_result fytim_commit(struct fytim *ft, const char *buf, size_t len)
 {
-    TimuiStr s;
     if(!ft || (!buf && len)) return FYTIM_ERR_INVALID;
     if(len == 0) return FYTIM_OK;
     if(!sgr_only(buf, len)) return FYTIM_ERR_INVALID;
-    s.ptr = buf;
-    s.len = len;
-    timui_inline_commit(ft->ui, s);   /* batched; flushed by the next pump */
+    commit_norm(ft, buf, len);
     return FYTIM_OK;
 }
 
@@ -508,8 +568,28 @@ enum fytim_result fytim_tail_apply(struct fytim *ft, size_t backtrack,
             p = nl + 1;
         }
         if(p != ft->tail){
+            /* the cut drops the bytes that carried the SGR state into the
+             * remainder: re-open it at the remainder's head */
+            struct fytim_sgr_parser sp;
+            char seq[64];
+            size_t slen, rlen = strlen(p);
             fytim_commit(ft, ft->tail, (size_t)(p - ft->tail) - 1);
-            memmove(ft->tail, p, strlen(p) + 1);
+            fytim_sgr_init(&sp);
+            fytim_sgr_feed(&sp, ft->tail, (size_t)(p - ft->tail), sgr_sink_, NULL);
+            slen = fytim_sgr_style_emit(&sp.style, seq, sizeof seq);
+            if(slen > 0){
+                char *nt = malloc(slen + rlen + 1);
+                if(nt){
+                    memcpy(nt, seq, slen);
+                    memcpy(nt + slen, p, rlen + 1);
+                    free(ft->tail);
+                    ft->tail = nt;
+                }else{
+                    memmove(ft->tail, p, rlen + 1);
+                }
+            }else{
+                memmove(ft->tail, p, rlen + 1);
+            }
         }
     }
     tlen = ft->tail ? strlen(ft->tail) : 0;
@@ -634,10 +714,8 @@ enum fytim_result fytim_workband_commit(struct fytim_workband *wb)
     {
         /* the commit payload, when set, replaces the live render */
         const char *out = wb->commit ? wb->commit : wb->content;
-        if(out){
-            TimuiStr s = { (char *)out, strlen(out) };
-            timui_inline_commit(wb->owner->ui, s);   /* batched, like fytim_commit */
-        }
+        if(out)
+            commit_norm(wb->owner, out, strlen(out));  /* batched, like fytim_commit */
     }
     wb_retire(wb);
     return FYTIM_OK;
@@ -655,10 +733,7 @@ static void wb_flush_finished(struct fytim *ft)
         if(!best) return;
         {
             const char *out = best->commit ? best->commit : best->content;
-            if(out){
-                TimuiStr s = { (char *)out, strlen(out) };
-                timui_inline_commit(ft->ui, s);
-            }
+            if(out) commit_norm(ft, out, strlen(out));
         }
         wb_retire(best);
     }

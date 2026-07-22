@@ -62,4 +62,11 @@ void fytim_sgr_init(struct fytim_sgr_parser *p);
 void fytim_sgr_feed(struct fytim_sgr_parser *p, const char *buf, size_t len,
                     fytim_sgr_run_fn cb, void *user);
 
+/* Write the escape sequence that re-opens `style` from the default state
+ * into out (NUL-terminated). Returns the length, 0 when the style IS the
+ * default (nothing to re-open) or when cap cannot hold it. 64 bytes always
+ * suffice. Used to keep SGR carry-over alive across per-row resets. */
+size_t fytim_sgr_style_emit(const struct fytim_sgr_style *style,
+                            char *out, size_t cap);
+
 #endif /* FYTIM_SGR_H */
