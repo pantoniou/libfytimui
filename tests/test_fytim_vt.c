@@ -267,26 +267,28 @@ static void test_regression_sgr_survives_freeze_cut(void)
     vth_close(&h);
 }
 
-/* ---- regression: the stream-end settle must not move the chrome --------- *
+/* ---- regression: the stream-end settle leaves no gap -------------------- *
  * While the tail streams the frame holds its high-water height; when the
- * stream ends it settles. The shrink is bottom-anchored: blank rows open
- * ABOVE the band and the prompt/status rows stay on the same screen rows.
- * (Bug: the settle erased below a top-anchored repaint, so the whole
- * chrome jumped up by the shrink and slid back down on the next growth.) */
-static void test_regression_settle_keeps_chrome_row(void)
+ * stream ends it COMPACTS upward in one atomic hop. With nothing
+ * committed, the settled layout must be exactly the pre-stream layout --
+ * no blank rows left between the transcript and the chrome. */
+static void test_regression_settle_compacts(void)
 {
     struct vth h;
-    int before, after;
+    int idle, streaming, after;
     if(!vth_open(&h)){ CHECK(0); return; }
     CHECK(fytim_set_status_row(h.ft, 0, " MARKER") == FYTIM_OK);
+    vth_pump(&h);
+    idle = vth_find_row(&h, "MARKER");
+    CHECK(idle > 0);
     CHECK(fytim_tail_set(h.ft, "S1\nS2\nS3\nS4\nS5\nS6", 17) == FYTIM_OK);
     vth_pump(&h);
-    before = vth_find_row(&h, "MARKER");
-    CHECK(before > 0);
+    streaming = vth_find_row(&h, "MARKER");
+    CHECK(streaming > idle);             /* the band grew for the tail */
     CHECK(fytim_tail_set(h.ft, NULL, 0) == FYTIM_OK);   /* stream ends */
     vth_pump(&h);
     after = vth_find_row(&h, "MARKER");
-    CHECK(after == before);
+    CHECK(after == idle);                /* compacted, no residual gap */
     CHECK(vth_find_row(&h, "S1") < 0);   /* the tail area is really gone */
     vth_close(&h);
 }
@@ -343,8 +345,8 @@ int main(int argc, char **argv)
           test_regression_workband_cap_keeps_chrome },
         { "regression_resize_repaints_width",
           test_regression_resize_repaints_width },
-        { "regression_settle_keeps_chrome_row",
-          test_regression_settle_keeps_chrome_row },
+        { "regression_settle_compacts",
+          test_regression_settle_compacts },
         { "regression_sgr_carries_across_rows",
           test_regression_sgr_carries_across_rows },
         { "regression_sgr_survives_freeze_cut",

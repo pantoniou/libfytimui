@@ -861,20 +861,23 @@ TIMUI_API void timui_end(TimuiFrame *frame){
                 timui_inline_commit_emit(&ui->transport, lines);
                 ui->inline_pending_len = 0;
             }
+            timui_inline_paint(&ui->transport, &ui->curr);
             if(ui->inline_trusted){
                 /* the committed lines shifted the anchor down and the band
-                 * may have shrunk. The shrink is BOTTOM-anchored: the top
-                 * `stale` rows of the old extent are cleared and stepped
-                 * over, advancing the anchor, so the band's bottom row
-                 * (the chrome) never moves on screen. */
+                 * may have shrunk: erase what the old extent still covers
+                 * below the new band, then return to the anchor. The band
+                 * COMPACTS upward -- paint and erase share one synchronized
+                 * frame, so the chrome moves in a single atomic hop. (A
+                 * shrink while the host holds the frame during streaming
+                 * never reaches here; see the band-height hold above it.) */
                 int stale = ui->inline_prev_rows - (committed + ui->curr.h);
-                int i;
-                for(i = 0; i < stale; i++)
+                if(stale > 0){
+                    inline_rel_move_(&ui->transport, ui->curr.h, 'B');
                     if(ui->transport.write)
-                        (void)ui->transport.write(&ui->transport,
-                                                  "\r\x1b[0m\x1b[K\x1b[B", 11);
+                        (void)ui->transport.write(&ui->transport, "\r\x1b[J", 4);
+                    inline_rel_move_(&ui->transport, ui->curr.h, 'A');
+                }
             }
-            timui_inline_paint(&ui->transport, &ui->curr);
             ui->inline_trusted = 1;
             ui->inline_prev_rows = ui->curr.h;
         }else if(cells_changed){

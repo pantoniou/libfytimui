@@ -985,15 +985,14 @@ void test_inline_shrink_cleans_below(void){
         if(n > 0){
             TimuiStr s = { buf, (size_t)n };
             int paint = find_(s, 0, "short");
-            int shift;
+            int clean;
             TIMUI_CHECK(paint >= 0);
-            /* BOTTOM-anchored shrink: the 2 stale rows are the TOP of the
-             * old extent -- each is cleared and stepped over BEFORE the
-             * paint, advancing the anchor so the band's bottom row (the
-             * chrome) never moves. Nothing is erased below. */
-            shift = find_(s, 0, "\r\x1b[0m\x1b[K\x1b[B\r\x1b[0m\x1b[K\x1b[B");
-            TIMUI_CHECK(shift >= 0 && shift < paint);
-            TIMUI_CHECK(find_(s, 0, "\x1b[2B\r\x1b[J\x1b[2A") < 0);
+            /* the band COMPACTS upward: move below the 2 new rows, erase
+             * the 2 stale ones, come back -- AFTER the repaint and inside
+             * the same frame, so the chrome moves in one atomic hop */
+            clean = find_(s, (size_t)(paint >= 0 ? paint : 0),
+                          "\x1b[2B\r\x1b[J\x1b[2A");
+            TIMUI_CHECK(clean > paint);
         }
         timui_close(ui);
     }
