@@ -330,10 +330,11 @@ static void test_regression_bubble_pinned_while_streaming(void)
     vth_close(&h);
 }
 
-/* ---- regression: indexed SGR colors must reach the screen --------------- *
- * (Bug: the run-to-cell conversion mapped indexed (16/256-palette) colors
- * to the default, so \x1b[31m..\x1b[33m content rendered colorless --
- * an agent's red/green/yellow status dots all looked the same.) */
+/* ---- regression: indexed SGR colors must reach the screen AS INDEXED --- *
+ * (Bug: the run-to-cell conversion mapped indexed colors to the default
+ * -- colorless -- and then to hard-coded xterm RGB; the classic 30-37
+ * codes must survive to the wire so the terminal's theme palette
+ * applies.) */
 static void test_regression_indexed_colors_mapped(void)
 {
     struct vth h;
@@ -348,14 +349,39 @@ static void test_regression_indexed_colors_mapped(void)
     vth_pump(&h);
     y = vth_find_row(&h, "RED");
     CHECK(y >= 0);
+    /* INDEXED on the wire (30-37): the terminal's own palette applies */
     p.row = y; p.col = 0;
     vterm_screen_get_cell(h.vs, p, &cell);
-    CHECK(VTERM_COLOR_IS_RGB(&cell.fg));
-    CHECK(cell.fg.rgb.red > 100 && cell.fg.rgb.green < 80);
+    CHECK(VTERM_COLOR_IS_INDEXED(&cell.fg));
+    CHECK(cell.fg.indexed.idx == 1);                 /* red */
     p.col = 4;                                       /* the GRN run */
     vterm_screen_get_cell(h.vs, p, &cell);
-    CHECK(VTERM_COLOR_IS_RGB(&cell.fg));
-    CHECK(cell.fg.rgb.green > 100 && cell.fg.rgb.red < 80);
+    CHECK(VTERM_COLOR_IS_INDEXED(&cell.fg));
+    CHECK(cell.fg.indexed.idx == 2);                 /* green */
+    vth_close(&h);
+}
+
+/* ---- regression: an SGR-styled prompt marker renders styled ------------- *
+ * (Bug: the marker drew through the plain label path, so a colored-dot
+ * marker showed its raw escape bytes in the prompt row.) */
+static void test_regression_marker_sgr(void)
+{
+    struct vth h;
+    int y;
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "\x1b[33m\xe2\x97\x8f\x1b[0m ") == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "typing") == FYTIM_OK);
+    vth_pump(&h);
+    y = vth_find_row(&h, "typing");
+    CHECK(y >= 0);
+    CHECK(vth_find_row(&h, "[33m") < 0);   /* no raw escape bytes as text */
+    {   /* the dot occupies the marker cell on the prompt row */
+        VTermScreenCell cell;
+        VTermPos p = { y, 0 };
+        vterm_screen_get_cell(h.vs, p, &cell);
+        CHECK(cell.chars[0] == 0x25CF);
+        CHECK(VTERM_COLOR_IS_INDEXED(&cell.fg) && cell.fg.indexed.idx == 3);
+    }
     vth_close(&h);
 }
 
@@ -487,6 +513,7 @@ int main(int argc, char **argv)
           test_regression_bubble_pinned_while_streaming },
         { "regression_indexed_colors_mapped",
           test_regression_indexed_colors_mapped },
+        { "regression_marker_sgr", test_regression_marker_sgr },
         { "regression_unmatched_shrink_held",
           test_regression_unmatched_shrink_held },
         { "regression_settle_compacts",

@@ -80,6 +80,12 @@ typedef struct {
  * 0x000000 is literal black. Use it for fg/bg where you want the default. */
 #define TIMUI_COLOR_DEFAULT 0xFFFFFFFFu
 
+/* Indexed ANSI colour: TIMUI_COLOR_ANSI | n selects palette entry n
+ * (0..255). Entries 0..15 emit the classic 30-37/90-97 (40-47/100-107)
+ * codes and 16..255 emit 38;5;n, so the terminal's OWN theme palette
+ * applies instead of a hard-coded RGB approximation. */
+#define TIMUI_COLOR_ANSI 0x01000000u
+
 typedef struct {
     uint32_t fg;
     uint32_t bg;

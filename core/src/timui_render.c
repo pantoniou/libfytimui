@@ -333,6 +333,24 @@ static void emit_osc_string_sanitized(TimuiTransport *t, const char *s){
         i += (size_t)adv;
     }
 }
+/* TIMUI_COLOR_ANSI | n: the terminal's own palette, classic codes first. */
+static void emit_indexed(TimuiTransport *t, int bg, uint32_t c){
+    char buf[16];
+    unsigned idx = c & 0xFFu;
+    int n = 0;
+    buf[n++] = 0x1b; buf[n++] = '[';
+    if(idx < 8){
+        n += fmt_uint(buf + n, (bg ? 40u : 30u) + idx);
+    }else if(idx < 16){
+        n += fmt_uint(buf + n, (bg ? 100u : 90u) + idx - 8);
+    }else{
+        buf[n++] = (char)(bg ? '4' : '3'); buf[n++] = '8';
+        buf[n++] = ';'; buf[n++] = '5'; buf[n++] = ';';
+        n += fmt_uint(buf + n, idx);
+    }
+    buf[n++] = 'm';
+    r_emit(t, buf, (size_t)n);
+}
 static void emit_truecolor(TimuiTransport *t, int bg, uint32_t rgb){
     char buf[40];
     int n = 0;
@@ -354,8 +372,14 @@ static void emit_cup(TimuiTransport *t, int x, int y){
 static void emit_sgr(TimuiTransport *t, TimuiRenderer *r, const TimuiCell *c){
     if((int)c->fg == r->last_fg && (int)c->bg == r->last_bg && (int)c->attrs == r->last_attrs) return;
     R_EMIT(t, "\x1b[0m");                 /* reset, then re-apply the full style */
-    if(c->fg != TIMUI_COLOR_DEFAULT) emit_truecolor(t, 0, c->fg);   /* ADR 0001: 0x000000 is black */
-    if(c->bg != TIMUI_COLOR_DEFAULT) emit_truecolor(t, 1, c->bg);
+    if(c->fg != TIMUI_COLOR_DEFAULT){
+        if(c->fg & TIMUI_COLOR_ANSI) emit_indexed(t, 0, c->fg);
+        else emit_truecolor(t, 0, c->fg);   /* ADR 0001: 0x000000 is black */
+    }
+    if(c->bg != TIMUI_COLOR_DEFAULT){
+        if(c->bg & TIMUI_COLOR_ANSI) emit_indexed(t, 1, c->bg);
+        else emit_truecolor(t, 1, c->bg);
+    }
     if(c->attrs & TIMUI_ATTR_BOLD)      R_EMIT(t, "\x1b[1m");
     if(c->attrs & TIMUI_ATTR_DIM)       R_EMIT(t, "\x1b[2m");
     if(c->attrs & TIMUI_ATTR_ITALIC)    R_EMIT(t, "\x1b[3m");

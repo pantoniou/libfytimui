@@ -786,7 +786,7 @@ enum fytim_result fytim_set_status_row(struct fytim *ft, int row, const char *te
 enum fytim_result fytim_set_marker(struct fytim *ft, const char *marker)
 {
     if(!ft) return FYTIM_ERR_INVALID;
-    return set_dup(&ft->marker, marker);
+    return set_dup_sgr(&ft->marker, marker);   /* SGR-capable, validated */
 }
 
 /* ---- input -------------------------------------------------------------- */
@@ -979,34 +979,14 @@ struct draw_run_ctx {
     TimuiCellBuffer *buf;
     int x, y, max_x;
 };
-/* Map an indexed (16/256-palette) color to RGB with the standard xterm
- * palette: dropping them to the default rendered \x1b[31m..\x1b[33m
- * content colorless. */
-static uint32_t idx_rgb_(uint32_t c)
-{
-    static const uint32_t base16[16] = {
-        0x000000, 0xCD0000, 0x00CD00, 0xCDCD00,
-        0x0000EE, 0xCD00CD, 0x00CDCD, 0xE5E5E5,
-        0x7F7F7F, 0xFF0000, 0x00FF00, 0xFFFF00,
-        0x5C5CFF, 0xFF00FF, 0x00FFFF, 0xFFFFFF,
-    };
-    static const uint32_t cube[6] = { 0, 95, 135, 175, 215, 255 };
-    unsigned idx = c & 0xFFu;
-    if(idx < 16) return base16[idx];
-    if(idx < 232){
-        unsigned v = idx - 16;
-        return (cube[v / 36] << 16) | (cube[(v / 6) % 6] << 8) | cube[v % 6];
-    }
-    {
-        unsigned g = 8 + (idx - 232) * 10;
-        return (g << 16) | (g << 8) | g;
-    }
-}
-
+/* Indexed (16/256-palette) colors pass through AS INDEXED: the core
+ * emits the classic 30-37/90-97 codes, so the terminal's own theme
+ * palette applies. (They were once dropped to the default -- colorless
+ * -- and briefly mapped to hard-coded xterm RGB.) */
 static uint32_t sgr_color_(uint32_t c)
 {
     if(c == FYTIM_COLOR_DEFAULT) return TIMUI_COLOR_DEFAULT;
-    if(c & FYTIM_COLOR_INDEXED)  return idx_rgb_(c);
+    if(c & FYTIM_COLOR_INDEXED)  return TIMUI_COLOR_ANSI | (c & 0xFFu);
     return c;
 }
 
@@ -1052,6 +1032,32 @@ static bool draw_run_(void *user, const char *text, size_t len,
 /* Draw one chrome row that may carry SGR styling (rendered markdown).
  * Unstyled text keeps the row's plain style; styled text is parsed to
  * cells like work-band content. */
+/* Display width of SGR-styled text: escapes are zero-width. */
+static bool width_run_(void *user, const char *text, size_t len,
+                       const struct fytim_sgr_style *style)
+{
+    int *w = user;
+    size_t off = 0;
+    (void)style;
+    while(off < len){
+        size_t nx = timui_grapheme_next(text, len, off);
+        if(nx <= off) break;
+        *w += timui_grapheme_width(text + off, nx - off);
+        off = nx;
+    }
+    return true;
+}
+
+static int sgr_disp_width(const char *s)
+{
+    struct fytim_sgr_parser p;
+    int w = 0;
+    if(!strchr(s, '\x1b')) return timui_display_width(s);
+    fytim_sgr_init(&p);
+    fytim_sgr_feed(&p, s, strlen(s), width_run_, &w);
+    return w;
+}
+
 static void draw_row_styled(TimuiFrame *f, TimuiCellBuffer *buf,
                             int x, int y, int w,
                             const char *text, TimuiStyle plain)
@@ -1284,9 +1290,11 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
         TimuiId id = TIMUI_ID("fytim.prompt");
         TimuiTextAreaResult res;
         timui_draw_fill(buf, TIMUI_RECT(r->x, r->y, r->w, r->h), in_st);
-        timui_label(f, r->x, r->y, (TimuiStr){ marker, strlen(marker) },
-                    timui_style_make(in_st.fg, in_st.bg, TIMUI_ATTR_BOLD));
-        marker_w = timui_display_width(marker);
+        /* the marker may carry SGR (a colored activity dot): draw it
+         * through the styled path, width from visible glyphs only */
+        draw_row_styled(f, buf, r->x, r->y, r->w, marker,
+                        timui_style_make(in_st.fg, in_st.bg, TIMUI_ATTR_BOLD));
+        marker_w = sgr_disp_width(marker);
         timui_set_focus(f, id);   /* no focus model: the prompt owns keys */
         res = timui_text_area_mut(f, id,
                                   TIMUI_RECT(r->x + marker_w, r->y,

@@ -139,7 +139,9 @@ void fytim_workband_destroy(struct fytim_workband *wb) FYTIM_EXPORT;
 enum fytim_result fytim_set_header(struct fytim *ft, const char *text) FYTIM_EXPORT;
 /* Status rows under the prompt; row is 0 or 1. */
 enum fytim_result fytim_set_status_row(struct fytim *ft, int row, const char *text) FYTIM_EXPORT;
-/* The prompt marker drawn ahead of the input ("> " by default). */
+/* The prompt marker drawn ahead of the input ("> " by default). May
+ * carry SGR styling (a colored activity dot) under the same contract as
+ * fytim_set_header. */
 enum fytim_result fytim_set_marker(struct fytim *ft, const char *marker) FYTIM_EXPORT;
 
 /* ---- input -------------------------------------------------------------- */
