@@ -198,7 +198,19 @@ static void job_spawn(struct fytim *ft, const char *tool, const char *display,
     j->id = ++job_seq;
     j->acc_len = 0;
     snprintf(j->tool, sizeof j->tool, "%s", tool);
-    snprintf(j->cmd, sizeof j->cmd, "%s", display);
+    /* the header is ONE row: a multi-line command (a heredoc, an
+     * embedded script) shows its first line and an ellipsis */
+    {
+        size_t o = 0;
+        while(display[o] && display[o] != '\n' && o < sizeof j->cmd - 4){
+            j->cmd[o] = display[o];
+            o++;
+        }
+        if(display[o])
+            memcpy(j->cmd + o, "\xe2\x80\xa6", 4);   /* U+2026 + NUL */
+        else
+            j->cmd[o] = '\0';
+    }
     snprintf(j->lang, sizeof j->lang, "%s", lang && *lang ? lang : "text");
     /* body renderer: code styling (margin, prefix, dim/highlight) with
      * the decoration rules blanked -- the header line is the frame */
