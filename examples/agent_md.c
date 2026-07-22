@@ -112,12 +112,14 @@ struct job {
 static struct job jobs[JOBS_MAX];
 static int job_seq;
 
-/* The header row: activity dot, bold tool name, command, status. */
+/* The header row: activity button, bold tool name, command, status. The
+ * button is an EMOJI, not an SGR-colored glyph -- it renders identically
+ * everywhere, no color support needed. */
 static size_t job_header(const struct job *j, char *buf, size_t cap,
-                         const char *dot_sgr, const char *status)
+                         const char *dot, const char *status)
 {
-    int n = snprintf(buf, cap, "%s\xe2\x97\x8f\x1b[0m \x1b[1m%s\x1b[0m %s%s",
-                     dot_sgr, j->tool, j->cmd, status);
+    int n = snprintf(buf, cap, "%s \x1b[1m%s\x1b[0m %s%s",
+                     dot, j->tool, j->cmd, status);
     return n < 0 ? 0 : (size_t)n;
 }
 
@@ -159,12 +161,12 @@ static void job_show(struct job *j, const char *dot_sgr, const char *status)
     if(out) fymd_free(out);
 }
 
-/* The running dot BLINKS: bright and dim yellow alternate on a host-side
+/* The running button BLINKS: yellow and dark alternate on a host-side
  * timer (SGR blink is unreliable across terminals). */
 static long long now_ms(void);
 static const char *job_dot_running(void)
 {
-    return (now_ms() / 500) & 1 ? "\x1b[2;33m" : "\x1b[33m";
+    return (now_ms() / 500) & 1 ? "\xe2\x9a\xab" : "\xf0\x9f\x9f\xa1";
 }
 
 static void job_push(struct job *j, const char *buf, size_t len)
@@ -244,9 +246,7 @@ static void job_tick(struct fytim *ft)
             ll.mode = FYMD_LLM_SCROLL;
             ll.max_lines = JOB_DONE_ROWS;
             if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
-            job_show(j,
-                     ok ? "\x1b[32m" : "\x1b[31m",
-                     ok ? " \x1b[2mOK\x1b[0m" : " \x1b[1;31mERROR\x1b[0m");
+            job_show(j, ok ? "\xf0\x9f\x9f\xa2" : "\xf0\x9f\x94\xb4", "");
             if(j->r){ fymd_renderer_destroy(j->r); j->r = NULL; }
             /* mid-stream this DEFERS: the final render stays until the
              * transcript stream ends, then commits in finish order */
@@ -501,6 +501,15 @@ int main(void)
         md_tick(ft, &s);
         job_tick(ft);
         fytim_set_status_row(ft, 0, s.r ? " streaming" : " ready");
+        /* the prompt marker doubles as the TURN indicator: a chevron when
+         * idle, the blinking activity button while the reply streams */
+        if(s.r){
+            char mk[16];
+            snprintf(mk, sizeof mk, "%s ", job_dot_running());
+            fytim_set_marker(ft, mk);
+        }else{
+            fytim_set_marker(ft, "\xe2\x9d\xaf ");
+        }
 
         if(fytim_pump(ft) != FYTIM_OK) break;
         while(fytim_next_event(ft, &ev)){
