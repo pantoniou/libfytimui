@@ -84,59 +84,46 @@ struct mdstream {
  * work-band, concurrently with the main transcript stream in the tail --
  * the two paths are independent and may interleave freely. */
 #define JOBS_MAX 4
+#define JOB_LIVE_ROWS 6            /* renderer viewport for the live band */
 struct job {
     struct fytim_workband *wb;
     FILE *fp;                      /* popen stream, non-blocking */
-    struct fymd_renderer *r;       /* streams the output as a fenced block */
-    char ren[16384];               /* the rendered block: frozen + active */
-    size_t ren_len;
-    size_t frozen_len;             /* prefix the renderer will not touch */
+    struct fymd_renderer *r;       /* renders the output as a fenced block */
+    char acc[8192];                /* raw tool output accumulated */
+    size_t acc_len;
     int id;
 };
 
 static struct job jobs[JOBS_MAX];
 static int job_seq;
 
-/* Apply one progressive update to the job's rendered block -- the same
- * replay fytim_tail_apply does for the transcript, but into the band's
- * own buffer: drop the cursor-row residue plus `backtrack` rows from the
- * active region, append the new content, then freeze rows into the
- * untouchable prefix. */
-static void job_apply(struct job *j, const struct fymd_update *u)
+/* Re-render the accumulated output through md4c's fenced-block renderer
+ * and refresh the band. The renderer's own line limit (FYMD_LLM_SCROLL)
+ * windows the LIVE view to the newest rows; the band cap only trims what
+ * the limited render already produced. */
+static void job_render(struct job *j)
 {
-    size_t pos = j->ren_len, k, n;
-
-    if(u->backtrack){
-        while(pos > j->frozen_len && j->ren[pos - 1] != '\n') pos--;
-        for(k = 0; k < u->backtrack && pos > j->frozen_len; k++){
-            pos--;
-            while(pos > j->frozen_len && j->ren[pos - 1] != '\n') pos--;
-        }
-    }
-    j->ren_len = pos;
-    n = u->content_len;
-    if(n > sizeof j->ren - j->ren_len) n = sizeof j->ren - j->ren_len;
-    memcpy(j->ren + j->ren_len, u->content, n);
-    j->ren_len += n;
-    for(k = 0; k < u->freeze; k++){
-        while(j->frozen_len < j->ren_len && j->ren[j->frozen_len] != '\n')
-            j->frozen_len++;
-        if(j->frozen_len < j->ren_len) j->frozen_len++;   /* the '\n' too */
-    }
+    struct fymd_fenced_block_opts opts;
+    char *out = NULL;
+    size_t out_len = 0;
+    if(!j->r) return;
+    memset(&opts, 0, sizeof opts);
+    opts.language = "text";
+    opts.flags = FYMD_FBF_STYLE;
+    if(fymd_render_fenced_block(j->r, j->acc, j->acc_len, &opts,
+                                &out, &out_len) != 0)
+        return;
+    while(out_len && out[out_len - 1] == '\n') out_len--;
+    fytim_workband_set(j->wb, out, out_len);
+    fymd_free(out);
 }
 
-/* Push tool bytes through the job's renderer and refresh the band with
- * the LIVE fenced-block render (trailing newline shed for display). */
 static void job_push(struct job *j, const char *buf, size_t len)
 {
-    struct fymd_update upd;
-    size_t show;
-    if(!j->r) return;
-    if(fymd_render_push(j->r, buf, len, &upd) != 0) return;
-    job_apply(j, &upd);
-    show = j->ren_len;
-    while(show && j->ren[show - 1] == '\n') show--;
-    fytim_workband_set(j->wb, j->ren, show);
+    if(len > sizeof j->acc - j->acc_len) len = sizeof j->acc - j->acc_len;
+    memcpy(j->acc + j->acc_len, buf, len);
+    j->acc_len += len;
+    job_render(j);
 }
 
 static void job_spawn(struct fytim *ft, int count)
@@ -158,19 +145,24 @@ static void job_spawn(struct fytim *ft, int count)
     fcntl(fileno(j->fp), F_SETFL, O_NONBLOCK);
     j->wb = fytim_workband_create(ft);
     j->id = ++job_seq;
-    j->ren_len = 0;
-    j->frozen_len = 0;
-    /* the tool's output streams through its OWN renderer as a live fenced
-     * markdown block; the finished render is the commit payload */
+    j->acc_len = 0;
+    /* the tool's output renders through its OWN md4c fenced-block renderer;
+     * a SCROLL line limit windows the live view to the newest rows */
     {
         struct fymd_renderer_cfg mc;
+        struct fymd_line_limit_opts ll;
         int w = 80;
         fytim_size(ft, &w, NULL);
         memset(&mc, 0, sizeof mc);
         mc.width = w;
         j->r = fymd_renderer_create(&mc);
-        if(j->r) job_push(j, "```text\n", 8);
+        memset(&ll, 0, sizeof ll);
+        ll.mode = FYMD_LLM_SCROLL;
+        ll.max_lines = JOB_LIVE_ROWS;
+        if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
+        job_render(j);
     }
+    fytim_workband_set_max_rows(j->wb, JOB_LIVE_ROWS);
     fytim_workband_set_top(j->wb, "");             /* a rule above the band */
     snprintf(bot, sizeof bot, " \x1b[2mdemo #%d (%ds) running\x1b[0m",
              j->id, count);
@@ -190,25 +182,29 @@ static void job_tick(struct fytim *ft)
             job_push(j, chunk, (size_t)n);          /* live fenced render */
         if(n == 0){                                /* EOF: the tool is done */
             char done[64];
-            const char *fin = NULL;
-            size_t fin_len = 0;
-            (void)ft;
+            struct fymd_fenced_block_opts opts;
+            char *out = NULL;
+            size_t out_len = 0;
+            (void)ft; (void)len;
             pclose(j->fp);
             j->fp = NULL;
-            job_push(j, "```\n", 4);               /* close the fence */
-            /* the healed remainder replaces the active region; the full
-             * render is BOTH the final live view and the commit payload */
-            if(j->r && fymd_render_finish(j->r, &fin, &fin_len) == 0){
-                len = fin_len;
-                if(len > sizeof j->ren - j->frozen_len)
-                    len = sizeof j->ren - j->frozen_len;
-                memcpy(j->ren + j->frozen_len, fin, len);
-                j->ren_len = j->frozen_len + len;
+            /* the COMMIT payload is the complete block: same renderer,
+             * line limit lifted, so nothing the tool printed is lost */
+            if(j->r){
+                memset(&opts, 0, sizeof opts);
+                opts.language = "text";
+                opts.flags = FYMD_FBF_STYLE;
+                fymd_renderer_set_line_limit(j->r, NULL);
+                if(fymd_render_fenced_block(j->r, j->acc, j->acc_len, &opts,
+                                            &out, &out_len) == 0){
+                    while(out_len && out[out_len - 1] == '\n') out_len--;
+                    fytim_workband_set(j->wb, out, out_len);
+                    fytim_workband_set_commit(j->wb, out, out_len);
+                    fymd_free(out);
+                }
+                fymd_renderer_destroy(j->r);
+                j->r = NULL;
             }
-            if(j->r){ fymd_renderer_destroy(j->r); j->r = NULL; }
-            while(j->ren_len && j->ren[j->ren_len - 1] == '\n') j->ren_len--;
-            fytim_workband_set(j->wb, j->ren, j->ren_len);
-            fytim_workband_set_commit(j->wb, j->ren, j->ren_len);
             snprintf(done, sizeof done, " \x1b[2mdemo #%d done\x1b[0m", j->id);
             fytim_workband_set_bottom(j->wb, done);
             /* mid-stream this DEFERS: the final render stays until the
