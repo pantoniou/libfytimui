@@ -18,7 +18,10 @@
  *                             streams a markdown file with DELAY_MS between
  *                             chunks, default 60; "/demo N" runs a tool call
  *                             into its own work-band, concurrently with the
- *                             main stream; Esc or /quit quits)
+ *                             main stream; a plain line typed MID-stream is
+ *                             a new turn: it is buffered in a pending
+ *                             work-band and replayed when the turn ends;
+ *                             Esc or /quit quits)
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -151,6 +154,73 @@ static void job_tick(struct fytim *ft)
     }
 }
 
+/* Prompts submitted while a turn is still streaming: slash commands run
+ * immediately (tools are concurrent by design), anything else is a NEW
+ * turn and must not interrupt the current one. It is buffered here, shown
+ * in its own work-band, and replayed in order once the stream ends. */
+#define PENDING_MAX 8
+struct pending {
+    struct fytim_workband *wb;
+    char *lines[PENDING_MAX];
+    int n;
+};
+
+static void pending_show(struct fytim *ft, struct pending *p)
+{
+    char buf[2048], bot[64];
+    size_t off = 0;
+    int i, r;
+
+    if(!p->n){
+        if(p->wb){ fytim_workband_destroy(p->wb); p->wb = NULL; }
+        return;
+    }
+    if(!p->wb){
+        p->wb = fytim_workband_create(ft);
+        if(!p->wb) return;
+        fytim_workband_set_top(p->wb, "");         /* a rule above the band */
+        fytim_workband_set_max_rows(p->wb, PENDING_MAX);
+    }
+    for(i = 0; i < p->n; i++){
+        r = snprintf(buf + off, sizeof buf - off, "%s \x1b[2m>\x1b[0m %s",
+                     i ? "\n" : "", p->lines[i]);
+        if(r < 0 || off + (size_t)r >= sizeof buf) break;
+        off += (size_t)r;
+    }
+    fytim_workband_set(p->wb, buf, off);
+    snprintf(bot, sizeof bot, " \x1b[2m%d queued, plays when the turn ends\x1b[0m",
+             p->n);
+    fytim_workband_set_bottom(p->wb, bot);
+}
+
+static void pending_push(struct fytim *ft, struct pending *p, const char *line)
+{
+    if(p->n >= PENDING_MAX){
+        /* full: drop the newest, the band bottom says so */
+        fytim_workband_set_bottom(p->wb,
+            " \x1b[2mqueue full, input dropped\x1b[0m");
+        return;
+    }
+    p->lines[p->n] = strdup(line);
+    if(!p->lines[p->n]) return;
+    p->n++;
+    pending_show(ft, p);
+}
+
+/* Pop the oldest queued prompt; caller frees. */
+static char *pending_pop(struct fytim *ft, struct pending *p)
+{
+    char *line;
+    int i;
+    if(!p->n) return NULL;
+    line = p->lines[0];
+    for(i = 1; i < p->n; i++)
+        p->lines[i - 1] = p->lines[i];
+    p->n--;
+    pending_show(ft, p);
+    return line;
+}
+
 static long long now_ms(void)
 {
     struct timespec ts;
@@ -279,9 +349,11 @@ int main(void)
 {
     struct fytim *ft;
     struct mdstream s;
+    struct pending pq;
     int running = 1;
 
     memset(&s, 0, sizeof s);
+    memset(&pq, 0, sizeof pq);
     ft = fytim_create(NULL);
     if(!ft){
         fprintf(stderr, "agent_md: failed to open terminal\n");
@@ -312,7 +384,14 @@ int main(void)
                 case FYTIM_EVENT_LINE:
                     if(strcmp(ev.text, "/quit") == 0){ running = 0; break; }
                     fytim_history_add(ft, ev.text);
-                    {
+                    /* a non-slash line is a NEW turn: while one is still
+                     * streaming it is buffered and replayed when the turn
+                     * ends -- committing it now would split the reply */
+                    if(s.r && ev.text[0] != '/'){
+                        pending_push(ft, &pq, ev.text);
+                        break;
+                    }
+                    if(!s.r){
                         char echo[512];
                         snprintf(echo, sizeof echo, "\x1b[1m>\x1b[0m %.*s",
                                  (int)ev.text_len, ev.text);
@@ -337,8 +416,23 @@ int main(void)
                     break;
             }
         }
+
+        /* the turn ended (and this pump flushed any deferred tool
+         * commits): replay the oldest buffered prompt as the next turn */
+        if(!s.r && pq.n){
+            char *line = pending_pop(ft, &pq);
+            if(line){
+                char echo[512];
+                snprintf(echo, sizeof echo, "\x1b[1m>\x1b[0m %s", line);
+                fytim_commit(ft, echo, strlen(echo));
+                md_start(ft, &s, md_doc, sizeof md_doc - 1, NULL, 60);
+                free(line);
+            }
+        }
     }
 
+    while(pq.n)
+        free(pending_pop(ft, &pq));
     if(s.r) fymd_renderer_destroy(s.r);
     free(s.owned);
     fytim_destroy(ft);
