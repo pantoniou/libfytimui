@@ -115,6 +115,9 @@ static void job_render(struct job *j, int whole)
         while(len && j->acc[len - 1] != '\n') len--;
         if(!len) return;                   /* no complete line yet */
     }
+    /* the trailing newline is a line TERMINATOR, not an empty last row --
+     * rendering it adds a blank line above the closing rule */
+    while(len && j->acc[len - 1] == '\n') len--;
     memset(&opts, 0, sizeof opts);
     opts.language = "text";
     opts.flags = FYMD_FBF_STYLE;
@@ -199,11 +202,13 @@ static void job_tick(struct fytim *ft)
             /* the COMMIT payload is the complete block: same renderer,
              * line limit lifted, so nothing the tool printed is lost */
             if(j->r){
+                size_t alen = j->acc_len;
+                while(alen && j->acc[alen - 1] == '\n') alen--;
                 memset(&opts, 0, sizeof opts);
                 opts.language = "text";
                 opts.flags = FYMD_FBF_STYLE;
                 fymd_renderer_set_line_limit(j->r, NULL);
-                if(fymd_render_fenced_block(j->r, j->acc, j->acc_len, &opts,
+                if(fymd_render_fenced_block(j->r, j->acc, alen, &opts,
                                             &out, &out_len) == 0){
                     while(out_len && out[out_len - 1] == '\n') out_len--;
                     fytim_workband_set(j->wb, out, out_len);

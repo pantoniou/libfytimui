@@ -194,6 +194,7 @@ foreach(t plain_text bold_run combined_params truecolor indexed_color
           disallowed_sequences_flagged osc8_hyperlink_allowed
           other_osc_still_disallowed malformed_input_safe
           overlong_escape_safe null_and_empty_safe
-          style_emit_roundtrip style_emit_default_and_tiny)
+          style_emit_roundtrip style_emit_default_and_tiny
+          runs_never_split_utf8)
     add_test(NAME fytim.sgr.${t} COMMAND test_fytim_sgr ${t})
 endforeach()

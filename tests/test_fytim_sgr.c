@@ -263,6 +263,45 @@ static void test_style_emit_default_and_tiny(void)
     CHECK(strcmp(seq, "\x1b[1;4m") == 0);
 }
 
+/* Runs must never split a UTF-8 sequence: the internal chunking (256
+ * bytes per pass) previously cut a 3-byte box-drawing glyph mid-sequence
+ * and the consumer drew the torn bytes as garbage cells. Every delivered
+ * run must start on a lead byte and end on a complete codepoint. */
+static bool utf8_run(void *user, const char *text, size_t len,
+                     const struct fytim_sgr_style *style)
+{
+    int *bad = user;
+    size_t i = 0;
+    (void)style;
+    if(len && ((unsigned char)text[0] & 0xC0) == 0x80) (*bad)++;
+    while(i < len){
+        unsigned char c = (unsigned char)text[i];
+        size_t need = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2
+                    : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 1;
+        if(i + need > len){ (*bad)++; break; }
+        i += need;
+    }
+    return true;
+}
+
+static void test_runs_never_split_utf8(void)
+{
+    struct fytim_sgr_parser p;
+    char buf[1024];
+    size_t o = 0;
+    int i, bad = 0;
+    /* a rule row: escapes plus 300 U+2500, crossing several 256-byte
+     * chunk boundaries at every possible phase */
+    o += (size_t)snprintf(buf + o, sizeof buf - o, "\x1b[2m");
+    for(i = 0; i < 300 && o + 3 < sizeof buf; i++){
+        memcpy(buf + o, "\xe2\x94\x80", 3);
+        o += 3;
+    }
+    fytim_sgr_init(&p);
+    fytim_sgr_feed(&p, buf, o, utf8_run, &bad);
+    CHECK(bad == 0);
+}
+
 static void test_null_and_empty_safe(void)
 {
     struct capture c = {0};
@@ -290,6 +329,7 @@ int main(int argc, char **argv)
         { "malformed_input_safe", test_malformed_input_safe },
         { "overlong_escape_safe", test_overlong_escape_safe },
         { "null_and_empty_safe", test_null_and_empty_safe },
+        { "runs_never_split_utf8", test_runs_never_split_utf8 },
         { "style_emit_roundtrip", test_style_emit_roundtrip },
         { "style_emit_default_and_tiny", test_style_emit_default_and_tiny },
     };

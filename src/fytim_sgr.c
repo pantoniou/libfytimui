@@ -195,6 +195,17 @@ void fytim_sgr_feed(struct fytim_sgr_parser *p, const char *buf, size_t len,
     while(len > 0){
         /* Process at most 256 new bytes at a time so `joined` stays bounded. */
         chunk = (len > 256) ? 256 : len;
+        /* Never end a chunk inside a UTF-8 sequence: the split run would
+         * hand torn bytes to the consumer, which draws them as garbage
+         * cells (a 240-byte rule row of U+2500 straddles the boundary
+         * constantly). Back off to the straddling lead byte -- it opens
+         * the next chunk instead. */
+        if(chunk < len){
+            size_t back = chunk;
+            while(back > 0 && ((unsigned char)buf[back] & 0xC0) == 0x80)
+                back--;
+            if(back > 0) chunk = back;
+        }
 
         if(p->pending_len > 0){
             memcpy(joined, p->pending, p->pending_len);
