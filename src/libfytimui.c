@@ -1254,6 +1254,11 @@ enum fytim_result fytim_pump(struct fytim *ft)
             timui_full_redraw(ft->ui);
         }
         want = FYTIM_CHROME_ROWS + wb_rows_total(ft) + (prompt_lines(ft) - 1);
+        /* while the tail streams the frame only GROWS: a block boundary
+         * empties the active region for one update, and a shrink+regrow
+         * resize repaints the whole band twice -- the band visibly jumps.
+         * The frame settles once, when the stream ends. */
+        if(ft->tail_streaming && want < ft->band_rows) want = ft->band_rows;
         if(want > ft->term_h) want = ft->term_h;
         /* a WIDTH change must resize the frame too, not only a row change */
         if(want != ft->band_rows || ft->term_w != ft->band_w){
