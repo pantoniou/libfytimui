@@ -600,7 +600,9 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
     if(out_frame) *out_frame = NULL;
     if(!ui || !out_frame) return TIMUI_ERR_INVALID_ARGUMENT;
     if(ui->should_quit) return TIMUI_ERR_CLOSED;
-    if(ui->have_transport){
+    /* Suspended: the terminal belongs to a child; the input fd is back in
+     * its original (possibly blocking) mode, so reading here could hang. */
+    if(ui->have_transport && !ui->suspended){
         char buf[256];
         int n;
         /* External-poll mode: the host already waited on our descriptor as part
@@ -793,6 +795,9 @@ TIMUI_API void timui_end(TimuiFrame *frame){
     if(!frame || !frame->ui) return;
     ui = frame->ui;
     timui_interact_end(&ui->ia);
+    /* Suspended: nothing may reach the terminal; the frame's cells are
+     * simply dropped and the resume-forced redraw repaints from scratch. */
+    if(ui->suspended) return;
     /* Wrap the whole frame in synchronized output (DEC 2026) when the terminal
      * supports it, so a partial update never reaches the screen — the diff
      * writes cells incrementally, and without this a fast-updating app tears
@@ -942,6 +947,57 @@ TIMUI_API void timui_invalidate(Timui *ui){
     if(!ui) return;
     timui_renderer_reset(&ui->renderer);
 }
+/* ---- suspend/resume ---------------------------------------------------- *
+ * Release the terminal to a child process (an external editor, a pager) and
+ * take it back. Suspend closes the style, erases the band, un-parks the
+ * cursor and restores termios + input-fd flags; frames in between are inert
+ * (begin reads nothing -- the fd may be blocking again -- and end writes
+ * nothing). Resume re-enters raw mode and screen modes and forces a full
+ * redraw. */
+TIMUI_API TimuiResult timui_suspend(Timui *ui){
+    if(!ui || ui->suspended) return TIMUI_ERR_INVALID_ARGUMENT;
+    /* Close the style and erase the band through the transport even when
+     * the output is not a tty (screen_exit only runs for real terminals);
+     * un-park first or the erase misses the band rows above the cursor. */
+    if(ui->have_transport && (ui->cfg.flags & TIMUI_FLAG_INLINE)){
+        if(ui->inline_parked_row > 0){
+            inline_rel_move_(&ui->transport, ui->inline_parked_row, 'A');
+            ui->inline_parked_row = 0;
+        }
+        if(ui->transport.write)
+            (void)ui->transport.write(&ui->transport, "\x1b[0m\r\x1b[J", 8);
+        if(ui->transport.flush) ui->transport.flush(&ui->transport);
+    }
+    timui_restore_terminal(ui);
+    ui->suspended = 1;
+    return TIMUI_OK;
+}
+
+TIMUI_API TimuiResult timui_resume(Timui *ui){
+    if(!ui || !ui->suspended) return TIMUI_ERR_INVALID_ARGUMENT;
+    {
+        int fl = fcntl(ui->fd.read_fd, F_GETFL, 0);
+        if(fl >= 0){
+            ui->input_flags = fl;
+            ui->input_flags_saved = 1;
+            (void)fcntl(ui->fd.read_fd, F_SETFL, fl | O_NONBLOCK);
+        }
+    }
+    if(ui->termios_active){
+        /* the child may have changed the settings it inherited: save the
+         * current state afresh and re-enter raw mode over it */
+        timui_termios_destroy(&ui->termios);
+        if(timui_termios_enter(&ui->termios, ui->fd.read_fd) != TIMUI_OK)
+            ui->termios_active = 0;
+    }
+    if(ui->screen_active)
+        timui_screen_enter(&ui->transport, &ui->screen, ui->cfg.flags,
+                           timui_str_from_cstr(ui->cfg.title));
+    ui->suspended = 0;
+    timui_full_redraw(ui);
+    return TIMUI_OK;
+}
+
 TIMUI_API void timui_full_redraw(Timui *ui){
     size_t i, n;
     if(!ui) return;

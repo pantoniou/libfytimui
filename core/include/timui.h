@@ -223,6 +223,12 @@ TIMUI_API int         timui_poll_timeout_ms(const Timui *ui);
  * handler. timui_open's optional signal handler uses an internal best-effort
  * restoration path instead. */
 TIMUI_API void        timui_restore_terminal(Timui *ui);
+/* Release the terminal to a child process (an external editor) and take it
+ * back: suspend erases the band and restores termios/fd flags; frames in
+ * between are inert; resume re-enters raw + screen modes and forces a full
+ * redraw. Double suspend / resume-without-suspend are invalid. */
+TIMUI_API TimuiResult timui_suspend(Timui *ui);
+TIMUI_API TimuiResult timui_resume(Timui *ui);
 TIMUI_API const char *timui_error_string(TimuiResult result);
 TIMUI_API const char *timui_version_string(void);
 

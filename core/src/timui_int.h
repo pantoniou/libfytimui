@@ -66,6 +66,9 @@ struct Timui {
     int               inline_cursor_x;
     int               inline_cursor_y;
     int               inline_parked_row;
+    /* Terminal released to a child process (timui_suspend): frames neither
+     * read input nor write output until timui_resume takes it back. */
+    int               suspended;
     TimuiRenderer     renderer;
     TimuiInputParser  input;
     TimuiMpsc         postq;     /* thread-safe message queue (timui_post) */
