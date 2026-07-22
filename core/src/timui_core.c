@@ -508,6 +508,7 @@ TIMUI_API TimuiResult timui_open(const TimuiConfig *cfg, Timui **out_ui){
         return r;
     }
     timui_set_terminal_pixels_(ui, w, h, px_w, px_h);
+    ui->inline_dirty = 1;   /* inline: the first frame always claims the band */
     *out_ui = ui;
     timui_install_sig_handlers(ui);   /* W6: restore the terminal on SIGTERM/SIGHUP/SIGQUIT */
     return TIMUI_OK;
@@ -526,6 +527,8 @@ TIMUI_API void timui_close(Timui *ui){
         ui->alloc.free(ui->alloc.userdata, ui->clip_stack,
                        (size_t)ui->clip_cap * sizeof(*ui->clip_stack));
     if(ui->trace_fd >= 0) close(ui->trace_fd);
+    if(ui->inline_pending)
+        ui->alloc.free(ui->alloc.userdata, ui->inline_pending, ui->inline_pending_cap);
     if(ui->have_transport && ui->transport.close) ui->transport.close(&ui->transport);
     al = ui->alloc;
     al.free(al.userdata, ui, sizeof *ui);
@@ -534,9 +537,27 @@ TIMUI_API TimuiTransport *timui_transport(Timui *ui){
     if(!ui || !ui->have_transport) return NULL;
     return &ui->transport;
 }
+/* Queue committed lines; they flush inside the next timui_end so the erase,
+ * the lines and the band repaint are one atomic update (no flicker gap). A
+ * missing trailing '\n' gets one, so batched commits keep line boundaries. */
 TIMUI_API void timui_inline_commit(Timui *ui, TimuiStr text){
-    if(!ui || !ui->have_transport) return;
-    timui_inline_commit_emit(&ui->transport, text);
+    size_t need;
+    if(!ui || !ui->have_transport || !text.ptr || text.len == 0) return;
+    need = ui->inline_pending_len + text.len + 1;
+    if(need > ui->inline_pending_cap){
+        size_t ncap = ui->inline_pending_cap ? ui->inline_pending_cap : 256;
+        char *nb;
+        while(ncap < need) ncap *= 2;
+        nb = (char *)ui->alloc.realloc(ui->alloc.userdata, ui->inline_pending,
+                                       ui->inline_pending_cap, ncap);
+        if(!nb) return;   /* OOM: drop the commit rather than corrupt */
+        ui->inline_pending = nb;
+        ui->inline_pending_cap = ncap;
+    }
+    memcpy(ui->inline_pending + ui->inline_pending_len, text.ptr, text.len);
+    ui->inline_pending_len += text.len;
+    if(text.ptr[text.len - 1] != '\n')
+        ui->inline_pending[ui->inline_pending_len++] = '\n';
 }
 TIMUI_API int timui_poll_fd(const Timui *ui){
     /* -1 also covers fake/test transports, which set read_fd to -1. */
@@ -748,12 +769,28 @@ TIMUI_API void timui_end(TimuiFrame *frame){
     sync = (ui->caps.flags & TIMUI_CAP_SYNC_OUTPUT) ||
            (ui->cfg.flags  & TIMUI_FLAG_SYNC_OUTPUT);
     /* Inline band mode: no diffing, no images, no cursor management -- the
-     * band is small and fully repainted relative to the cursor anchor. */
+     * band is small and fully repainted relative to the cursor anchor. But
+     * only when there is a reason to: an unchanged band emits nothing (the
+     * per-frame repaint is otherwise the flicker the mode exists to avoid),
+     * and queued commits flush here so erase + lines + repaint are one
+     * update inside a single sync bracket. */
     if(ui->cfg.flags & TIMUI_FLAG_INLINE){
+        int changed = ui->inline_dirty || ui->inline_pending_len > 0 ||
+                      ui->prev.w != ui->curr.w || ui->prev.h != ui->curr.h ||
+                      memcmp(ui->prev.cells, ui->curr.cells,
+                             (size_t)ui->curr.w * (size_t)ui->curr.h *
+                             sizeof(TimuiCell)) != 0;
+        if(!changed) return;
         if(sync) timui_sync_begin(&ui->transport);
+        if(ui->inline_pending_len > 0){
+            TimuiStr lines = { ui->inline_pending, ui->inline_pending_len };
+            timui_inline_commit_emit(&ui->transport, lines);
+            ui->inline_pending_len = 0;
+        }
         timui_inline_paint(&ui->transport, &ui->curr);
         if(sync) timui_sync_end(&ui->transport);
         if(ui->transport.flush) ui->transport.flush(&ui->transport);
+        ui->inline_dirty = 0;
         tmp = ui->prev; ui->prev = ui->curr; ui->curr = tmp;
         return;
     }
@@ -822,6 +859,7 @@ TIMUI_API TimuiResult timui_ui_resize(Timui *ui, int w, int h){
     ui->w = w;
     ui->h = h;
     timui_renderer_reset(&ui->renderer);   /* cursor/SGR tracking invalidated */
+    ui->inline_dirty = 1;                  /* inline: cell equality is now stale */
     return TIMUI_OK;
 }
 TIMUI_API void timui_invalidate(Timui *ui){
@@ -832,6 +870,7 @@ TIMUI_API void timui_full_redraw(Timui *ui){
     size_t i, n;
     if(!ui) return;
     timui_invalidate(ui);
+    ui->inline_dirty = 1;
     if(!ui->have_buffers || !ui->prev.cells || ui->prev.w <= 0 || ui->prev.h <= 0) return;
     n = (size_t)ui->prev.w * (size_t)ui->prev.h;
     timui_cells_clear(&ui->prev);

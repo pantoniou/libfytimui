@@ -704,10 +704,13 @@ TIMUI_API void timui_render_cursor(TimuiTransport *t, int x, int y, int visible)
  * band's top-left, column 0. A paint is "\r" + erase-down + the band rows
  * (CRLF-separated, ending SGR-reset) + a cursor-up back to the anchor; the
  * line feeds at the screen bottom scroll naturally, so space for the band is
- * reserved implicitly. A commit erases the band, writes the finished lines
- * (each ending "\r\n", scrolling them into native scrollback) and leaves the
- * cursor at the new anchor for the next paint. Committed lines must already
- * be hard-wrapped to the terminal width; auto-wrap is off (DECAWM). */
+ * reserved implicitly. timui_inline_commit QUEUES finished lines; they flush
+ * inside the next timui_end, where erase + lines (each ending "\r\n",
+ * scrolling into native scrollback) + band repaint form one update inside a
+ * single sync bracket. An unchanged band with no pending commits emits
+ * nothing at all. Committed lines must already be hard-wrapped to the
+ * terminal width; auto-wrap is off (DECAWM). timui_inline_commit_emit is the
+ * raw immediate emitter underneath (used by timui_end and by tests). */
 TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf);
 TIMUI_API void timui_inline_commit_emit(TimuiTransport *t, TimuiStr text);
 TIMUI_API void timui_inline_commit(Timui *ui, TimuiStr text);

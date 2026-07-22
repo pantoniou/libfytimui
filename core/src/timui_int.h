@@ -51,6 +51,14 @@ struct Timui {
     TimuiCellBuffer   curr;
     TimuiCellBuffer   prev;
     int               have_buffers;
+    /* Inline band mode: commits queue here and flush inside the next
+     * timui_end, so erase + lines + repaint reach the terminal as one
+     * update. inline_dirty forces a repaint when the band cells alone
+     * would not (after open, resize, or a full redraw). */
+    char             *inline_pending;
+    size_t            inline_pending_len;
+    size_t            inline_pending_cap;
+    int               inline_dirty;
     TimuiRenderer     renderer;
     TimuiInputParser  input;
     TimuiMpsc         postq;     /* thread-safe message queue (timui_post) */
