@@ -485,35 +485,6 @@ static void test_workband_commit_payload_defers(void)
     h_close(&h);
 }
 
-/* While the tail streams, the band frame must never shrink: a block
- * boundary empties the active region for one update and the shrink+regrow
- * resize repaints the whole band twice -- the bubble visibly jumps. The
- * frame holds its high-water height until the stream ends. */
-static void test_regression_no_shrink_while_streaming(void)
-{
-    struct harness h;
-    char buf[16384];
-    size_t n;
-    if(!h_open(&h)){ CHECK(0); return; }
-    CHECK(fytim_tail_set(h.ft, "R1\nR2\nR3\nR4", 11) == FYTIM_OK);
-    CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    (void)h_out(&h, buf, sizeof buf);
-
-    /* the active region collapses mid-stream (block boundary) */
-    CHECK(fytim_tail_set(h.ft, "R5", 2) == FYTIM_OK);
-    CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    n = h_out(&h, buf, sizeof buf);
-    CHECK(!contains(buf, n, "\x1b[J"));      /* no shrink, no erase-down */
-
-    /* the stream ends: the frame settles once, compacting upward -- the
-     * stale rows below the new band are erased in the same frame */
-    CHECK(fytim_tail_set(h.ft, NULL, 0) == FYTIM_OK);
-    CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    n = h_out(&h, buf, sizeof buf);
-    CHECK(contains(buf, n, "\x1b[J"));
-    h_close(&h);
-}
-
 static void test_workband_rejects_disallowed(void)
 {
     struct harness h;
@@ -781,8 +752,6 @@ int main(int argc, char **argv)
         { "workband_top_bottom", test_workband_top_bottom },
         { "workband_order_and_independence", test_workband_order_and_independence },
         { "workband_rejects_disallowed", test_workband_rejects_disallowed },
-        { "regression_no_shrink_while_streaming",
-          test_regression_no_shrink_while_streaming },
         { "workband_commit_payload", test_workband_commit_payload },
         { "workband_commit_payload_defers", test_workband_commit_payload_defers },
         { "workband_commit_defers_during_stream",

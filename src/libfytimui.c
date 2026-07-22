@@ -573,7 +573,10 @@ enum fytim_result fytim_tail_apply(struct fytim *ft, size_t backtrack,
             struct fytim_sgr_parser sp;
             char seq[64];
             size_t slen, rlen = strlen(p);
-            fytim_commit(ft, ft->tail, (size_t)(p - ft->tail) - 1);
+            /* the full prefix, final '\n' included: trimming it swallowed
+             * a frozen BLANK row (a block separator), losing the breath
+             * line between blocks in the transcript */
+            fytim_commit(ft, ft->tail, (size_t)(p - ft->tail));
             fytim_sgr_init(&sp);
             fytim_sgr_feed(&sp, ft->tail, (size_t)(p - ft->tail), sgr_sink_, NULL);
             slen = fytim_sgr_style_emit(&sp.style, seq, sizeof seq);
@@ -1032,6 +1035,37 @@ static int wb_rows(const struct fytim_workband *wb)
     return n + (wb->top ? 1 : 0) + (wb->bottom ? 1 : 0);
 }
 
+/* Rows the tail occupies: its '\n'-terminated rows, plus the trailing
+ * partial row only when it holds VISIBLE text. The cursor row after a
+ * final '\n' -- empty, or only an SGR carry-over residue -- must not
+ * count: it is a phantom row with no matching commit, and every miscount
+ * moves the bubble (the frame resize it forces has no commit to cancel
+ * against). */
+static bool sgr_probe_(void *user, const char *text, size_t len,
+                       const struct fytim_sgr_style *style)
+{
+    (void)text; (void)len; (void)style;
+    *(bool *)user = true;      /* a run was delivered: visible bytes exist */
+    return false;
+}
+
+static int tail_rows(const char *s)
+{
+    int n = 0;
+    const char *p, *last;
+    bool visible = false;
+    if(!s || !*s) return 0;
+    for(p = s, last = s; *p; p++)
+        if(*p == '\n'){ n++; last = p + 1; }
+    if(*last){
+        struct fytim_sgr_parser sp;
+        fytim_sgr_init(&sp);
+        fytim_sgr_feed(&sp, last, strlen(last), sgr_probe_, &visible);
+        if(visible) n++;
+    }
+    return n;
+}
+
 /* Rows above the chrome: the transcript's live tail, then the work-bands;
  * one spare row when nothing is live -- the layout always reserves a
  * transcript row, and sizing the band to exactly the chrome would shed a
@@ -1039,7 +1073,7 @@ static int wb_rows(const struct fytim_workband *wb)
 static int wb_rows_total(const struct fytim *ft)
 {
     const struct fytim_workband *wb;
-    int n = content_lines(ft->tail);
+    int n = tail_rows(ft->tail);
     for(wb = ft->wbands; wb; wb = wb->next) n += wb_rows(wb);
     return n > 0 ? n : 1;
 }
@@ -1110,7 +1144,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
          * shorted band the top row goes first, then the bottom, then the
          * earliest content lines. */
         struct fytim_workband *wb;
-        int nb = 0, i, y, avail, tl = content_lines(ft->tail);
+        int nb = 0, i, y, avail, tl = tail_rows(ft->tail);
         for(wb = ft->wbands; wb; wb = wb->next) nb++;
         {
             struct fytim_workband *arr[nb > 0 ? nb : 1];
@@ -1254,11 +1288,12 @@ enum fytim_result fytim_pump(struct fytim *ft)
             timui_full_redraw(ft->ui);
         }
         want = FYTIM_CHROME_ROWS + wb_rows_total(ft) + (prompt_lines(ft) - 1);
-        /* while the tail streams the frame only GROWS: a block boundary
-         * empties the active region for one update, and a shrink+regrow
-         * resize repaints the whole band twice -- the band visibly jumps.
-         * The frame settles once, when the stream ends. */
-        if(ft->tail_streaming && want < ft->band_rows) want = ft->band_rows;
+        /* The frame tracks the need EXACTLY, mid-stream shrinks included:
+         * a freeze's commits (+k text scroll) and its frame shrink (-k)
+         * land in this same pump and cancel, so the bubble never moves --
+         * all motion is text scrolling. The invariant rests on tail_rows()
+         * counting only visible rows; a phantom row has no commit to
+         * cancel against and bounces the bubble. */
         if(want > ft->term_h) want = ft->term_h;
         /* a WIDTH change must resize the frame too, not only a row change */
         if(want != ft->band_rows || ft->term_w != ft->band_w){

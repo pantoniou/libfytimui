@@ -267,6 +267,66 @@ static void test_regression_sgr_survives_freeze_cut(void)
     vth_close(&h);
 }
 
+/* ---- regression: the bubble never moves mid-stream ---------------------- *
+ * At the screen bottom all motion is text scrolling, never chrome
+ * movement: a freeze's commits (+k scroll) and the frame shrink (-k) land
+ * in the same pump and cancel. The historical bounce was a counting
+ * artifact -- the tail's trailing '\n'/SGR residue counted as a row, a
+ * phantom with no matching commit. And the layout keeps exactly ONE line
+ * of breath: after a full-block freeze the chrome sits at most one blank
+ * row (plus the committed blank separator) below the text, not hanging at
+ * a held high-water height. */
+static void test_regression_bubble_pinned_while_streaming(void)
+{
+    struct vth h;
+    char line[32];
+    int i, y0;
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_header(h.ft, " HDRMARK") == FYTIM_OK);
+    /* fill the screen so the band reaches the bottom and pins there */
+    for(i = 0; i < 30; i++){
+        snprintf(line, sizeof line, "F%02d", i);
+        CHECK(fytim_commit(h.ft, line, strlen(line)) == FYTIM_OK);
+    }
+    vth_pump(&h);
+    y0 = vth_find_row(&h, "HDRMARK");
+    CHECK(y0 > 0);
+
+    /* a line-mode renderer stream: grow, grow, grow with an SGR residue,
+     * then a block boundary freezing everything including its blank
+     * separator line -- the chrome must not move on ANY pump */
+    CHECK(fytim_tail_apply(h.ft, 0, "A1\n", 3, 0) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "HDRMARK") == y0);
+    CHECK(fytim_tail_apply(h.ft, 1, "A1\nA2\n\x1b[2m", 11, 0) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "HDRMARK") == y0);
+    CHECK(fytim_tail_apply(h.ft, 2, "\x1b[0mA1\nA2\nA3\n", 14, 0) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "HDRMARK") == y0);
+    CHECK(fytim_tail_apply(h.ft, 3, "A1\nA2\nA3\n\n", 10, 4) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "HDRMARK") == y0);
+    /* one breath only: committed blank separator, one spare row, chrome */
+    CHECK(vth_find_row(&h, "HDRMARK") == vth_find_row(&h, "A3") + 3);
+
+    /* the next block starts: still pinned */
+    CHECK(fytim_tail_apply(h.ft, 0, "B1\n", 3, 0) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "HDRMARK") == y0);
+    CHECK(vth_find_row(&h, "B1") > 0);
+
+    /* the stream ends with the tail already empty: nothing left to settle,
+     * the chrome does not move */
+    CHECK(fytim_tail_apply(h.ft, 1, "B1\n", 3, 1) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(fytim_tail_set(h.ft, NULL, 0) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "HDRMARK") == y0);
+    CHECK(vth_find_row(&h, "HDRMARK") == vth_find_row(&h, "B1") + 2);
+    vth_close(&h);
+}
+
 /* ---- regression: the stream-end settle leaves no gap -------------------- *
  * While the tail streams the frame holds its high-water height; when the
  * stream ends it COMPACTS upward in one atomic hop. With nothing
@@ -345,6 +405,8 @@ int main(int argc, char **argv)
           test_regression_workband_cap_keeps_chrome },
         { "regression_resize_repaints_width",
           test_regression_resize_repaints_width },
+        { "regression_bubble_pinned_while_streaming",
+          test_regression_bubble_pinned_while_streaming },
         { "regression_settle_compacts",
           test_regression_settle_compacts },
         { "regression_sgr_carries_across_rows",

@@ -124,7 +124,6 @@ foreach(t create_paints_inline commit_batches_into_pump
           workband_commit_defers_during_stream
           workband_defer_survives_empty_tail
           workband_commit_payload workband_commit_payload_defers
-          regression_no_shrink_while_streaming
           workband_shed_oldest ctrl_g_edit_and_suspend
           regression_idle_band_keeps_status size_accessor sync_brackets_updates
           transcript_tail tail_apply null_safety)
@@ -152,6 +151,7 @@ if(VTERM_FOUND)
     endif()
     foreach(t regression_workband_cap_keeps_chrome
               regression_resize_repaints_width
+              regression_bubble_pinned_while_streaming
               regression_settle_compacts
               regression_sgr_carries_across_rows
               regression_sgr_survives_freeze_cut)
