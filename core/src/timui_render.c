@@ -524,14 +524,26 @@ TIMUI_API void timui_inline_paint_diff(TimuiTransport *t,
     for(y = 0; y < curr->h; y++){
         const TimuiCell *pr = &prev->cells[(size_t)y * prev->w];
         const TimuiCell *cr = &curr->cells[(size_t)y * curr->w];
-        int end;
-        if(memcmp(pr, cr, (size_t)curr->w * sizeof(TimuiCell)) == 0) continue;
+        int first = -1, last = -1;
+        /* span diff: only the run [first, last] of changed cells is emitted.
+         * The unchanged suffix stays on screen untouched, so no EL is needed:
+         * cells that BECAME blank are inside the span and rewritten as
+         * spaces. A keystroke appended to an input costs one glyph. */
+        for(x = 0; x < curr->w; x++){
+            if(memcmp(&pr[x], &cr[x], sizeof(TimuiCell)) != 0){
+                if(first < 0) first = x;
+                last = x;
+            }
+        }
+        if(first < 0) continue;
+        /* never start on a wide glyph's continuation: back up to its lead */
+        if(first > 0 && (cr[first].flags & TIMUI_CELL_CONTINUATION)) first--;
         any = 1;
         inline_move_rows_(t, y - cur_row, 'B');
         cur_row = y;
         R_EMIT(t, "\r");
-        end = inline_row_end_(curr, y);
-        for(x = 0; x < end; x++){
+        inline_move_rows_(t, first, 'C');        /* skip the unchanged prefix */
+        for(x = first; x <= last; x++){
             const TimuiCell *c = &cr[x];
             char gb[4];
             int gn;
@@ -540,8 +552,8 @@ TIMUI_API void timui_inline_paint_diff(TimuiTransport *t,
             gn = timui_utf8_encode_(render_safe_cp(c->codepoint), gb);
             r_emit(t, gb, (size_t)gn);
         }
-        R_EMIT(t, "\x1b[0m\x1b[K");              /* default-style clear to EOL */
-        timui_renderer_reset(&r);                /* the reset above voided SGR state */
+        R_EMIT(t, "\x1b[0m");                    /* leave SGR clean for commits */
+        timui_renderer_reset(&r);                /* the reset voided SGR state */
     }
     if(!any) return;
     inline_move_rows_(t, cur_row, 'A');          /* back to the band anchor */

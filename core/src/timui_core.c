@@ -816,6 +816,13 @@ TIMUI_API void timui_end(TimuiFrame *frame){
                                             ui->cursor_y != ui->inline_cursor_y));
         if(!cells_changed && !cursor_moved) return;
         if(sync) timui_sync_begin(&ui->transport);
+        /* hide a parked cursor while cells repaint, or it is seen jumping to
+         * the anchor and across the rewritten cells on terminals without
+         * ?2026; re-shown below after re-parking */
+        if(cells_changed && ui->inline_cursor_shown){
+            timui_hide_cursor(&ui->transport);
+            ui->inline_cursor_shown = 0;
+        }
         /* a parked cursor first returns to the anchor: every paint below
          * assumes its row arithmetic starts there */
         if(ui->inline_parked_row > 0){
