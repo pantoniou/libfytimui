@@ -267,6 +267,30 @@ static void test_regression_sgr_survives_freeze_cut(void)
     vth_close(&h);
 }
 
+/* ---- regression: the stream-end settle must not move the chrome --------- *
+ * While the tail streams the frame holds its high-water height; when the
+ * stream ends it settles. The shrink is bottom-anchored: blank rows open
+ * ABOVE the band and the prompt/status rows stay on the same screen rows.
+ * (Bug: the settle erased below a top-anchored repaint, so the whole
+ * chrome jumped up by the shrink and slid back down on the next growth.) */
+static void test_regression_settle_keeps_chrome_row(void)
+{
+    struct vth h;
+    int before, after;
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_status_row(h.ft, 0, " MARKER") == FYTIM_OK);
+    CHECK(fytim_tail_set(h.ft, "S1\nS2\nS3\nS4\nS5\nS6", 17) == FYTIM_OK);
+    vth_pump(&h);
+    before = vth_find_row(&h, "MARKER");
+    CHECK(before > 0);
+    CHECK(fytim_tail_set(h.ft, NULL, 0) == FYTIM_OK);   /* stream ends */
+    vth_pump(&h);
+    after = vth_find_row(&h, "MARKER");
+    CHECK(after == before);
+    CHECK(vth_find_row(&h, "S1") < 0);   /* the tail area is really gone */
+    vth_close(&h);
+}
+
 /* ---- regression: a width-only resize must repaint at the new width ------ *
  * (Bug: the pump resized the frame only when the ROW count changed, so a
  * width change left the band painted at the stale width and the status
@@ -319,6 +343,8 @@ int main(int argc, char **argv)
           test_regression_workband_cap_keeps_chrome },
         { "regression_resize_repaints_width",
           test_regression_resize_repaints_width },
+        { "regression_settle_keeps_chrome_row",
+          test_regression_settle_keeps_chrome_row },
         { "regression_sgr_carries_across_rows",
           test_regression_sgr_carries_across_rows },
         { "regression_sgr_survives_freeze_cut",

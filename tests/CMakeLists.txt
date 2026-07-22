@@ -152,6 +152,7 @@ if(VTERM_FOUND)
     endif()
     foreach(t regression_workband_cap_keeps_chrome
               regression_resize_repaints_width
+              regression_settle_keeps_chrome_row
               regression_sgr_carries_across_rows
               regression_sgr_survives_freeze_cut)
         add_test(NAME fytim.vt.${t} COMMAND test_fytim_vt ${t})

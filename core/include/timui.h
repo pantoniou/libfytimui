@@ -717,8 +717,10 @@ TIMUI_API void timui_render_cursor(TimuiTransport *t, int x, int y, int visible)
  * naturally, so space for the band is reserved implicitly. The band is
  * never blanked wholesale -- the trust protocol in timui_end erases down
  * exactly once when the screen below the anchor is untrusted (first paint,
- * timui_full_redraw, resume), and a shrink cleans the uncovered rows with a
- * targeted erase after the repaint. timui_inline_commit QUEUES finished
+ * timui_full_redraw, resume), and a shrink is BOTTOM-anchored: the top
+ * stale rows of the old extent are cleared and stepped over ahead of the
+ * repaint, advancing the anchor, so the band's bottom row (the chrome)
+ * never moves on screen. timui_inline_commit QUEUES finished
  * lines; they flush inside the next timui_end, each overwriting a band row
  * (line + SGR-reset + EL + "\r\n", scrolling into native scrollback) ahead
  * of the band repaint, all inside a single sync bracket. An unchanged band

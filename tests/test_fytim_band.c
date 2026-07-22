@@ -505,11 +505,13 @@ static void test_regression_no_shrink_while_streaming(void)
     n = h_out(&h, buf, sizeof buf);
     CHECK(!contains(buf, n, "\x1b[J"));      /* no shrink, no erase-down */
 
-    /* the stream ends: the frame may now settle down */
+    /* the stream ends: the frame settles once, bottom-anchored -- the top
+     * stale rows are cleared and stepped over, never erased from below */
     CHECK(fytim_tail_set(h.ft, NULL, 0) == FYTIM_OK);
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     n = h_out(&h, buf, sizeof buf);
-    CHECK(contains(buf, n, "\x1b[J"));       /* the deferred shrink cleanup */
+    CHECK(contains(buf, n, "\r\x1b[0m\x1b[K\x1b[B"));
+    CHECK(!contains(buf, n, "\x1b[J"));
     h_close(&h);
 }
 
