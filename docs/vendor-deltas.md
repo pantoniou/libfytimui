@@ -1,0 +1,61 @@
+# Vendored core deltas
+
+`core/` is a vendored copy of the `timui.h` repo, and we still re-vendor from
+it periodically. Core changes land **here** first; this file is what survives
+a sync, so every local change must be listed. Upstreaming is optional and
+shrinks the reconcile, but does not gate landing anything.
+
+## Upstreamed
+
+Already in `timui.h`, so a re-vendor carries them for free.
+
+| Upstream commit | Change | Why it cannot be a wrapper |
+|---|---|---|
+| `6bf01f2` | `TIMUI_FLAG_EXTERNAL_POLL` + `timui_poll_fd`/`timui_poll_timeout_ms` | `timui_begin` performs a blocking wait internally (16ms tty poll, or a nanosleep throttle on a non-tty fd). No layer above it can un-block that. |
+| `ecb759c` | Named test table; `--list` and single-case invocation | CTest must register each case individually; only the linked binary knows which cases are compiled in. |
+
+## Local only
+
+Not upstream. **A re-vendor overwrites these — reapply them.**
+
+| Change | Detail |
+|---|---|
+| `timui_core.c`: discard `write` into an `ssize_t` | `(void)write(...)` does not satisfy gcc's `warn_unused_result`. Two sites: the debug logger and `timui_signal_write_`. |
+| `timui_core.c`: one-per-line `if` guards in `timui_pad` | Four `if`s on one line tripped `-Wmisleading-indentation`. No behaviour change. |
+| `CMakeLists.txt`: `-Wno-unused-function` on `fytimui-core` | Not a core edit, but paired with one. `stb_image.h` declares STBIDEF entry points it never defines; the diagnostic fires at end-of-TU, so the existing pragma push/pop around the `#include` in `timui_images.c` cannot reach it. |
+| `TIMUI_FLAG_MOUSE_DRAG` (`timui.h`, `timui_term.c`) | Adds `?1002` button-event tracking so motion is reported while a button is held. Plain `TIMUI_FLAG_MOUSE` emits `?1000` only, which reports press/release but never motion, so a drag cannot be followed and in-app selection is impossible. |
+| `timui_transport()` (`timui.h`, `timui_core.c`) | Exposes the transport a `Timui` already owns. `timui_clipboard_set` (OSC 52) takes a `TimuiTransport *` and there was no way to obtain one from a `Timui *`, so clipboard copy was unreachable. |
+| `timui_mouse_state()` (`timui.h`, `timui_core.c`) | Exposes pointer cell + held-button state. `timui_mouse_clicked` reports only the press edge, and `timui_begin` drains every mouse event into its aggregators so `timui_poll_event` sees none — leaving no way to follow a drag. |
+| `timui_textarea.c`: scroll back on viewport growth | `regression/textarea-scroll-on-grow`: `scroll_y` chased the cursor down but never returned when the rect grew, hiding the first lines forever. Test in `tests/test_local_core.c`. Worth upstreaming. |
+| `timui_textarea.c`: fill the widget rect | The text area painted only glyph cells; empty cells kept the screen background, so the input never read as a box. Now fills the rect in the widget style first, like `input_field`. Test in `tests/test_local_core.c`. Worth upstreaming. |
+| readline chords in the text area (`timui.h`, `timui_core.c`, `timui_textarea.c`) | Adds `TIMUI_KEYIN_WORD_LEFT/WORD_RIGHT/KILL_WORD_FWD/TRANSPOSE` (Alt-b/f, Alt-d, Ctrl-T; Alt chords were unmapped in `timui_begin`) and gives the text area the kill ops (Ctrl-K/U/W) it lacked -- they existed only in `input_field`. Ctrl-K at end of line joins lines. Tests in `tests/test_local_core.c`. Worth upstreaming. |
+| `timui_slot_style()` (`timui.h`, `timui_core.c`) | Exposes the slot style from the theme the ui resolved at open, so application chrome can match widget styling without re-deriving the theme from the config. Test in `tests/test_local_core.c`. |
+| `timui_key_codepoint()` (`timui.h`, `timui_core.c`) | Reports the frame's key-event codepoint. Control chords the key table cannot name arrive as `KEY_UNKNOWN + MOD_CTRL` with the letter only in the codepoint, which never reached the application -- Ctrl-L refresh was undetectable. Test in `tests/test_local_core.c`. |
+| `TIMUI_FLAG_INLINE` + `cfg.inline_rows` + `timui_inline_paint/commit/commit_emit` (`timui.h`, `timui_core.c`, `timui_render.c`, `timui_term.c`) | Inline band mode: manage N rows at the cursor anchor on the normal screen instead of the alt screen; finished lines scroll into native scrollback via commit, so scrolling/selection/copy stay with the terminal. Cursor-anchor contract documented in `timui.h`. Commits queue and flush inside the next `timui_end` (erase + lines + repaint, one sync bracket); an unchanged band emits nothing; the style is closed before every row break (BCE terminals fill scroll-revealed lines with the current background), and a content-only change (a keystroke) takes `timui_inline_paint_diff`, which rewrites only the changed cell span of each touched row in place (relative moves, no EL) without erasing the band; the parked cursor is hidden across a repaint. The hardware cursor of a focused input is parked at its cell with relative moves and un-parked back to the anchor before any later band output (including the exit erase). Note: adds a field to `TimuiConfig` and `TIMUI_CONFIG_INIT` — a re-vendor must re-add both. Tests in `tests/test_inline.c`. |
+
+| Overwrite-in-place inline painting + trust protocol (`timui_render.c`, `timui_core.c`, `timui_int.h`: `inline_trusted`, `inline_prev_rows`) | `timui_inline_paint` and `timui_inline_commit_emit` overwrite rows in place (EL per row, style closed) instead of erase-down + repaint, which flashed on every streaming commit. `timui_end` erases down once when the screen is untrusted (first paint, `timui_full_redraw`, resume) and cleans shrink leftovers with a targeted erase after the repaint. Tests in `tests/test_inline.c` (`test_inline_trust_protocol`, `test_inline_shrink_cleans_below`). |
+| `timui_suspend` / `timui_resume` + `ui->suspended` (`timui.h`, `timui_core.c`, `timui_int.h`) | Release the terminal to a child process (external editor) and take it back: suspend closes the style, erases the band, un-parks the cursor and restores termios + input-fd flags; frames in between neither read input (the fd may be blocking again) nor write output; resume re-enters raw + screen modes and forces a full redraw. Tests in `tests/test_inline.c` (`test_inline_suspend_resume`). |
+
+Tests for these live in `tests/test_mouse_drag.c` and `tests/test_inline.c`,
+deliberately outside the
+upstream test files (which a re-vendor overwrites). They are registered in
+`tests/test.h` and `tests/test_main.c`, both of which **are** upstream files —
+those two registrations must be reapplied after a sync.
+
+Not a delta, but adjacent: the core samples the terminal size once in
+`timui_open` and has no `SIGWINCH` handling. Resize reflow is therefore the
+application's job; `fytim_pump` (src/libfytimui.c) runs the
+`timui_term_size` → `timui_ui_resize` → `timui_full_redraw` sequence.
+
+## Re-vendoring
+
+```sh
+cp -r ../timui.h/src/.            core/src/
+cp    ../timui.h/include/timui.h  core/include/
+cp -r ../timui.h/tools/vendor/*   core/tools/vendor/
+cp -r ../timui.h/tests/.          tests/
+cp    ../timui.h/examples/*.h     examples/
+```
+
+Then `ctest --test-dir build` — the vendored core tests are carried over
+precisely so a sync is validated here.
