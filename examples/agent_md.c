@@ -119,10 +119,11 @@ static void job_render(struct job *j, int whole)
      * rendering it adds a blank line above the closing rule */
     while(len && j->acc[len - 1] == '\n') len--;
     memset(&opts, 0, sizeof opts);
-    /* LIVE view: content only -- the band's own chrome (rule + status
-     * row) already frames it, and the md4c fence rules doubled it up */
+    /* LIVE view: styled (margin, prefix, dim body) but the renderer was
+     * created with the decoration rules blanked -- the band's own chrome
+     * frames it, the md4c rules doubled it up */
     opts.language = "text";
-    opts.flags = 0;
+    opts.flags = FYMD_FBF_STYLE;
     if(fymd_render_fenced_block(j->r, j->acc, len, &opts,
                                 &out, &out_len) != 0)
         return;
@@ -168,6 +169,9 @@ static void job_spawn(struct fytim *ft, int count)
         fytim_size(ft, &w, NULL);
         memset(&mc, 0, sizeof mc);
         mc.width = w;
+        /* keep the code styling but blank the decoration rules: the
+         * band's own chrome does the framing */
+        mc.style = "code:\n  decoration:\n    header: ''\n    footer: ''\n";
         j->r = fymd_renderer_create(&mc);
         memset(&ll, 0, sizeof ll);
         /* HEAD_TAIL with a BALANCED split: on overflow the oldest and
@@ -208,19 +212,29 @@ static void job_tick(struct fytim *ft)
             /* the COMMIT payload is the complete block: same renderer,
              * line limit lifted, so nothing the tool printed is lost */
             if(j->r){
+                /* the COMMIT payload keeps the FULL fenced chrome -- the
+                 * transcript has no other framing -- so it renders on a
+                 * fresh default-style renderer, limit-free */
+                struct fymd_renderer_cfg mc;
+                struct fymd_renderer *cr;
                 size_t alen = j->acc_len;
+                int w = 80;
                 while(alen && j->acc[alen - 1] == '\n') alen--;
+                fytim_size(ft, &w, NULL);
+                memset(&mc, 0, sizeof mc);
+                mc.width = w;
+                cr = fymd_renderer_create(&mc);
                 memset(&opts, 0, sizeof opts);
                 opts.language = "text";
                 opts.flags = FYMD_FBF_STYLE;
-                fymd_renderer_set_line_limit(j->r, NULL);
-                if(fymd_render_fenced_block(j->r, j->acc, alen, &opts,
-                                            &out, &out_len) == 0){
+                if(cr && fymd_render_fenced_block(cr, j->acc, alen, &opts,
+                                                  &out, &out_len) == 0){
                     while(out_len && out[out_len - 1] == '\n') out_len--;
                     fytim_workband_set(j->wb, out, out_len);
                     fytim_workband_set_commit(j->wb, out, out_len);
                     fymd_free(out);
                 }
+                if(cr) fymd_renderer_destroy(cr);
                 fymd_renderer_destroy(j->r);
                 j->r = NULL;
             }
