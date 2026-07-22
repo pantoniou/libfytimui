@@ -30,6 +30,7 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,55 +82,81 @@ struct mdstream {
     long long next_ms;             /* next push not before this */
 };
 
-/* A /demo tool call: a child process whose stdout streams into its OWN
- * work-band, concurrently with the main transcript stream in the tail --
- * the two paths are independent and may interleave freely. */
+/* Tool calls: a child process whose stdout streams into its OWN
+ * work-band, concurrently with the main transcript stream in the tail.
+ * The presentation is the agent shape:
+ *
+ *     [dot] **tool** command-line            <- live: yellow activity dot
+ *       styled output rows (windowed)
+ *
+ *     [dot] **tool** command-line OK|ERROR   <- final: white or red dot,
+ *       truncated output                        committed to the transcript
+ *
+ * No fence chrome anywhere: the header line is the frame. File tools
+ * fence with the file's language so the output is syntax highlighted. */
 #define JOBS_MAX 4
-#define JOB_LIVE_ROWS 6            /* renderer viewport for the live band */
+#define JOB_LIVE_ROWS 6            /* live body rows */
+#define JOB_DONE_ROWS 3            /* truncated output in the transcript */
 struct job {
     struct fytim_workband *wb;
     FILE *fp;                      /* popen stream, non-blocking */
-    struct fymd_renderer *r;       /* renders the output as a fenced block */
+    struct fymd_renderer *r;       /* body renderer: styled, no decoration */
     char acc[8192];                /* raw tool output accumulated */
     size_t acc_len;
+    char tool[16];                 /* "shell", "update", ... */
+    char cmd[128];                 /* display command line */
+    char lang[16];                 /* fence language for highlighting */
     int id;
 };
 
 static struct job jobs[JOBS_MAX];
 static int job_seq;
 
-/* Re-render the accumulated output through md4c's fenced-block renderer
- * and refresh the band. LINE mode: only complete lines render while the
- * tool runs -- a read can end mid-line (or mid-UTF-8-sequence) and the
- * torn bytes flash as artifacts; the partial line waits in acc for its
- * '\n' (whole == true renders everything, for EOF). The renderer's own
- * HEAD_TAIL line limit windows the LIVE view around an omission
- * separator; the band cap only trims what the limited render produced. */
-static void job_render(struct job *j, int whole)
+/* The header row: activity dot, bold tool name, command, status. */
+static size_t job_header(const struct job *j, char *buf, size_t cap,
+                         const char *dot_sgr, const char *status)
+{
+    int n = snprintf(buf, cap, "%s\xe2\x97\x8f\x1b[0m \x1b[1m%s\x1b[0m %s%s",
+                     dot_sgr, j->tool, j->cmd, status);
+    return n < 0 ? 0 : (size_t)n;
+}
+
+/* Compose header + rendered body into the band. LINE mode: only complete
+ * lines render while the tool runs -- a torn read flashes as artifacts;
+ * the partial line waits in acc for its '\n' (whole renders everything).
+ * The renderer's HEAD_TAIL limit windows the LIVE body around an
+ * omission separator. */
+static void job_show(struct job *j, const char *dot_sgr, const char *status)
 {
     struct fymd_fenced_block_opts opts;
+    char head[256], *full;
     char *out = NULL;
-    size_t out_len = 0, len = j->acc_len;
-    if(!j->r) return;
-    if(!whole){
-        while(len && j->acc[len - 1] != '\n') len--;
-        if(!len) return;                   /* no complete line yet */
+    size_t out_len = 0, hlen, len = j->acc_len;
+
+    if(!j->wb) return;
+    hlen = job_header(j, head, sizeof head, dot_sgr, status);
+    while(len && j->acc[len - 1] != '\n') len--;   /* complete lines only */
+    while(len && j->acc[len - 1] == '\n') len--;   /* terminator, not a row */
+    if(len && j->r){
+        memset(&opts, 0, sizeof opts);
+        opts.language = j->lang;
+        opts.flags = FYMD_FBF_STYLE | FYMD_FBF_HIGHLIGHT;
+        if(fymd_render_fenced_block(j->r, j->acc, len, &opts,
+                                    &out, &out_len) != 0)
+            out = NULL;
+        while(out && out_len && out[out_len - 1] == '\n') out_len--;
     }
-    /* the trailing newline is a line TERMINATOR, not an empty last row --
-     * rendering it adds a blank line above the closing rule */
-    while(len && j->acc[len - 1] == '\n') len--;
-    memset(&opts, 0, sizeof opts);
-    /* LIVE view: styled (margin, prefix, dim body) but the renderer was
-     * created with the decoration rules blanked -- the band's own chrome
-     * frames it, the md4c rules doubled it up */
-    opts.language = "text";
-    opts.flags = FYMD_FBF_STYLE;
-    if(fymd_render_fenced_block(j->r, j->acc, len, &opts,
-                                &out, &out_len) != 0)
-        return;
-    while(out_len && out[out_len - 1] == '\n') out_len--;
-    fytim_workband_set(j->wb, out, out_len);
-    fymd_free(out);
+    full = malloc(hlen + 1 + out_len + 1);
+    if(full){
+        memcpy(full, head, hlen);
+        if(out_len){
+            full[hlen] = '\n';
+            memcpy(full + hlen + 1, out, out_len);
+        }
+        fytim_workband_set(j->wb, full, hlen + (out_len ? 1 + out_len : 0));
+        free(full);
+    }
+    if(out) fymd_free(out);
 }
 
 static void job_push(struct job *j, const char *buf, size_t len)
@@ -137,31 +164,31 @@ static void job_push(struct job *j, const char *buf, size_t len)
     if(len > sizeof j->acc - j->acc_len) len = sizeof j->acc - j->acc_len;
     memcpy(j->acc + j->acc_len, buf, len);
     j->acc_len += len;
-    job_render(j, 0);
+    job_show(j, "\x1b[33m", "");                   /* yellow: running */
 }
 
-static void job_spawn(struct fytim *ft, int count)
+static void job_spawn(struct fytim *ft, const char *tool, const char *display,
+                      const char *shell_cmd, const char *lang)
 {
-    char cmd[128], bot[64];
     int i;
     struct job *j = NULL;
     for(i = 0; i < JOBS_MAX; i++)
         if(!jobs[i].fp){ j = &jobs[i]; break; }
     if(!j){
-        fytim_commit(ft, "demo: all job slots busy", 24);
+        fytim_commit(ft, "tool: all job slots busy", 24);
         return;
     }
-    snprintf(cmd, sizeof cmd,
-             "for i in $(seq 1 %d); do echo \"tick $i/%d\"; sleep 1; done",
-             count, count);
-    j->fp = popen(cmd, "r");
+    j->fp = popen(shell_cmd, "r");
     if(!j->fp) return;
     fcntl(fileno(j->fp), F_SETFL, O_NONBLOCK);
     j->wb = fytim_workband_create(ft);
     j->id = ++job_seq;
     j->acc_len = 0;
-    /* the tool's output renders through its OWN md4c fenced-block renderer;
-     * a SCROLL line limit windows the live view to the newest rows */
+    snprintf(j->tool, sizeof j->tool, "%s", tool);
+    snprintf(j->cmd, sizeof j->cmd, "%s", display);
+    snprintf(j->lang, sizeof j->lang, "%s", lang && *lang ? lang : "text");
+    /* body renderer: code styling (margin, prefix, dim/highlight) with
+     * the decoration rules blanked -- the header line is the frame */
     {
         struct fymd_renderer_cfg mc;
         struct fymd_line_limit_opts ll;
@@ -169,25 +196,17 @@ static void job_spawn(struct fytim *ft, int count)
         fytim_size(ft, &w, NULL);
         memset(&mc, 0, sizeof mc);
         mc.width = w;
-        /* keep the code styling but blank the decoration rules: the
-         * band's own chrome does the framing */
         mc.style = "code:\n  decoration:\n    header: ''\n    footer: ''\n";
         j->r = fymd_renderer_create(&mc);
         memset(&ll, 0, sizeof ll);
-        /* HEAD_TAIL with a BALANCED split: on overflow the oldest and
-         * newest rows share the window evenly around the omission
-         * separator. */
+        /* balanced head/tail around the omission separator */
         ll.mode = FYMD_LLM_HEAD_TAIL;
         ll.split = FYMD_LLS_BALANCED;
         ll.max_lines = JOB_LIVE_ROWS;
         if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
-        job_render(j, 0);
     }
-    fytim_workband_set_max_rows(j->wb, JOB_LIVE_ROWS);
-    fytim_workband_set_top(j->wb, "");             /* a rule above the band */
-    snprintf(bot, sizeof bot, " \x1b[2mdemo #%d (%ds) running\x1b[0m",
-             j->id, count);
-    fytim_workband_set_bottom(j->wb, bot);
+    fytim_workband_set_max_rows(j->wb, JOB_LIVE_ROWS + 1);   /* + header */
+    job_show(j, "\x1b[33m", "");
 }
 
 static void job_tick(struct fytim *ft)
@@ -195,51 +214,28 @@ static void job_tick(struct fytim *ft)
     int i;
     for(i = 0; i < JOBS_MAX; i++){
         struct job *j = &jobs[i];
-        size_t len;
         char chunk[512];
         ssize_t n;
         if(!j->fp) continue;
         while((n = read(fileno(j->fp), chunk, sizeof chunk)) > 0)
-            job_push(j, chunk, (size_t)n);          /* live fenced render */
+            job_push(j, chunk, (size_t)n);
         if(n == 0){                                /* EOF: the tool is done */
-            char done[64];
-            struct fymd_fenced_block_opts opts;
-            char *out = NULL;
-            size_t out_len = 0;
-            (void)ft; (void)len;
-            pclose(j->fp);
+            struct fymd_line_limit_opts ll;
+            int rc = pclose(j->fp);
+            int ok = rc != -1 && WIFEXITED(rc) && WEXITSTATUS(rc) == 0;
+            (void)ft;
             j->fp = NULL;
-            /* the COMMIT payload is the complete block: same renderer,
-             * line limit lifted, so nothing the tool printed is lost */
-            if(j->r){
-                /* the COMMIT payload keeps the FULL fenced chrome -- the
-                 * transcript has no other framing -- so it renders on a
-                 * fresh default-style renderer, limit-free */
-                struct fymd_renderer_cfg mc;
-                struct fymd_renderer *cr;
-                size_t alen = j->acc_len;
-                int w = 80;
-                while(alen && j->acc[alen - 1] == '\n') alen--;
-                fytim_size(ft, &w, NULL);
-                memset(&mc, 0, sizeof mc);
-                mc.width = w;
-                cr = fymd_renderer_create(&mc);
-                memset(&opts, 0, sizeof opts);
-                opts.language = "text";
-                opts.flags = FYMD_FBF_STYLE;
-                if(cr && fymd_render_fenced_block(cr, j->acc, alen, &opts,
-                                                  &out, &out_len) == 0){
-                    while(out_len && out[out_len - 1] == '\n') out_len--;
-                    fytim_workband_set(j->wb, out, out_len);
-                    fytim_workband_set_commit(j->wb, out, out_len);
-                    fymd_free(out);
-                }
-                if(cr) fymd_renderer_destroy(cr);
-                fymd_renderer_destroy(j->r);
-                j->r = NULL;
-            }
-            snprintf(done, sizeof done, " \x1b[2mdemo #%d done\x1b[0m", j->id);
-            fytim_workband_set_bottom(j->wb, done);
+            /* the FINAL form: white or red dot, status word, and the
+             * output truncated to its newest rows -- this is both the
+             * last live view and the commit payload (no fence chrome) */
+            memset(&ll, 0, sizeof ll);
+            ll.mode = FYMD_LLM_SCROLL;
+            ll.max_lines = JOB_DONE_ROWS;
+            if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
+            job_show(j,
+                     ok ? "\x1b[97m" : "\x1b[31m",
+                     ok ? " \x1b[2mOK\x1b[0m" : " \x1b[1;31mERROR\x1b[0m");
+            if(j->r){ fymd_renderer_destroy(j->r); j->r = NULL; }
             /* mid-stream this DEFERS: the final render stays until the
              * transcript stream ends, then commits in finish order */
             fytim_workband_commit(j->wb);
@@ -451,7 +447,8 @@ static void cmd_stream(struct fytim *ft, struct mdstream *s, const char *args)
 static void complete_cb(void *user, const char *text,
                         struct fytim_completions *c)
 {
-    static const char *const cmds[] = { "/demo", "/quit", "/stream" };
+    static const char *const cmds[] = { "/demo", "/edit", "/quit",
+                                        "/run", "/stream" };
     size_t i;
     (void)user;
     for(i = 0; i < sizeof cmds / sizeof cmds[0]; i++)
@@ -475,7 +472,7 @@ int main(void)
     }
     fytim_set_header(ft, " agent_md -- libfymd4c through the fytim_ surface");
     fytim_set_status_row(ft, 1,
-        " Enter: canned markdown | /stream FILE [MS] | /demo N | Esc quits");
+        " Enter: markdown | /stream FILE [MS] | /demo N | /run CMD | /edit FILE");
     fytim_set_complete_fn(ft, complete_cb, NULL);
 
     while(running){
@@ -514,10 +511,34 @@ int main(void)
                     if(strncmp(ev.text, "/stream", 7) == 0){
                         cmd_stream(ft, &s, ev.text + 7);
                     }else if(strncmp(ev.text, "/demo", 5) == 0){
+                        char cmd[160], disp[64];
                         int dn = atoi(ev.text + 5);
                         if(dn < 1)  dn = 10;
                         if(dn > 60) dn = 60;
-                        job_spawn(ft, dn);
+                        snprintf(cmd, sizeof cmd,
+                                 "for i in $(seq 1 %d); do echo \"tick $i/%d\";"
+                                 " sleep 1; done", dn, dn);
+                        snprintf(disp, sizeof disp, "demo %d", dn);
+                        job_spawn(ft, "shell", disp, cmd, "text");
+                    }else if(strncmp(ev.text, "/run ", 5) == 0){
+                        char cmd[512];
+                        snprintf(cmd, sizeof cmd, "%s 2>&1", ev.text + 5);
+                        job_spawn(ft, "shell", ev.text + 5, cmd, "text");
+                    }else if(strncmp(ev.text, "/edit ", 6) == 0){
+                        /* a file tool: fence with the file's language so
+                         * the render is syntax highlighted */
+                        char cmd[512];
+                        const char *path = ev.text + 6, *dot, *lang = "text";
+                        dot = strrchr(path, '.');
+                        if(dot){
+                            if(!strcmp(dot, ".c") || !strcmp(dot, ".h"))
+                                lang = "c";
+                            else if(!strcmp(dot, ".py"))  lang = "python";
+                            else if(!strcmp(dot, ".md"))  lang = "markdown";
+                            else if(!strcmp(dot, ".sh"))  lang = "sh";
+                        }
+                        snprintf(cmd, sizeof cmd, "cat %s 2>&1", path);
+                        job_spawn(ft, "update", path, cmd, lang);
                     }else{
                         md_start(ft, &s, md_doc, sizeof md_doc - 1, NULL, 60, 0);
                     }
