@@ -103,8 +103,8 @@ static int job_seq;
  * tool runs -- a read can end mid-line (or mid-UTF-8-sequence) and the
  * torn bytes flash as artifacts; the partial line waits in acc for its
  * '\n' (whole == true renders everything, for EOF). The renderer's own
- * line limit (FYMD_LLM_SCROLL) windows the LIVE view to the newest rows;
- * the band cap only trims what the limited render already produced. */
+ * HEAD_TAIL line limit windows the LIVE view around an omission
+ * separator; the band cap only trims what the limited render produced. */
 static void job_render(struct job *j, int whole)
 {
     struct fymd_fenced_block_opts opts;
@@ -119,8 +119,10 @@ static void job_render(struct job *j, int whole)
      * rendering it adds a blank line above the closing rule */
     while(len && j->acc[len - 1] == '\n') len--;
     memset(&opts, 0, sizeof opts);
+    /* LIVE view: content only -- the band's own chrome (rule + status
+     * row) already frames it, and the md4c fence rules doubled it up */
     opts.language = "text";
-    opts.flags = FYMD_FBF_STYLE;
+    opts.flags = 0;
     if(fymd_render_fenced_block(j->r, j->acc, len, &opts,
                                 &out, &out_len) != 0)
         return;
@@ -168,13 +170,11 @@ static void job_spawn(struct fytim *ft, int count)
         mc.width = w;
         j->r = fymd_renderer_create(&mc);
         memset(&ll, 0, sizeof ll);
-        /* HEAD_TAIL keeps the block's chrome under the limit: the header
-         * rule stays pinned (head of 1), the omission separator counts
-         * the hidden rows, and the tail shows the newest lines plus the
-         * footer rule once the block closes. */
+        /* HEAD_TAIL with a BALANCED split: on overflow the oldest and
+         * newest rows share the window evenly around the omission
+         * separator. */
         ll.mode = FYMD_LLM_HEAD_TAIL;
-        ll.split = FYMD_LLS_HEAD_COUNT;
-        ll.head_lines = 1;
+        ll.split = FYMD_LLS_BALANCED;
         ll.max_lines = JOB_LIVE_ROWS;
         if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
         job_render(j, 0);
