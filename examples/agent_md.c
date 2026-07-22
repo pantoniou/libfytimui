@@ -112,9 +112,7 @@ struct job {
 static struct job jobs[JOBS_MAX];
 static int job_seq;
 
-/* The header row: activity button, bold tool name, command, status. The
- * button is an EMOJI, not an SGR-colored glyph -- it renders identically
- * everywhere, no color support needed. */
+/* The header row: activity dot, bold tool name, command, status. */
 static size_t job_header(const struct job *j, char *buf, size_t cap,
                          const char *dot, const char *status)
 {
@@ -161,12 +159,13 @@ static void job_show(struct job *j, const char *dot_sgr, const char *status)
     if(out) fymd_free(out);
 }
 
-/* The running button BLINKS: yellow and dark alternate on a host-side
+/* The running dot BLINKS: bright and dim yellow alternate on a host-side
  * timer (SGR blink is unreliable across terminals). */
 static long long now_ms(void);
 static const char *job_dot_running(void)
 {
-    return (now_ms() / 500) & 1 ? "\xe2\x9a\xab" : "\xf0\x9f\x9f\xa1";
+    return (now_ms() / 500) & 1 ? "\x1b[2;33m\xe2\x97\x8f\x1b[0m"
+                                : "\x1b[33m\xe2\x97\x8f\x1b[0m";
 }
 
 static void job_push(struct job *j, const char *buf, size_t len)
@@ -246,7 +245,8 @@ static void job_tick(struct fytim *ft)
             ll.mode = FYMD_LLM_SCROLL;
             ll.max_lines = JOB_DONE_ROWS;
             if(j->r) fymd_renderer_set_line_limit(j->r, &ll);
-            job_show(j, ok ? "\xf0\x9f\x9f\xa2" : "\xf0\x9f\x94\xb4", "");
+            job_show(j, ok ? "\x1b[32m\xe2\x97\x8f\x1b[0m"
+                           : "\x1b[31m\xe2\x97\x8f\x1b[0m", "");
             if(j->r){ fymd_renderer_destroy(j->r); j->r = NULL; }
             /* mid-stream this DEFERS: the final render stays until the
              * transcript stream ends, then commits in finish order */
