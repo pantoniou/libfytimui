@@ -45,6 +45,27 @@ TIMUI_TEST(test_text_area_renders){
     timui_close(ui);
 }
 
+TIMUI_TEST(test_text_area_wraps_at_viewport_edge){
+    TimuiAllocator al = timui_default_allocator();
+    TimuiFakeTransport fake;
+    TimuiTransport t;
+    Timui *ui = NULL;
+    TimuiFrame *f = NULL;
+    char text[64] = "abcdef";
+    TimuiTextAreaState tas = { text, sizeof text, 6, 0 };
+    TimuiCellBuffer *buf;
+    timui_fake_init(&fake, &al);
+    t = timui_fake_transport(&fake);
+    timui_open_for_test(&ui, t, 10, 4, &al);
+    timui_begin(ui, &f);
+    buf = timui_frame_buffer(f);
+    timui_text_area(f, TIMUI_ID("wrap"), TIMUI_RECT(0, 0, 4, 3), &tas);
+    TIMUI_CHECK(timui_snapshot_row_eq(buf, 0, "abcd      "));
+    TIMUI_CHECK(timui_snapshot_row_eq(buf, 1, "ef        "));
+    timui_end(f);
+    timui_close(ui);
+}
+
 /* V8: text_area must append/delete whole UTF-8 codepoints (same class of
  * defect as input_line_buf). */
 TIMUI_TEST(test_text_area_utf8_no_split){

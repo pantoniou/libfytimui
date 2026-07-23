@@ -318,6 +318,8 @@ int main(int argc, char **argv){
         { "test_vt_wide_glyph", test_vt_wide_glyph },
 #endif
         { "test_text_area_renders", test_text_area_renders },
+        { "test_text_area_wraps_at_viewport_edge",
+          test_text_area_wraps_at_viewport_edge },
         { "test_text_area_utf8_no_split", test_text_area_utf8_no_split },
         { "test_text_area_utf8_backspace", test_text_area_utf8_backspace },
         { "test_text_area_paste_preserves_newline", test_text_area_paste_preserves_newline },

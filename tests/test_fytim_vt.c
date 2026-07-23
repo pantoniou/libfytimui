@@ -180,6 +180,56 @@ static void test_prompt_style_fills_card(void)
     vth_close(&h);
 }
 
+static void test_prompt_wraps_and_grows(void)
+{
+    struct vth h;
+    int first, second;
+
+    if(!vth_open_pty(&h, 16, 12)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "> ") == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "abcdefghijklmnop") == FYTIM_OK);
+    vth_pump(&h);
+
+    first = vth_find_row(&h, "> abcdefghij");
+    second = vth_find_row(&h, "klmnop");
+    CHECK(first >= 0);
+    CHECK(second == first + 1);
+    vth_close(&h);
+}
+
+static void test_prompt_reflows_after_resize(void)
+{
+    struct vth h;
+    struct winsize ws;
+    int first, second;
+
+    if(!vth_open_pty(&h, 16, 20)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "> ") == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "abcdefghijklmnop") == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "> abcdefghijklmnop") >= 0);
+
+    memset(&ws, 0, sizeof ws);
+    ws.ws_row = 16;
+    ws.ws_col = 10;
+    CHECK(ioctl(h.mfd, TIOCSWINSZ, &ws) == 0);
+    h.cols = 10;
+    vterm_set_size(h.vt, 16, 10);
+    vth_pump(&h);
+    first = vth_find_row(&h, "> abcdefgh");
+    second = vth_find_row(&h, "ijklmnop");
+    CHECK(first >= 0);
+    CHECK(second == first + 1);
+
+    ws.ws_col = 20;
+    CHECK(ioctl(h.mfd, TIOCSWINSZ, &ws) == 0);
+    h.cols = 20;
+    vterm_set_size(h.vt, 16, 20);
+    vth_pump(&h);
+    CHECK(vth_find_row(&h, "> abcdefghijklmnop") >= 0);
+    vth_close(&h);
+}
+
 /* ---- regression: a work-band beyond its cap must keep its chrome -------- *
  * Content past max_rows shows only its LAST max_rows lines; the top rule
  * and the bottom status row stay. Two active bands must stay visually
@@ -547,6 +597,8 @@ int main(int argc, char **argv)
 {
     struct { const char *name; void (*fn)(void); } tests[] = {
         { "prompt_style_fills_card", test_prompt_style_fills_card },
+        { "prompt_wraps_and_grows", test_prompt_wraps_and_grows },
+        { "prompt_reflows_after_resize", test_prompt_reflows_after_resize },
         { "regression_workband_cap_keeps_chrome",
           test_regression_workband_cap_keeps_chrome },
         { "regression_resize_repaints_width",

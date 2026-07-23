@@ -1242,9 +1242,35 @@ static int wb_rows_total(const struct fytim *ft)
 
 static int prompt_lines(const struct fytim *ft)
 {
+    const char *marker = ft->marker ? ft->marker : "> ";
     const char *p = ft->input;
-    int n = 1;
-    for(; *p; p++) if(*p == '\n') n++;
+    size_t len = strlen(p), i = 0, next;
+    int width = ft->term_w - sgr_disp_width(marker);
+    int n = 1, col = 0, gw;
+    if(width < 1) width = 1;
+    while(i < len && n < FYTIM_PROMPT_MAX){
+        if(p[i] == '\r' || p[i] == '\n'){
+            if(p[i] == '\r' && i + 1 < len && p[i + 1] == '\n') i++;
+            i++;
+            n++;
+            col = 0;
+            continue;
+        }
+        next = timui_grapheme_next(p, len, i);
+        if(next <= i) next = i + 1;
+        gw = timui_grapheme_width(p + i, next - i);
+        if(gw < 1) gw = 1;
+        if(col > 0 && col + gw > width){
+            n++;
+            col = 0;
+        }
+        col += gw;
+        i = next;
+        if(col >= width){
+            n++;
+            col = 0;
+        }
+    }
     return n < FYTIM_PROMPT_MAX ? n : FYTIM_PROMPT_MAX;
 }
 

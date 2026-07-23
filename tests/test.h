@@ -325,6 +325,7 @@ void test_vt_hyperlink(void);
 void test_vt_partial_update(void);
 void test_vt_wide_glyph(void);
 void test_text_area_renders(void);
+void test_text_area_wraps_at_viewport_edge(void);
 void test_text_area_utf8_no_split(void);
 void test_text_area_utf8_backspace(void);
 void test_text_area_paste_preserves_newline(void);

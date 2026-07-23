@@ -127,16 +127,38 @@ static void text_area_process_edit_ops_(Timui *ui, TimuiTextAreaState *st,
         }
     }
 }
-static int text_area_cursor_row_(const TimuiTextAreaState *st){
-    int cursor_row = 0;
-    size_t ci;
-    for(ci = 0; ci < st->cursor && ci < st->cap; ci++){
-        if(st->text[ci] == '\n' || st->text[ci] == '\r'){
-            cursor_row++;
-            if(st->text[ci] == '\r' && ci + 1 < st->cap && st->text[ci + 1] == '\n') ci++;
+static void text_area_pos_(const char *text, size_t limit, int width,
+                           int *rowp, int *colp){
+    size_t len = strlen(text), i = 0, next;
+    int row = 0, col = 0, gw;
+    if(limit > len) limit = len;
+    if(width < 1) width = 1;
+    while(i < limit){
+        if(text[i] == '\r' || text[i] == '\n'){
+            if(text[i] == '\r' && i + 1 < limit && text[i + 1] == '\n')
+                i++;
+            i++;
+            row++;
+            col = 0;
+            continue;
+        }
+        next = timui_grapheme_next(text, limit, i);
+        if(next <= i) next = i + 1;
+        gw = timui_grapheme_width(text + i, next - i);
+        if(gw < 1) gw = 1;
+        if(col > 0 && col + gw > width){
+            row++;
+            col = 0;
+        }
+        col += gw;
+        i = next;
+        if(col >= width){
+            row++;
+            col = 0;
         }
     }
-    return cursor_row;
+    if(rowp) *rowp = row;
+    if(colp) *colp = col;
 }
 static TimuiTextAreaResult text_area_ex_(TimuiFrame *f, TimuiId id, TimuiRect r,
                                         TimuiTextAreaState st, uint32_t flags,
@@ -145,16 +167,19 @@ static TimuiTextAreaResult text_area_ex_(TimuiFrame *f, TimuiId id, TimuiRect r,
     TimuiInteractResult ir;
     TimuiRect content;
     TimuiTextAreaResult res;
-    size_t i;
-    int y = 0;
+    size_t i, text_len;
+    int x = 0, y = 0;
     res.state = st;
     res.changed = 0;
     res.submitted = 0;
     res.focused = 0;
     if(!f || !f->ui || !st.text || st.cap == 0) return res;
-    { size_t text_len = text_len_bounded_(st.text, st.cap);
-      if(text_len >= st.cap){ text_len = st.cap - 1; st.text[text_len] = '\0'; }
-      if(st.cursor > text_len) st.cursor = text_len; }   /* Y1: untrusted cursor -> OOB */
+    text_len = text_len_bounded_(st.text, st.cap);
+    if(text_len >= st.cap){
+        text_len = st.cap - 1;
+        st.text[text_len] = '\0';
+    }
+    if(st.cursor > text_len) st.cursor = text_len;
     ui = f->ui;
     ir = timui_interact_button(&ui->ia, id, r);
     res.focused = ir.focused;
@@ -165,21 +190,20 @@ static TimuiTextAreaResult text_area_ex_(TimuiFrame *f, TimuiId id, TimuiRect r,
         ui->edit_count = 0;
         ui->key_in = 0;
     }
+    text_len = text_len_bounded_(st.text, st.cap);
     { TimuiStyle sst = style ? *style :
           timui_widget_style_(ui, TIMUI_WIDGET_TEXT_AREA,
               ir.focused ? TIMUI_SLOT_INPUT_FOCUSED : TIMUI_SLOT_INPUT,
               ir.focused ? TIMUI_STYLE_STATE_FOCUSED : 0);
-      {  int cursor_row = text_area_cursor_row_(&st);
+      {  int cursor_row, total_rows;
+         text_area_pos_(st.text, st.cursor, r.w, &cursor_row, NULL);
          /* scroll back when the viewport grew: the view may not waste rows
           * below the last line while earlier lines sit hidden above
           * (regression/textarea-scroll-on-grow) */
-         {  TimuiTextAreaState all = st;
-            int total_rows;
-            all.cursor = text_len_bounded_(st.text, st.cap);
-            total_rows = text_area_cursor_row_(&all) + 1;
-            if(r.h > 0 && st.scroll_y > total_rows - r.h)
-                st.scroll_y = total_rows - r.h;
-         }
+         text_area_pos_(st.text, text_len, r.w, &total_rows, NULL);
+         total_rows++;
+         if(r.h > 0 && st.scroll_y > total_rows - r.h)
+             st.scroll_y = total_rows - r.h;
          if(st.scroll_y < 0) st.scroll_y = 0;
          if(cursor_row < st.scroll_y) st.scroll_y = cursor_row;
          if(cursor_row >= st.scroll_y + r.h) st.scroll_y = cursor_row - r.h + 1;
@@ -190,24 +214,39 @@ static TimuiTextAreaResult text_area_ex_(TimuiFrame *f, TimuiId id, TimuiRect r,
       timui_draw_fill(&ui->curr, r, sst);
       content = timui_scroll_begin(f, r, st.scroll_y);
       i = 0;
-      while(i < st.cap && st.text[i]){
-          size_t ls = i;
-          while(i < st.cap && st.text[i] && st.text[i] != '\n'){
-              if(st.text[i] == '\r') break;  /* \r or \r\n line break */
+      while(i < text_len){
+          size_t next;
+          int gw;
+          if(st.text[i] == '\r' || st.text[i] == '\n'){
+              if(st.text[i] == '\r' && i + 1 < text_len &&
+                 st.text[i + 1] == '\n')
+                  i++;
               i++;
+              y++;
+              x = 0;
+              continue;
           }
-          timui_draw_text(&ui->curr, content.x, content.y + y,
-                          (TimuiStr){ st.text + ls, i - ls }, sst);
-          if(i < st.cap && (st.text[i] == '\r' || st.text[i] == '\n')){
-              if(st.text[i] == '\r' && i + 1 < st.cap && st.text[i+1] == '\n') i++;
-              i++;
+          next = timui_grapheme_next(st.text, text_len, i);
+          if(next <= i) next = i + 1;
+          gw = timui_grapheme_width(st.text + i, next - i);
+          if(gw < 1) gw = 1;
+          if(x > 0 && x + gw > r.w){
+              y++;
+              x = 0;
           }
-          y++;
+          timui_draw_text(&ui->curr, content.x + x, content.y + y,
+                          (TimuiStr){ st.text + i, next - i }, sst);
+          x += gw;
+          i = next;
+          if(x >= r.w){
+              y++;
+              x = 0;
+          }
       }
       timui_scroll_end(f);
       if(ir.focused){                                 /* F1.4: request the hardware cursor */
           int crow, ccol;
-          text_pos_(st.text, st.cursor, &crow, &ccol);
+          text_area_pos_(st.text, st.cursor, r.w, &crow, &ccol);
           if(crow >= st.scroll_y && crow < st.scroll_y + r.h && ccol < r.w){
               ui->cursor_x = r.x + ccol;                /* content.x == r.x (vertical scroll only) */
               ui->cursor_y = r.y + (crow - st.scroll_y);
