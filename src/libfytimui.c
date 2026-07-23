@@ -1541,7 +1541,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
     ft->ev_last = NULL;
 
     if(timui_key_pressed(f, TIMUI_KEY_ESCAPE))
-        ev_push(ft, FYTIM_EVENT_QUIT, NULL, 0, 0, 0);
+        ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
     if(timui_mouse_wheel(f) ||
        timui_key_pressed(f, TIMUI_KEY_PAGE_UP) ||
        timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN))
@@ -1551,6 +1551,8 @@ enum fytim_result fytim_pump(struct fytim *ft)
         uint32_t cp = timui_key_codepoint(f);
         if(ctrl && cp == 'c')
             ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
+        if(ctrl && cp == 'd' && !ft->input[0])
+            ev_push(ft, FYTIM_EVENT_QUIT, NULL, 0, 0, 0);
         if(ctrl && cp == 'l')
             timui_full_redraw(ft->ui);
         if(ctrl && cp == 'g')

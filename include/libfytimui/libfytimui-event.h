@@ -19,7 +19,7 @@
 enum fytim_event_type {
     FYTIM_EVENT_NONE = 0,
     FYTIM_EVENT_LINE,        /* the user submitted an input line */
-    FYTIM_EVENT_INTERRUPT,   /* ^C: cancel outstanding work */
+    FYTIM_EVENT_INTERRUPT,   /* Escape/^C: cancel outstanding work */
     FYTIM_EVENT_QUIT,        /* ^D on an empty line, or a quit request */
     FYTIM_EVENT_RESIZE,
     FYTIM_EVENT_SCROLLBACK, /* wheel/PageUp/PageDown reached the application */

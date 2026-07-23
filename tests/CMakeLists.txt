@@ -117,7 +117,7 @@ if(ASAN_C_FLAGS)
 endif()
 
 foreach(t create_paints_inline commit_batches_into_pump
-          commit_rejects_disallowed line_event_on_enter esc_emits_quit
+          commit_rejects_disallowed line_event_on_enter esc_emits_interrupt
           page_key_emits_scrollback history_recall completion
           chrome_and_workband chrome_style_contract
           workband_lifecycle workband_caps_last_rows workband_top_bottom

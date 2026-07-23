@@ -149,8 +149,8 @@ static void test_line_event_on_enter(void)
     h_close(&h);
 }
 
-/* Esc asks to quit. */
-static void test_esc_emits_quit(void)
+/* Esc cancels outstanding work without exiting the session. */
+static void test_esc_emits_interrupt(void)
 {
     struct harness h;
     struct fytim_event ev;
@@ -158,7 +158,7 @@ static void test_esc_emits_quit(void)
     h_keys(&h, "\x1b\x1b");            /* ESC ESC decodes as one Escape */
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     CHECK(fytim_next_event(h.ft, &ev));
-    CHECK(ev.type == FYTIM_EVENT_QUIT);
+    CHECK(ev.type == FYTIM_EVENT_INTERRUPT);
     h_close(&h);
 }
 
@@ -861,7 +861,7 @@ int main(int argc, char **argv)
         { "commit_batches_into_pump", test_commit_batches_into_pump },
         { "commit_rejects_disallowed", test_commit_rejects_disallowed },
         { "line_event_on_enter", test_line_event_on_enter },
-        { "esc_emits_quit", test_esc_emits_quit },
+        { "esc_emits_interrupt", test_esc_emits_interrupt },
         { "page_key_emits_scrollback", test_page_key_emits_scrollback },
         { "history_recall", test_history_recall },
         { "completion", test_completion },
