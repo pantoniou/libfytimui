@@ -64,12 +64,12 @@ set_target_properties(fytimui PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}
     PUBLIC_HEADER "${_fytimui_incdir}/libfytimui.h"
-    EXPORT_NAME fytimui
+    EXPORT_NAME libfytimui
 )
 set_target_properties(fytimui_static PROPERTIES
     OUTPUT_NAME ${_fytimui_static_output}
     POSITION_INDEPENDENT_CODE ON
-    EXPORT_NAME fytimui_static
+    EXPORT_NAME libfytimui_static
 )
 
 add_library(libfytimui::libfytimui        ALIAS fytimui)
