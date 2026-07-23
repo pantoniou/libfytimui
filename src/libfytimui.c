@@ -376,12 +376,12 @@ static enum fytim_result set_dup(char **slot, const char *s)
     return FYTIM_OK;
 }
 
-static bool sgr_only(const char *buf, size_t len);
+static bool rendered_only(const char *buf, size_t len);
 
 /* set_dup for rows that may carry SGR styling: same contract as content. */
 static enum fytim_result set_dup_sgr(char **slot, const char *s)
 {
-    if(s && *s && !sgr_only(s, strlen(s))) return FYTIM_ERR_INVALID;
+    if(s && *s && !rendered_only(s, strlen(s))) return FYTIM_ERR_INVALID;
     return set_dup(slot, s);
 }
 
@@ -393,11 +393,29 @@ static bool sgr_only_run_(void *user, const char *text, size_t len,
     (void)user; (void)text; (void)len; (void)style;
     return true;
 }
-static bool sgr_only(const char *buf, size_t len)
+static bool rendered_only(const char *buf, size_t len)
 {
     struct fytim_sgr_parser p;
+    const char *el, *cur = buf;
+    size_t left = len, chunk;
+
     fytim_sgr_init(&p);
-    fytim_sgr_feed(&p, buf, len, sgr_only_run_, NULL);
+    /*
+     * libfymd4c reverse-card rows use bare EL as a structural fill while
+     * their background SGR is active. It neither moves the cursor nor
+     * addresses another row, and the inline transcript emitter consumes it
+     * at the current row before advancing. Keep every other CSI/erase
+     * sequence subject to the strict SGR/OSC-8 parser.
+     */
+    while(left > 0){
+        el = memmem(cur, left, "\x1b[K", 3);
+        chunk = el ? (size_t)(el - cur) : left;
+        if(chunk)
+            fytim_sgr_feed(&p, cur, chunk, sgr_only_run_, NULL);
+        if(!el) break;
+        cur = el + 3;
+        left -= chunk + 3;
+    }
     return !p.disallowed_seen;
 }
 
@@ -525,7 +543,7 @@ enum fytim_result fytim_commit(struct fytim *ft, const char *buf, size_t len)
 {
     if(!ft || (!buf && len)) return FYTIM_ERR_INVALID;
     if(len == 0) return FYTIM_OK;
-    if(!sgr_only(buf, len)) return FYTIM_ERR_INVALID;
+    if(!rendered_only(buf, len)) return FYTIM_ERR_INVALID;
     commit_norm(ft, buf, len);
     return FYTIM_OK;
 }
@@ -534,7 +552,7 @@ enum fytim_result fytim_tail_set(struct fytim *ft, const char *buf, size_t len)
 {
     char *dup;
     if(!ft || (!buf && len)) return FYTIM_ERR_INVALID;
-    if(buf && len && !sgr_only(buf, len)) return FYTIM_ERR_INVALID;
+    if(buf && len && !rendered_only(buf, len)) return FYTIM_ERR_INVALID;
     if(!buf || len == 0){
         free(ft->tail);
         ft->tail = NULL;
@@ -559,7 +577,7 @@ enum fytim_result fytim_tail_apply(struct fytim *ft, size_t backtrack,
     char *grown;
 
     if(!ft || (!content && len)) return FYTIM_ERR_INVALID;
-    if(content && len && !sgr_only(content, len)) return FYTIM_ERR_INVALID;
+    if(content && len && !rendered_only(content, len)) return FYTIM_ERR_INVALID;
     ft->tail_streaming = true;         /* until fytim_tail_set(NULL) */
 
     /* Backtrack, terminal-style: the cursor-row residue after the last
@@ -675,7 +693,7 @@ static enum fytim_result wb_set_slot(char **slot, const char *buf, size_t len)
 {
     char *dup;
     if(!buf && len) return FYTIM_ERR_INVALID;
-    if(buf && len && !sgr_only(buf, len)) return FYTIM_ERR_INVALID;
+    if(buf && len && !rendered_only(buf, len)) return FYTIM_ERR_INVALID;
     if(!buf || len == 0){
         free(*slot);
         *slot = NULL;

@@ -35,10 +35,11 @@
 struct fytim;
 
 /* ---- transcript --------------------------------------------------------- *
- * Commit finished lines into native scrollback. The bytes may carry SGR
- * styling escapes only (as produced by libfymd4c); cursor, erase and
- * screen-mode sequences are rejected with FYTIM_ERR_INVALID and nothing is
- * committed. Lines must already be hard-wrapped to the terminal width.
+ * Commit finished lines into native scrollback. The bytes may carry SGR,
+ * OSC-8 links, and libfymd4c's bare erase-to-EOL reverse-card fill. Cursor
+ * movement, parameterized erase, and screen-mode sequences are rejected with
+ * FYTIM_ERR_INVALID and nothing is committed. Lines must already be
+ * hard-wrapped to the terminal width.
  * Embedded '\n' separates lines. Commits are batched and flushed by the
  * next fytim_pump as one update with the band repaint. */
 enum fytim_result fytim_commit(struct fytim *ft, const char *buf, size_t len) FYTIM_EXPORT;
@@ -49,7 +50,7 @@ enum fytim_result fytim_commit(struct fytim *ft, const char *buf, size_t len) FY
  * wholesale (a progressive markdown renderer's active region maps directly
  * onto it). Drawn under the scrollback and above every work-band, with no
  * chrome of its own; content-sized (the host caps it at the renderer).
- * Same SGR-only contract as fytim_commit; NULL or empty clears.
+ * Same rendered-text contract as fytim_commit; NULL or empty clears.
  *
  * The stream-in-progress signal is EXPLICIT: any tail update (set or
  * apply) marks a stream in flight, and only fytim_tail_set(NULL) ends it
@@ -65,7 +66,7 @@ enum fytim_result fytim_tail_set(struct fytim *ft, const char *buf, size_t len) 
  * then commit the first `freeze` rows of the result into the transcript.
  * The equivalent of replaying CUU(backtrack) + "\r" + erase-down +
  * content on a terminal, with the frozen prefix routed to scrollback.
- * Same SGR-only contract; on rejection the tail is unchanged. */
+ * Same rendered-text contract; on rejection the tail is unchanged. */
 enum fytim_result fytim_tail_apply(struct fytim *ft, size_t backtrack,
                                    const char *content, size_t len,
                                    size_t freeze) FYTIM_EXPORT;
@@ -91,9 +92,9 @@ struct fytim_workband;
  * stays valid until fytim_workband_commit/destroy or fytim_destroy. */
 struct fytim_workband *fytim_workband_create(struct fytim *ft) FYTIM_EXPORT;
 
-/* Replace the band's live content. Same SGR-only contract as fytim_commit;
- * on rejection the previous content is retained. Embedded '\n' separates
- * rows; NULL or empty clears (the band keeps one blank row). */
+/* Replace the band's live content. Same rendered-text contract as
+ * fytim_commit; on rejection the previous content is retained. Embedded '\n'
+ * separates rows; NULL or empty clears (the band keeps one blank row). */
 enum fytim_result fytim_workband_set(struct fytim_workband *wb,
                                      const char *buf, size_t len) FYTIM_EXPORT;
 
@@ -114,7 +115,7 @@ enum fytim_result fytim_workband_set_bottom(struct fytim_workband *wb,
 /* What the band commits can differ from what it shows live: an optional
  * commit payload replaces the live content in fytim_workband_commit --
  * e.g. the tool's output re-rendered as a fenced markdown block while the
- * band showed a live progressive view. Same SGR-only contract as
+ * band showed a live progressive view. Same rendered-text contract as
  * fytim_workband_set; on rejection the previous payload is retained.
  * NULL (or empty) clears it, falling back to committing the live content. */
 enum fytim_result fytim_workband_set_commit(struct fytim_workband *wb,

@@ -122,7 +122,10 @@ static void test_commit_rejects_disallowed(void)
     (void)h_out(&h, buf, sizeof buf);
 
     CHECK(fytim_commit(h.ft, "\x1b[1mbold\x1b[0m", 12) == FYTIM_OK);
+    CHECK(fytim_commit(h.ft, "\x1b[40mcard\x1b[K\x1b[0m",
+                       sizeof("\x1b[40mcard\x1b[K\x1b[0m") - 1) == FYTIM_OK);
     CHECK(fytim_commit(h.ft, "bad\x1b[2Jworse", 12) == FYTIM_ERR_INVALID);
+    CHECK(fytim_commit(h.ft, "bad\x1b[1Kworse", 12) == FYTIM_ERR_INVALID);
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     n = h_out(&h, buf, sizeof buf);
     CHECK(contains(buf, n, "bold"));
@@ -708,6 +711,9 @@ static void test_tail_apply(void)
 
     /* the SGR contract holds; a rejected push leaves the tail unchanged */
     CHECK(fytim_tail_apply(h.ft, 0, "no\x1b[2Jway", 9, 0) == FYTIM_ERR_INVALID);
+    CHECK(fytim_tail_apply(h.ft, 0, "\x1b[40mcard\x1b[K\x1b[0m\n",
+                           sizeof("\x1b[40mcard\x1b[K\x1b[0m\n") - 1, 0)
+          == FYTIM_OK);
     h_close(&h);
 }
 

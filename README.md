@@ -76,9 +76,9 @@ while(fytim_next_event(ft, &ev)) { /* LINE, INTERRUPT, QUIT, RESIZE... */ }
 ```
 
 Rendered content passed to the transcript, tail, or work-band APIs may carry
-**SGR styling escapes only**
-(as produced by libfymd4c). Cursor, erase, and screen-mode controls are
-rejected — positioning belongs to the compositor.
+SGR styling escapes, OSC-8 links, and the bare erase-to-EOL sequence used by
+libfymd4c reverse cards. Cursor movement, parameterized erase, and screen-mode
+controls are rejected — positioning belongs to the compositor.
 
 ## Current state
 
