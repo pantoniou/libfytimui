@@ -22,6 +22,7 @@ enum fytim_event_type {
     FYTIM_EVENT_INTERRUPT,   /* ^C: cancel outstanding work */
     FYTIM_EVENT_QUIT,        /* ^D on an empty line, or a quit request */
     FYTIM_EVENT_RESIZE,
+    FYTIM_EVENT_SCROLLBACK, /* wheel/PageUp/PageDown reached the application */
     FYTIM_EVENT_PANE_SELECT, /* the user selected a pane to expand */
     FYTIM_EVENT_EDIT         /* ^G: the user asked for an external editor;
                                 the host runs it between fytim_suspend and

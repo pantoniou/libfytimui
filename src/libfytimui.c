@@ -1486,6 +1486,10 @@ enum fytim_result fytim_pump(struct fytim *ft)
 
     if(timui_key_pressed(f, TIMUI_KEY_ESCAPE))
         ev_push(ft, FYTIM_EVENT_QUIT, NULL, 0, 0, 0);
+    if(timui_mouse_wheel(f) ||
+       timui_key_pressed(f, TIMUI_KEY_PAGE_UP) ||
+       timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN))
+        ev_push(ft, FYTIM_EVENT_SCROLLBACK, NULL, 0, 0, 0);
     {
         int ctrl = timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN, TIMUI_MOD_CTRL);
         uint32_t cp = timui_key_codepoint(f);

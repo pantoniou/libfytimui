@@ -162,6 +162,19 @@ static void test_esc_emits_quit(void)
     h_close(&h);
 }
 
+/* Scrollback keys that reach inline mode let the host pause animation. */
+static void test_page_key_emits_scrollback(void)
+{
+    struct harness h;
+    struct fytim_event ev;
+    if(!h_open(&h)){ CHECK(0); return; }
+    h_keys(&h, "\x1b[5~");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev));
+    CHECK(ev.type == FYTIM_EVENT_SCROLLBACK);
+    h_close(&h);
+}
+
 /* History: the host records lines; Up recalls, Down returns to the draft. */
 static void test_history_recall(void)
 {
@@ -823,6 +836,7 @@ int main(int argc, char **argv)
         { "commit_rejects_disallowed", test_commit_rejects_disallowed },
         { "line_event_on_enter", test_line_event_on_enter },
         { "esc_emits_quit", test_esc_emits_quit },
+        { "page_key_emits_scrollback", test_page_key_emits_scrollback },
         { "history_recall", test_history_recall },
         { "completion", test_completion },
         { "chrome_and_workband", test_chrome_and_workband },
