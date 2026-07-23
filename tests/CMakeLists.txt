@@ -180,7 +180,8 @@ if(VTERM_FOUND)
         target_compile_options(test_fytim_vt PRIVATE ${ASAN_C_FLAGS})
         target_link_options(test_fytim_vt PRIVATE ${ASAN_C_FLAGS})
     endif()
-    foreach(t regression_workband_cap_keeps_chrome
+    foreach(t prompt_style_fills_card
+              regression_workband_cap_keeps_chrome
               regression_resize_repaints_width
               regression_bubble_pinned_while_streaming
               regression_indexed_colors_mapped
