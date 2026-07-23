@@ -344,6 +344,92 @@ static void test_fenced_stream_matches_direct(void)
     vth_close(&h);
 }
 
+static void test_emoji_table_matches_direct(void)
+{
+    static const char md[] =
+        "| Status | Value |\n"
+        "|---|---|\n"
+        "| ✅ OK | 42 |\n"
+        "| ⚠ Warn | 7 |\n"
+        "| ❌ Fail | 0 |\n";
+    static const char *needles[] = { "OK", "Warn" };
+    struct fymd_renderer_cfg cfg;
+    struct fymd_renderer *r;
+    struct vth h;
+    VTerm *direct;
+    VTermScreen *ds;
+    char *out = NULL;
+    size_t out_len = 0, commit_len, i;
+    int yd, yc, x;
+
+    memset(&cfg, 0, sizeof cfg);
+    cfg.width = 40;
+    r = fymd_renderer_create(&cfg);
+    CHECK(r != NULL);
+    if(!r) return;
+    CHECK(fymd_render(r, md, sizeof md - 1, &out, &out_len) == 0);
+    CHECK(out != NULL && out_len > 0);
+    if(!out || !out_len){ fymd_renderer_destroy(r); return; }
+
+    direct = vterm_new(24, 80);
+    CHECK(direct != NULL);
+    if(!direct){
+        fymd_free(out);
+        fymd_renderer_destroy(r);
+        return;
+    }
+    vterm_set_utf8(direct, 1);
+    ds = vterm_obtain_screen(direct);
+    vterm_screen_reset(ds, 1);
+    {
+        const char *p = out, *end = out + out_len, *nl;
+        while(p < end){
+            nl = memchr(p, '\n', (size_t)(end - p));
+            if(!nl){
+                vterm_input_write(direct, p, (size_t)(end - p));
+                break;
+            }
+            vterm_input_write(direct, p, (size_t)(nl - p));
+            vterm_input_write(direct, "\r\n", 2);
+            p = nl + 1;
+        }
+    }
+
+    if(!vth_open(&h)){
+        CHECK(0);
+        vterm_free(direct);
+        fymd_free(out);
+        fymd_renderer_destroy(r);
+        return;
+    }
+    commit_len = out_len;
+    while(commit_len && (out[commit_len - 1] == '\n' ||
+                         out[commit_len - 1] == '\r'))
+        commit_len--;
+    CHECK(fytim_commit(h.ft, out, commit_len) == FYTIM_OK);
+    vth_pump(&h);
+
+    for(i = 0; i < sizeof needles / sizeof needles[0]; i++){
+        yd = screen_find_row(ds, 24, 80, needles[i]);
+        yc = screen_find_row(h.vs, 24, 80, needles[i]);
+        CHECK(yd >= 0 && yc >= 0);
+        if(yd < 0 || yc < 0) continue;
+        for(x = 0; x < 40; x++){
+            VTermScreenCell a, b;
+            VTermPos pa = { yd, x };
+            VTermPos pb = { yc, x };
+            vterm_screen_get_cell(ds, pa, &a);
+            vterm_screen_get_cell(h.vs, pb, &b);
+            CHECK(a.chars[0] == b.chars[0]);
+        }
+    }
+
+    vth_close(&h);
+    vterm_free(direct);
+    fymd_free(out);
+    fymd_renderer_destroy(r);
+}
+
 /* Stream `doc` through the real renderer in `chunk`-byte pieces (whole
  * lines when chunk == 0), pumping and checking the bubble after every
  * push. */
@@ -443,6 +529,7 @@ int main(int argc, char **argv)
     struct { const char *name; void (*fn)(void); } tests[] = {
         { "reverse_commit_matches_direct", test_reverse_commit_matches_direct },
         { "fenced_stream_matches_direct", test_fenced_stream_matches_direct },
+        { "emoji_table_matches_direct", test_emoji_table_matches_direct },
         { "bubble_pinned_bytes",  test_bubble_pinned_bytes },
         { "bubble_pinned_lines",  test_bubble_pinned_lines },
         { "bubble_pinned_single", test_bubble_pinned_single },

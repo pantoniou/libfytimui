@@ -22,6 +22,9 @@ TIMUI_TEST(test_utf8_width){
     TIMUI_CHECK(timui_utf8_width('A') == 1);
     TIMUI_CHECK(timui_utf8_width(0x2500) == 1);    /* box drawing */
     TIMUI_CHECK(timui_utf8_width(0x4E2D) == 2);    /* CJK 'middle' */
+    TIMUI_CHECK(timui_utf8_width(0x2705) == 2);    /* white heavy check */
+    TIMUI_CHECK(timui_utf8_width(0x26A0) == 1);    /* warning sign */
+    TIMUI_CHECK(timui_utf8_width(0x274C) == 2);    /* cross mark */
     TIMUI_CHECK(timui_utf8_width(0x0300) == 0);    /* combining mark */
     TIMUI_CHECK(timui_utf8_width(0x200D) == 0);    /* zero-width joiner */
     TIMUI_CHECK(timui_utf8_width(0xFE0F) == 0);    /* variation selector */

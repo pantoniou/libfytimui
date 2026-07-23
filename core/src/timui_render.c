@@ -74,6 +74,30 @@ TIMUI_API int timui_cells_put(TimuiCellBuffer *buf, int x, int y, const TimuiCel
 }
 
 /* ---- utf-8 decode + width --------------------------------------------- */
+typedef struct {
+    uint32_t lo, hi;
+} TimuiCodepointRange;
+
+static const TimuiCodepointRange timui_wide_ranges[] = {
+#include "timui_wcwidth_wide.h"
+};
+
+static int codepoint_in_ranges_(uint32_t cp,
+                                const TimuiCodepointRange *ranges,
+                                size_t count){
+    size_t lo = 0, hi = count;
+    while(lo < hi){
+        size_t mid = lo + (hi - lo) / 2;
+        if(cp < ranges[mid].lo)
+            hi = mid;
+        else if(cp > ranges[mid].hi)
+            lo = mid + 1;
+        else
+            return 1;
+    }
+    return 0;
+}
+
 TIMUI_API int timui_utf8_decode(const char *s, size_t len, uint32_t *out_cp){
     const unsigned char *p = (const unsigned char *)s;
     uint32_t cp = 0;
@@ -108,11 +132,8 @@ TIMUI_API int timui_utf8_width(uint32_t cp){
     if(cp == 0x200D || (cp >= 0xFE00 && cp <= 0xFE0F) ||
        (cp >= 0xE0100 && cp <= 0xE01EF) ||
        (cp >= 0x1F3FB && cp <= 0x1F3FF)) return 0;              /* joiner / variation / emoji modifier */
-    if((cp >= 0x1100 && cp <= 0x115F) ||
-       (cp >= 0x2E80 && cp <= 0xA4CF) || (cp >= 0xAC00 && cp <= 0xD7A3) ||
-       (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE30 && cp <= 0xFE6F) ||
-       (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0xFFE0 && cp <= 0xFFE6) ||
-       (cp >= 0x1F300 && cp <= 0x1FAFF)) return 2;              /* wide/fullwidth */
+    if(codepoint_in_ranges_(cp, timui_wide_ranges,
+       sizeof timui_wide_ranges / sizeof timui_wide_ranges[0])) return 2;
     return 1;
 }
 
