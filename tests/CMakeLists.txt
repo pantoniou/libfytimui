@@ -154,6 +154,7 @@ if(VTERM_FOUND)
             target_link_options(test_fytim_md_vt PRIVATE ${ASAN_C_FLAGS})
         endif()
         foreach(t reverse_commit_matches_direct
+                  fenced_stream_matches_direct
                   bubble_pinned_bytes bubble_pinned_lines bubble_pinned_single)
             add_test(NAME fytim.mdvt.${t} COMMAND test_fytim_md_vt ${t})
         endforeach()

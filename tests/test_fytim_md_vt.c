@@ -248,6 +248,102 @@ static void test_reverse_commit_matches_direct(void)
     fymd_renderer_destroy(r);
 }
 
+static void direct_apply(VTerm *vt, const struct fymd_update *upd)
+{
+    char ctl[64];
+    int n;
+    if(upd->backtrack){
+        n = snprintf(ctl, sizeof ctl, "\x1b[%zuA\r\x1b[J", upd->backtrack);
+        vterm_input_write(vt, ctl, (size_t)n);
+    }
+    if(upd->content_len)
+        vterm_input_write(vt, upd->content, upd->content_len);
+}
+
+static void screen_row_ascii(VTermScreen *vs, int row, int cols,
+                             char *out, size_t cap)
+{
+    int c, o = 0;
+    for(c = 0; c < cols && o < (int)cap - 1; c++){
+        VTermScreenCell cell;
+        VTermPos p = { row, c };
+        vterm_screen_get_cell(vs, p, &cell);
+        out[o++] = (cell.chars[0] >= 32 && cell.chars[0] < 127)
+                    ? (char)cell.chars[0] : ' ';
+    }
+    out[o] = '\0';
+}
+
+static int screen_find_number(VTermScreen *vs, int rows, int cols, int number)
+{
+    char line[128], want[16], *p, *end;
+    int r;
+    snprintf(want, sizeof want, "%d", number);
+    for(r = 0; r < rows; r++){
+        screen_row_ascii(vs, r, cols, line, sizeof line);
+        p = line;
+        while(*p == ' ') p++;
+        end = p + strlen(p);
+        while(end > p && end[-1] == ' ') *--end = '\0';
+        if(strcmp(p, want) == 0) return r;
+    }
+    return -1;
+}
+
+static void test_fenced_stream_matches_direct(void)
+{
+    static const char *chunks[] = {
+        "A fenced block follows:\n\n```text\n",
+        "0\n", "1\n", "2\n", "3\n", "4\n", "```\n"
+    };
+    struct fymd_renderer_cfg cfg;
+    struct fymd_renderer *r;
+    struct fymd_update upd;
+    struct vth h;
+    VTerm *direct;
+    VTermScreen *ds;
+    size_t i;
+    int n, rd, rc, prev_d = -1, prev_c = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    direct = vterm_new(24, 80);
+    CHECK(direct != NULL);
+    if(!direct){ vth_close(&h); return; }
+    vterm_set_utf8(direct, 1);
+    ds = vterm_obtain_screen(direct);
+    vterm_screen_reset(ds, 1);
+
+    memset(&cfg, 0, sizeof cfg);
+    cfg.width = 80;
+    cfg.flags = FYMD_RF_HEAL;
+    cfg.max_active_lines = 12;
+    r = fymd_renderer_create(&cfg);
+    CHECK(r != NULL);
+    if(!r){ vterm_free(direct); vth_close(&h); return; }
+
+    for(i = 0; i < sizeof chunks / sizeof chunks[0]; i++){
+        CHECK(fymd_render_push(r, chunks[i], strlen(chunks[i]), &upd) == 0);
+        direct_apply(direct, &upd);
+        CHECK(fytim_tail_apply(h.ft, upd.backtrack, upd.content,
+                               upd.content_len, upd.freeze) == FYTIM_OK);
+        vth_pump(&h);
+    }
+
+    for(n = 0; n <= 4; n++){
+        rd = screen_find_number(ds, 24, 80, n);
+        rc = screen_find_number(h.vs, 24, 80, n);
+        CHECK(rd >= 0);
+        CHECK(rc >= 0);
+        if(prev_d >= 0 && rd >= 0) CHECK(rd == prev_d + 1);
+        if(prev_c >= 0 && rc >= 0) CHECK(rc == prev_c + 1);
+        prev_d = rd;
+        prev_c = rc;
+    }
+    fymd_renderer_destroy(r);
+    vterm_free(direct);
+    vth_close(&h);
+}
+
 /* Stream `doc` through the real renderer in `chunk`-byte pieces (whole
  * lines when chunk == 0), pumping and checking the bubble after every
  * push. */
@@ -346,6 +442,7 @@ int main(int argc, char **argv)
 {
     struct { const char *name; void (*fn)(void); } tests[] = {
         { "reverse_commit_matches_direct", test_reverse_commit_matches_direct },
+        { "fenced_stream_matches_direct", test_fenced_stream_matches_direct },
         { "bubble_pinned_bytes",  test_bubble_pinned_bytes },
         { "bubble_pinned_lines",  test_bubble_pinned_lines },
         { "bubble_pinned_single", test_bubble_pinned_single },

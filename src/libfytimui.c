@@ -492,6 +492,13 @@ static char *sgr_rowsafe(struct fytim_sgr_parser *p, const char *buf,
         if(buf[i] != '\n') continue;
         fytim_sgr_feed(p, buf + start, i + 1 - start, sgr_sink_, NULL);
         start = i + 1;
+        /* A style carry is needed only before another row in THIS commit.
+         * Reopening it after the final newline leaves an escape-only partial
+         * row; timui_inline_commit then supplies its missing newline and
+         * accidentally commits a blank row after every styled streamed row.
+         * The persistent parser already reopens the style at the head of the
+         * next commit. */
+        if(start == len) continue;
         n = fytim_sgr_style_emit(&p->style, seq, sizeof seq);
         if(n == 0 && !out) continue;       /* nothing carried, nothing yet */
         /* worst case: all pending input plus this re-open */
