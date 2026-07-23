@@ -819,6 +819,8 @@ static void test_null_safety(void)
     CHECK(fytim_set_header(NULL, "x") == FYTIM_ERR_INVALID);
     CHECK(fytim_set_status_row(NULL, 0, "x") == FYTIM_ERR_INVALID);
     CHECK(fytim_set_marker(NULL, "x") == FYTIM_ERR_INVALID);
+    CHECK(fytim_set_chrome_style(NULL, FYTIM_CHROME_HEADER,
+                                 "\x1b[1m") == FYTIM_ERR_INVALID);
     CHECK(fytim_set_input(NULL, "x") == FYTIM_ERR_INVALID);
     CHECK(fytim_input(NULL) != NULL);            /* "" for a NULL ft */
     CHECK(fytim_history_add(NULL, "x") == FYTIM_ERR_INVALID);
@@ -826,6 +828,30 @@ static void test_null_safety(void)
     CHECK(fytim_set_complete_fn(NULL, NULL, NULL) == FYTIM_ERR_INVALID);
     CHECK(fytim_completion_add(NULL, "x") == FYTIM_ERR_INVALID);
     fytim_destroy(NULL);
+}
+
+static void test_chrome_style_contract(void)
+{
+    struct harness h;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_HEADER,
+                                 "\x1b[31;1m") == FYTIM_OK);
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_STATUS,
+                                 "\x1b[2m") == FYTIM_OK);
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_WORKBAND,
+                                 "\x1b[34m") == FYTIM_OK);
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_MARKER,
+                                 "\x1b[32m") == FYTIM_OK);
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_STYLE_COUNT,
+                                 "\x1b[1m") == FYTIM_ERR_INVALID);
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_HEADER,
+                                 "visible") == FYTIM_ERR_INVALID);
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_HEADER,
+                                 "\x1b[2J") == FYTIM_ERR_INVALID);
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_HEADER,
+                                 NULL) == FYTIM_OK);
+    h_close(&h);
 }
 
 int main(int argc, char **argv)
@@ -861,6 +887,7 @@ int main(int argc, char **argv)
         { "sync_brackets_updates", test_sync_brackets_updates },
         { "transcript_tail", test_transcript_tail },
         { "tail_apply", test_tail_apply },
+        { "chrome_style_contract", test_chrome_style_contract },
         { "null_safety", test_null_safety },
     };
     size_t i, n = sizeof(tests) / sizeof(tests[0]);

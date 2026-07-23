@@ -72,6 +72,8 @@ struct fytim {
     char *marker;
     struct fytim_sgr_style prompt_style;
     bool prompt_style_set;
+    struct fytim_sgr_style chrome_style[FYTIM_CHROME_STYLE_COUNT];
+    bool chrome_style_set[FYTIM_CHROME_STYLE_COUNT];
 
     /* the transcript's live tail: the agent's streaming output, above
      * every work-band and below the scrollback. tail_streaming is the
@@ -845,6 +847,28 @@ enum fytim_result fytim_set_prompt_style(struct fytim *ft, const char *sgr)
     return FYTIM_OK;
 }
 
+enum fytim_result fytim_set_chrome_style(struct fytim *ft,
+        enum fytim_chrome_style slot, const char *sgr)
+{
+    struct fytim_sgr_parser p;
+    bool visible = false;
+
+    if(!ft || slot < 0 || slot >= FYTIM_CHROME_STYLE_COUNT)
+        return FYTIM_ERR_INVALID;
+    if(!sgr){
+        memset(&ft->chrome_style[slot], 0, sizeof ft->chrome_style[slot]);
+        ft->chrome_style_set[slot] = false;
+        return FYTIM_OK;
+    }
+    fytim_sgr_init(&p);
+    fytim_sgr_feed(&p, sgr, strlen(sgr), style_only_, &visible);
+    if(visible || p.disallowed_seen)
+        return FYTIM_ERR_INVALID;
+    ft->chrome_style[slot] = p.style;
+    ft->chrome_style_set[slot] = true;
+    return FYTIM_OK;
+}
+
 /* ---- input -------------------------------------------------------------- */
 
 static void input_load(struct fytim *ft, const char *s)
@@ -1050,6 +1074,18 @@ static uint32_t sgr_color_(uint32_t c)
     return c;
 }
 
+static TimuiStyle timui_style_from_sgr_(const struct fytim_sgr_style *s)
+{
+    TimuiStyle st = timui_style_make(sgr_color_(s->fg), sgr_color_(s->bg), 0);
+    if(s->attrs & FYTIM_ATTR_BOLD)      st.attrs |= TIMUI_ATTR_BOLD;
+    if(s->attrs & FYTIM_ATTR_DIM)       st.attrs |= TIMUI_ATTR_DIM;
+    if(s->attrs & FYTIM_ATTR_ITALIC)    st.attrs |= TIMUI_ATTR_ITALIC;
+    if(s->attrs & FYTIM_ATTR_UNDERLINE) st.attrs |= TIMUI_ATTR_UNDERLINE;
+    if(s->attrs & FYTIM_ATTR_REVERSE)   st.attrs |= TIMUI_ATTR_REVERSE;
+    if(s->attrs & FYTIM_ATTR_STRIKE)    st.attrs |= TIMUI_ATTR_STRIKE;
+    return st;
+}
+
 static bool draw_run_(void *user, const char *text, size_t len,
                       const struct fytim_sgr_style *style)
 {
@@ -1253,9 +1289,16 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                                          TIMUI_ATTR_DIM);
     TimuiStyle bold   = timui_style_make(TIMUI_COLOR_DEFAULT, TIMUI_COLOR_DEFAULT,
                                          TIMUI_ATTR_BOLD);
+    TimuiStyle wb_st, header_st, status_st, marker_st;
     const char *marker = ft->marker ? ft->marker : "> ";
     int marker_w;
 
+    wb_st = ft->chrome_style_set[FYTIM_CHROME_WORKBAND] ?
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_WORKBAND]) : dim;
+    header_st = ft->chrome_style_set[FYTIM_CHROME_HEADER] ?
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_HEADER]) : bold;
+    status_st = ft->chrome_style_set[FYTIM_CHROME_STATUS] ?
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_STATUS]) : dim;
     if(ft->prompt_style_set){
         in_st.fg = sgr_color_(ft->prompt_style.fg);
         in_st.bg = sgr_color_(ft->prompt_style.bg);
@@ -1274,6 +1317,9 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
             in_st.attrs |= TIMUI_ATTR_STRIKE;
         sep_st = in_st;
     }
+    marker_st = ft->chrome_style_set[FYTIM_CHROME_MARKER] ?
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_MARKER]) :
+            timui_style_make(in_st.fg, in_st.bg, in_st.attrs | TIMUI_ATTR_BOLD);
 
     r = &lay->band[FYTIM_BAND_TRANSCRIPT];
     if(r->h > 0 && (ft->wbands || ft->tail)){
@@ -1335,9 +1381,9 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                 }
                 if(top){
                     if(wb->top[0])
-                        draw_row_styled(f, buf, r->x, y, r->w, wb->top, dim);
+                        draw_row_styled(f, buf, r->x, y, r->w, wb->top, wb_st);
                     else
-                        timui_draw_hline(buf, r->x, y, r->w, dim);
+                        timui_draw_hline(buf, r->x, y, r->w, wb_st);
                     y++;
                 }
                 if(content > 0 && wb->content){
@@ -1358,9 +1404,9 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                 y += content;
                 if(bottom){
                     if(wb->bottom[0])
-                        draw_row_styled(f, buf, r->x, y, r->w, wb->bottom, dim);
+                        draw_row_styled(f, buf, r->x, y, r->w, wb->bottom, wb_st);
                     else
-                        timui_draw_hline(buf, r->x, y, r->w, dim);
+                        timui_draw_hline(buf, r->x, y, r->w, wb_st);
                     y++;
                 }
             }
@@ -1368,7 +1414,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
     }
     r = &lay->band[FYTIM_BAND_HEADER];
     if(r->h > 0 && ft->header)
-        draw_row_styled(f, buf, r->x, r->y, r->w, ft->header, bold);
+        draw_row_styled(f, buf, r->x, r->y, r->w, ft->header, header_st);
     r = &lay->band[FYTIM_BAND_SEP_TOP];
     if(r->h > 0){
         if(ft->prompt_style_set)
@@ -1383,9 +1429,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
         timui_draw_fill(buf, TIMUI_RECT(r->x, r->y, r->w, r->h), in_st);
         /* the marker may carry SGR (a colored activity dot): draw it
          * through the styled path, width from visible glyphs only */
-        draw_row_styled(f, buf, r->x, r->y, r->w, marker,
-                        timui_style_make(in_st.fg, in_st.bg,
-                                         in_st.attrs | TIMUI_ATTR_BOLD));
+        draw_row_styled(f, buf, r->x, r->y, r->w, marker, marker_st);
         marker_w = sgr_disp_width(marker);
         timui_set_focus(f, id);   /* no focus model: the prompt owns keys */
         if(ft->prompt_style_set)
@@ -1410,11 +1454,13 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
     r = &lay->band[FYTIM_BAND_STATUS];
     if(r->h > 0){
         if(ft->comp_active)
-            draw_completion_ribbon(ft, f, r, dim);
+            draw_completion_ribbon(ft, f, r, status_st);
         else if(ft->status[0])
-            draw_row_styled(f, buf, r->x, r->y, r->w, ft->status[0], dim);
+            draw_row_styled(f, buf, r->x, r->y, r->w,
+                            ft->status[0], status_st);
         if(r->h > 1 && ft->status[1])
-            draw_row_styled(f, buf, r->x, r->y + 1, r->w, ft->status[1], dim);
+            draw_row_styled(f, buf, r->x, r->y + 1, r->w,
+                            ft->status[1], status_st);
     }
 }
 

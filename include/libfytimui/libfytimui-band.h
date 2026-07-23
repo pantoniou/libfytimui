@@ -150,6 +150,18 @@ enum fytim_result fytim_set_marker(struct fytim *ft, const char *marker) FYTIM_E
 enum fytim_result fytim_set_prompt_style(struct fytim *ft,
                                          const char *sgr) FYTIM_EXPORT;
 
+enum fytim_chrome_style {
+    FYTIM_CHROME_HEADER = 0,
+    FYTIM_CHROME_STATUS,
+    FYTIM_CHROME_WORKBAND,
+    FYTIM_CHROME_MARKER,
+    FYTIM_CHROME_STYLE_COUNT
+};
+/* Override a chrome slot's base style with an SGR-only string. NULL restores
+ * the built-in fallback (bold header/marker, dim status/workband). */
+enum fytim_result fytim_set_chrome_style(struct fytim *ft,
+        enum fytim_chrome_style slot, const char *sgr) FYTIM_EXPORT;
+
 /* ---- input -------------------------------------------------------------- */
 
 /* Replace the edit buffer (programmatic recall; user editing is library-
