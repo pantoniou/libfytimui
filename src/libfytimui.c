@@ -1074,9 +1074,14 @@ static uint32_t sgr_color_(uint32_t c)
     return c;
 }
 
-static TimuiStyle timui_style_from_sgr_(const struct fytim_sgr_style *s)
+static TimuiStyle timui_style_from_sgr_(const struct fytim_sgr_style *s,
+                                        TimuiStyle base)
 {
-    TimuiStyle st = timui_style_make(sgr_color_(s->fg), sgr_color_(s->bg), 0);
+    TimuiStyle st;
+
+    st.fg = s->fg == FYTIM_COLOR_DEFAULT ? base.fg : sgr_color_(s->fg);
+    st.bg = s->bg == FYTIM_COLOR_DEFAULT ? base.bg : sgr_color_(s->bg);
+    st.attrs = base.attrs;
     if(s->attrs & FYTIM_ATTR_BOLD)      st.attrs |= TIMUI_ATTR_BOLD;
     if(s->attrs & FYTIM_ATTR_DIM)       st.attrs |= TIMUI_ATTR_DIM;
     if(s->attrs & FYTIM_ATTR_ITALIC)    st.attrs |= TIMUI_ATTR_ITALIC;
@@ -1294,11 +1299,14 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
     int marker_w;
 
     wb_st = ft->chrome_style_set[FYTIM_CHROME_WORKBAND] ?
-            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_WORKBAND]) : dim;
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_WORKBAND],
+                                  dim) : dim;
     header_st = ft->chrome_style_set[FYTIM_CHROME_HEADER] ?
-            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_HEADER]) : bold;
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_HEADER],
+                                  bold) : bold;
     status_st = ft->chrome_style_set[FYTIM_CHROME_STATUS] ?
-            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_STATUS]) : dim;
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_STATUS],
+                                  dim) : dim;
     if(ft->prompt_style_set){
         in_st.fg = sgr_color_(ft->prompt_style.fg);
         in_st.bg = sgr_color_(ft->prompt_style.bg);
@@ -1318,7 +1326,9 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
         sep_st = in_st;
     }
     marker_st = ft->chrome_style_set[FYTIM_CHROME_MARKER] ?
-            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_MARKER]) :
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_MARKER],
+                    timui_style_make(in_st.fg, in_st.bg,
+                                     in_st.attrs | TIMUI_ATTR_BOLD)) :
             timui_style_make(in_st.fg, in_st.bg, in_st.attrs | TIMUI_ATTR_BOLD);
 
     r = &lay->band[FYTIM_BAND_TRANSCRIPT];

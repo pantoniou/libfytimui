@@ -401,6 +401,9 @@ static void test_regression_marker_sgr(void)
     int y;
     if(!vth_open(&h)){ CHECK(0); return; }
     CHECK(fytim_set_marker(h.ft, "\x1b[33m\xe2\x97\x8f\x1b[0m ") == FYTIM_OK);
+    CHECK(fytim_set_prompt_style(h.ft, "\x1b[7m") == FYTIM_OK);
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_MARKER,
+                                 "\x1b[1m") == FYTIM_OK);
     CHECK(fytim_set_input(h.ft, "typing") == FYTIM_OK);
     vth_pump(&h);
     y = vth_find_row(&h, "typing");
@@ -414,8 +417,10 @@ static void test_regression_marker_sgr(void)
         vterm_screen_get_cell(h.vs, p, &mcell);
         CHECK(mcell.chars[0] == 0x25CF);
         CHECK(VTERM_COLOR_IS_INDEXED(&mcell.fg) && mcell.fg.indexed.idx == 3);
+        CHECK(mcell.attrs.reverse);
         p.col = 3;                       /* inside "typing" */
         vterm_screen_get_cell(h.vs, p, &icell);
+        CHECK(icell.attrs.reverse);
         CHECK(memcmp(&mcell.bg, &icell.bg, sizeof mcell.bg) == 0);
     }
     vth_close(&h);
