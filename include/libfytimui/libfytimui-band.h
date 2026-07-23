@@ -144,6 +144,11 @@ enum fytim_result fytim_set_status_row(struct fytim *ft, int row, const char *te
  * carry SGR styling (a colored activity dot) under the same contract as
  * fytim_set_header. */
 enum fytim_result fytim_set_marker(struct fytim *ft, const char *marker) FYTIM_EXPORT;
+/* Override the prompt editor and its two framing rows with an SGR style.
+ * `sgr` must contain styling escapes only (no visible text); NULL restores
+ * the theme's input style and separator rules. */
+enum fytim_result fytim_set_prompt_style(struct fytim *ft,
+                                         const char *sgr) FYTIM_EXPORT;
 
 /* ---- input -------------------------------------------------------------- */
 

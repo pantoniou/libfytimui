@@ -138,8 +138,9 @@ static int text_area_cursor_row_(const TimuiTextAreaState *st){
     }
     return cursor_row;
 }
-TIMUI_API TimuiTextAreaResult timui_text_area_ex(TimuiFrame *f, TimuiId id, TimuiRect r,
-                                                 TimuiTextAreaState st, uint32_t flags){
+static TimuiTextAreaResult text_area_ex_(TimuiFrame *f, TimuiId id, TimuiRect r,
+                                        TimuiTextAreaState st, uint32_t flags,
+                                        const TimuiStyle *style){
     Timui *ui;
     TimuiInteractResult ir;
     TimuiRect content;
@@ -164,9 +165,10 @@ TIMUI_API TimuiTextAreaResult timui_text_area_ex(TimuiFrame *f, TimuiId id, Timu
         ui->edit_count = 0;
         ui->key_in = 0;
     }
-    { TimuiStyle sst = timui_widget_style_(ui, TIMUI_WIDGET_TEXT_AREA,
-          ir.focused ? TIMUI_SLOT_INPUT_FOCUSED : TIMUI_SLOT_INPUT,
-          ir.focused ? TIMUI_STYLE_STATE_FOCUSED : 0);
+    { TimuiStyle sst = style ? *style :
+          timui_widget_style_(ui, TIMUI_WIDGET_TEXT_AREA,
+              ir.focused ? TIMUI_SLOT_INPUT_FOCUSED : TIMUI_SLOT_INPUT,
+              ir.focused ? TIMUI_STYLE_STATE_FOCUSED : 0);
       {  int cursor_row = text_area_cursor_row_(&st);
          /* scroll back when the viewport grew: the view may not waste rows
           * below the last line while earlier lines sit hidden above
@@ -216,6 +218,10 @@ TIMUI_API TimuiTextAreaResult timui_text_area_ex(TimuiFrame *f, TimuiId id, Timu
     res.state = st;
     return res;
 }
+TIMUI_API TimuiTextAreaResult timui_text_area_ex(TimuiFrame *f, TimuiId id, TimuiRect r,
+                                                 TimuiTextAreaState st, uint32_t flags){
+    return text_area_ex_(f, id, r, st, flags, NULL);
+}
 TIMUI_API TimuiTextAreaResult timui_text_area_mut(TimuiFrame *f, TimuiId id, TimuiRect r,
                                                   TimuiTextAreaState *state, uint32_t flags){
     TimuiTextAreaResult res;
@@ -224,6 +230,18 @@ TIMUI_API TimuiTextAreaResult timui_text_area_mut(TimuiFrame *f, TimuiId id, Tim
         return timui_text_area_ex(f, id, r, empty, flags);
     }
     res = timui_text_area_ex(f, id, r, *state, flags);
+    *state = res.state;
+    return res;
+}
+TIMUI_API TimuiTextAreaResult timui_text_area_mut_styled(
+    TimuiFrame *f, TimuiId id, TimuiRect r, TimuiTextAreaState *state,
+    uint32_t flags, TimuiStyle style){
+    TimuiTextAreaResult res;
+    if(!state){
+        TimuiTextAreaState empty = {0};
+        return text_area_ex_(f, id, r, empty, flags, &style);
+    }
+    res = text_area_ex_(f, id, r, *state, flags, &style);
     *state = res.state;
     return res;
 }

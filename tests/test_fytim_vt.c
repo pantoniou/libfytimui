@@ -149,6 +149,37 @@ static int vth_rule_width(struct vth *h, int y)
     return n;
 }
 
+/* ---- prompt style: editor and framing rows are one filled card ---------- */
+static void test_prompt_style_fills_card(void)
+{
+    struct vth h;
+    int y, x, dy;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "PROMPT ") == FYTIM_OK);
+    CHECK(fytim_set_prompt_style(h.ft, "\033[7m") == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "hello") == FYTIM_OK);
+    vth_pump(&h);
+
+    y = vth_find_row(&h, "PROMPT hello");
+    CHECK(y > 0 && y + 1 < h.rows);
+    for(dy = -1; dy <= 1; dy++){
+        int styled = 0;
+        CHECK(vth_rule_width(&h, y + dy) == 0);
+        for(x = 0; x < h.cols; x++){
+            VTermScreenCell cell;
+            VTermPos p = { y + dy, x };
+            vterm_screen_get_cell(h.vs, p, &cell);
+            styled += !!cell.attrs.reverse;
+        }
+        if(styled != h.cols)
+            printf("  prompt card row %+d: %d/%d reverse cells\n",
+                   dy, styled, h.cols);
+        CHECK(styled == h.cols);
+    }
+    vth_close(&h);
+}
+
 /* ---- regression: a work-band beyond its cap must keep its chrome -------- *
  * Content past max_rows shows only its LAST max_rows lines; the top rule
  * and the bottom status row stay. Two active bands must stay visually
@@ -510,6 +541,7 @@ static void test_regression_resize_repaints_width(void)
 int main(int argc, char **argv)
 {
     struct { const char *name; void (*fn)(void); } tests[] = {
+        { "prompt_style_fills_card", test_prompt_style_fills_card },
         { "regression_workband_cap_keeps_chrome",
           test_regression_workband_cap_keeps_chrome },
         { "regression_resize_repaints_width",

@@ -70,6 +70,8 @@ struct fytim {
     char *header;
     char *status[2];
     char *marker;
+    struct fytim_sgr_style prompt_style;
+    bool prompt_style_set;
 
     /* the transcript's live tail: the agent's streaming output, above
      * every work-band and below the scrollback. tail_streaming is the
@@ -814,6 +816,35 @@ enum fytim_result fytim_set_marker(struct fytim *ft, const char *marker)
     return set_dup_sgr(&ft->marker, marker);   /* SGR-capable, validated */
 }
 
+static bool style_only_(void *user, const char *text, size_t len,
+                        const struct fytim_sgr_style *style)
+{
+    bool *visible = user;
+    (void)text; (void)style;
+    if(len) *visible = true;
+    return true;
+}
+
+enum fytim_result fytim_set_prompt_style(struct fytim *ft, const char *sgr)
+{
+    struct fytim_sgr_parser p;
+    bool visible = false;
+
+    if(!ft) return FYTIM_ERR_INVALID;
+    if(!sgr){
+        memset(&ft->prompt_style, 0, sizeof ft->prompt_style);
+        ft->prompt_style_set = false;
+        return FYTIM_OK;
+    }
+    fytim_sgr_init(&p);
+    fytim_sgr_feed(&p, sgr, strlen(sgr), style_only_, &visible);
+    if(visible || p.disallowed_seen)
+        return FYTIM_ERR_INVALID;
+    ft->prompt_style = p.style;
+    ft->prompt_style_set = true;
+    return FYTIM_OK;
+}
+
 /* ---- input -------------------------------------------------------------- */
 
 static void input_load(struct fytim *ft, const char *s)
@@ -1225,6 +1256,25 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
     const char *marker = ft->marker ? ft->marker : "> ";
     int marker_w;
 
+    if(ft->prompt_style_set){
+        in_st.fg = sgr_color_(ft->prompt_style.fg);
+        in_st.bg = sgr_color_(ft->prompt_style.bg);
+        in_st.attrs = 0;
+        if(ft->prompt_style.attrs & FYTIM_ATTR_BOLD)
+            in_st.attrs |= TIMUI_ATTR_BOLD;
+        if(ft->prompt_style.attrs & FYTIM_ATTR_DIM)
+            in_st.attrs |= TIMUI_ATTR_DIM;
+        if(ft->prompt_style.attrs & FYTIM_ATTR_ITALIC)
+            in_st.attrs |= TIMUI_ATTR_ITALIC;
+        if(ft->prompt_style.attrs & FYTIM_ATTR_UNDERLINE)
+            in_st.attrs |= TIMUI_ATTR_UNDERLINE;
+        if(ft->prompt_style.attrs & FYTIM_ATTR_REVERSE)
+            in_st.attrs |= TIMUI_ATTR_REVERSE;
+        if(ft->prompt_style.attrs & FYTIM_ATTR_STRIKE)
+            in_st.attrs |= TIMUI_ATTR_STRIKE;
+        sep_st = in_st;
+    }
+
     r = &lay->band[FYTIM_BAND_TRANSCRIPT];
     if(r->h > 0 && (ft->wbands || ft->tail)){
         /* The transcript's live tail sits at the TOP of the region, then
@@ -1320,7 +1370,12 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
     if(r->h > 0 && ft->header)
         draw_row_styled(f, buf, r->x, r->y, r->w, ft->header, bold);
     r = &lay->band[FYTIM_BAND_SEP_TOP];
-    if(r->h > 0) timui_draw_hline(buf, r->x, r->y, r->w, sep_st);
+    if(r->h > 0){
+        if(ft->prompt_style_set)
+            timui_draw_fill(buf, TIMUI_RECT(r->x, r->y, r->w, r->h), sep_st);
+        else
+            timui_draw_hline(buf, r->x, r->y, r->w, sep_st);
+    }
     r = &lay->band[FYTIM_BAND_PROMPT];
     if(r->h > 0){
         TimuiId id = TIMUI_ID("fytim.prompt");
@@ -1329,17 +1384,29 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
         /* the marker may carry SGR (a colored activity dot): draw it
          * through the styled path, width from visible glyphs only */
         draw_row_styled(f, buf, r->x, r->y, r->w, marker,
-                        timui_style_make(in_st.fg, in_st.bg, TIMUI_ATTR_BOLD));
+                        timui_style_make(in_st.fg, in_st.bg,
+                                         in_st.attrs | TIMUI_ATTR_BOLD));
         marker_w = sgr_disp_width(marker);
         timui_set_focus(f, id);   /* no focus model: the prompt owns keys */
-        res = timui_text_area_mut(f, id,
-                                  TIMUI_RECT(r->x + marker_w, r->y,
-                                             r->w - marker_w, r->h),
-                                  &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS);
+        if(ft->prompt_style_set)
+            res = timui_text_area_mut_styled(
+                f, id, TIMUI_RECT(r->x + marker_w, r->y,
+                                  r->w - marker_w, r->h),
+                &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS, in_st);
+        else
+            res = timui_text_area_mut(
+                f, id, TIMUI_RECT(r->x + marker_w, r->y,
+                                  r->w - marker_w, r->h),
+                &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS);
         if(res.submitted) *submitted = true;
     }
     r = &lay->band[FYTIM_BAND_SEP_BOTTOM];
-    if(r->h > 0) timui_draw_hline(buf, r->x, r->y, r->w, sep_st);
+    if(r->h > 0){
+        if(ft->prompt_style_set)
+            timui_draw_fill(buf, TIMUI_RECT(r->x, r->y, r->w, r->h), sep_st);
+        else
+            timui_draw_hline(buf, r->x, r->y, r->w, sep_st);
+    }
     r = &lay->band[FYTIM_BAND_STATUS];
     if(r->h > 0){
         if(ft->comp_active)

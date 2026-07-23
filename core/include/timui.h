@@ -1354,6 +1354,9 @@ TIMUI_API TimuiTextAreaResult timui_text_area_ex(TimuiFrame *f, TimuiId id, Timu
                                                  TimuiTextAreaState state, uint32_t flags);
 TIMUI_API TimuiTextAreaResult timui_text_area_mut(TimuiFrame *f, TimuiId id, TimuiRect r,
                                                   TimuiTextAreaState *state, uint32_t flags);
+TIMUI_API TimuiTextAreaResult timui_text_area_mut_styled(
+    TimuiFrame *f, TimuiId id, TimuiRect r, TimuiTextAreaState *state,
+    uint32_t flags, TimuiStyle style);
 TIMUI_API void timui_text_area(TimuiFrame *f, TimuiId id, TimuiRect r, TimuiTextAreaState *state);
 
 TIMUI_API TimuiResult timui_conpty_open(TimuiTransport *out_transport, int *out_pid);
