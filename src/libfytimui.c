@@ -1034,9 +1034,9 @@ static void complete_tab(struct fytim *ft)
 struct draw_run_ctx {
     TimuiCellBuffer *buf;
     int x, y, max_x;
-    /* colors an SGR run leaves unset fall back to this base style, so
-     * styled text on a filled row (the prompt marker) keeps the row's
-     * background instead of punching through to the terminal default */
+    /* Colors and attributes an SGR run leaves unset inherit the base style,
+     * so inline chrome (for example a colored status margin) does not cancel
+     * the row's dim/bold/reverse presentation. */
     TimuiStyle base;
 };
 /* Indexed (16/256-palette) colors pass through AS INDEXED: the core
@@ -1061,7 +1061,7 @@ static bool draw_run_(void *user, const char *text, size_t len,
                                              : sgr_color_(style->fg);
     st.bg = style->bg == FYTIM_COLOR_DEFAULT ? ctx->base.bg
                                              : sgr_color_(style->bg);
-    st.attrs = 0;
+    st.attrs = ctx->base.attrs;
     if(style->attrs & FYTIM_ATTR_BOLD)      st.attrs |= TIMUI_ATTR_BOLD;
     if(style->attrs & FYTIM_ATTR_DIM)       st.attrs |= TIMUI_ATTR_DIM;
     if(style->attrs & FYTIM_ATTR_ITALIC)    st.attrs |= TIMUI_ATTR_ITALIC;
