@@ -47,17 +47,4 @@ struct fytim_event {
 /* Pop one event. Returns false when the queue is empty. */
 bool fytim_next_event(struct fytim *ft, struct fytim_event *out) FYTIM_EXPORT;
 
-/* ---- input line --------------------------------------------------------- */
-
-/* The prompt line is owned by the library so it can be kept correct against a
- * repaint. The host sets the prompt text and reads submitted lines back as
- * FYTIM_EVENT_LINE events. */
-enum fytim_result fytim_set_prompt(struct fytim *ft, const char *prompt) FYTIM_EXPORT;
-
-/* Replace the current input buffer (history recall, completion). */
-enum fytim_result fytim_set_input(struct fytim *ft, const char *text) FYTIM_EXPORT;
-
-/* A transient status line above the prompt (spinner text, token counts). */
-enum fytim_result fytim_set_status(struct fytim *ft, const char *status) FYTIM_EXPORT;
-
 #endif /* LIBFYTIMUI_EVENT_H */

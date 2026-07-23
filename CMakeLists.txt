@@ -92,6 +92,25 @@ endif()
 
 add_subdirectory(src)
 
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/libfytimui-config.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/libfytimui-config.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libfytimui)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/libfytimui-config-version.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion)
+install(EXPORT libfytimui-targets
+    FILE libfytimui-targets.cmake
+    NAMESPACE libfytimui::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libfytimui)
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/libfytimui-config.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/libfytimui-config-version.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libfytimui)
+
 if(BUILD_FYTIMUI_TESTS)
     enable_testing()
     add_subdirectory(tests)

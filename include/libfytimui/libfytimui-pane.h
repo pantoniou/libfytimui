@@ -75,17 +75,4 @@ enum fytim_result  fytim_pane_close(struct fytim_pane *p) FYTIM_EXPORT;
 enum fytim_result fytim_pane_set_title(struct fytim_pane *p, const char *title) FYTIM_EXPORT;
 enum fytim_result fytim_pane_set_state(struct fytim_pane *p, enum fytim_pane_state st) FYTIM_EXPORT;
 
-/* Append content. The bytes may carry SGR styling escapes (as produced by
- * libfymd4c); they are parsed into styled cells once, here, and retained --
- * not re-parsed per frame. Cursor, erase, and screen-mode escapes are not
- * permitted and are rejected: positioning belongs to the compositor.
- *
- * fytim_pane_replace is for streaming updates that rewrite the tail of a
- * pane, so a partial line does not have to be appended and then undone. */
-enum fytim_result fytim_pane_append(struct fytim_pane *p,
-                                    const char *buf, size_t len) FYTIM_EXPORT;
-enum fytim_result fytim_pane_replace(struct fytim_pane *p,
-                                     const char *buf, size_t len) FYTIM_EXPORT;
-enum fytim_result fytim_pane_clear(struct fytim_pane *p) FYTIM_EXPORT;
-
 #endif /* LIBFYTIMUI_PANE_H */

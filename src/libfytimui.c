@@ -196,7 +196,7 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
      * private mode, supporting ones render each update atomically -- the
      * last line of defense against streaming flicker. */
     tcfg.flags |= TIMUI_FLAG_EXTERNAL_POLL | TIMUI_FLAG_INLINE |
-                  TIMUI_FLAG_HIDE_CURSOR | TIMUI_FLAG_RESTORE_ON_EXIT |
+                  TIMUI_FLAG_HIDE_CURSOR |
                   TIMUI_FLAG_KITTY_KEYBOARD | TIMUI_FLAG_SYNC_OUTPUT;
 
     ft->wb_default_max = (cfg->workband_rows > 0) ? cfg->workband_rows

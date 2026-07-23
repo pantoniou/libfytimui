@@ -3,9 +3,8 @@
 A minimal, opaque pane-oriented terminal UI for coding-harness applications,
 built over a vendored [`timui.h`](https://github.com/pantoniou/timui.h) core.
 
-> **Status: early.** The build, the vendored core, the SGR parser, and the
-> lifecycle/pane model work and are tested. **Rendering is not implemented yet** —
-> see [Current state](#current-state) before depending on this.
+> **Status: early.** The inline transcript, progressive tail, work bands,
+> prompt editor, and host-driven event integration are implemented and tested.
 
 ## What it is
 
@@ -59,10 +58,15 @@ struct fytim *ft = fytim_create(&cfg);
 int    fd      = fytim_poll_fd(ft);
 int    timeout = fytim_poll_timeout_ms(ft);
 
-/* one pane per concurrent tool or agent */
-struct fytim_pane *p = fytim_pane_open(ft, "bash: run tests");
-fytim_pane_append(p, out, len);            /* SGR styling parsed once, retained */
-fytim_pane_set_state(p, FYTIM_PANE_DONE);
+/* stable assistant rows commit; its progressive remainder stays in the tail */
+fytim_commit(ft, frozen, frozen_len);
+fytim_tail_apply(ft, update.backtrack, update.content,
+                 update.content_len, update.freeze);
+
+/* tools and other concurrent work use independent bounded bands */
+struct fytim_workband *wb = fytim_workband_create(ft);
+fytim_workband_set(wb, rendered, rendered_len);
+fytim_workband_commit(wb);
 
 /* when poll reports readable, or the timeout expires */
 fytim_pump(ft);                             /* never blocks */
@@ -71,28 +75,18 @@ struct fytim_event ev;
 while(fytim_next_event(ft, &ev)) { /* LINE, INTERRUPT, QUIT, RESIZE... */ }
 ```
 
-Content passed to `fytim_pane_append` may carry **SGR styling escapes only**
+Rendered content passed to the transcript, tail, or work-band APIs may carry
+**SGR styling escapes only**
 (as produced by libfymd4c). Cursor, erase, and screen-mode controls are
 rejected — positioning belongs to the compositor.
 
 ## Current state
 
-Implemented and tested:
-
-- CMake build, shared + static, install rules
-- Vendored core with verified symbol isolation
-- SGR parser — allocation-free, handles escapes split across feeds, rejects
-  disallowed controls, clean under ASAN/UBSAN
-- `fytim_create`/`destroy`, `fytim_cfg_default`, `fytim_poll_fd`/
-  `poll_timeout_ms`, `fytim_transcript`, `fytim_pane_open`/`close`/
-  `set_title`/`set_state`, `fytim_result_string`, `fytim_version_string`
-
-Declared in the headers but **not yet implemented** — nothing renders:
-
-- `fytim_pump`
-- `fytim_pane_append` / `replace` / `clear`
-- `fytim_next_event`
-- `fytim_set_prompt` / `set_input` / `set_status`
+Implemented and tested: shared/static builds and package exports, hidden vendored
+core symbols, non-blocking host-driven pumping, native-scrollback transcript
+commits, progressive Markdown tails, independent work bands, SGR/OSC-8 parsing,
+resize and input events, multiline editing, history, completion, and external
+editor suspend/resume. `examples/agent_md.c` is the integration reference.
 
 ## Tests
 

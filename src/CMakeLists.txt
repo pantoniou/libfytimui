@@ -16,7 +16,7 @@ set(_fytimui_sources
     fytim_sgr.c
 )
 
-set(_fytimui_incdir ${CMAKE_SOURCE_DIR}/include)
+set(_fytimui_incdir ${PROJECT_SOURCE_DIR}/include)
 
 add_library(fytimui        ${_fytimui_sources} $<TARGET_OBJECTS:fytimui-core>)
 add_library(fytimui_static STATIC ${_fytimui_sources} $<TARGET_OBJECTS:fytimui-core>)
@@ -41,8 +41,8 @@ foreach(_t fytimui fytimui_static)
         "$<BUILD_INTERFACE:${_fytimui_incdir}>"
         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
     target_include_directories(${_t} PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-        ${CMAKE_SOURCE_DIR}
+        ${PROJECT_SOURCE_DIR}/core/include
+        ${PROJECT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_definitions(${_t} PRIVATE
         "FYTIM_VERSION_STRING=\"${PROJECT_VERSION}\"")
