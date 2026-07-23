@@ -24,6 +24,7 @@
 
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -130,6 +131,123 @@ static int marker_row(struct vth *h)
     return -1;
 }
 
+static int screen_find_row(VTermScreen *vs, int rows, int cols,
+                           const char *needle)
+{
+    int r, c;
+    for(r = 0; r < rows; r++){
+        char line[128];
+        int o = 0;
+        for(c = 0; c < cols && o < (int)sizeof line - 1; c++){
+            VTermScreenCell cell;
+            VTermPos p = { r, c };
+            vterm_screen_get_cell(vs, p, &cell);
+            line[o++] = (cell.chars[0] >= 32 && cell.chars[0] < 127)
+                        ? (char)cell.chars[0] : ' ';
+        }
+        line[o] = '\0';
+        if(strstr(line, needle)) return r;
+    }
+    return -1;
+}
+
+/*
+ * The direct libfymd4c render is the oracle: committing those exact bytes
+ * through fytim must produce the same cells, including reverse background
+ * across both blank fence rows and from content end to the right edge.
+ */
+static void test_reverse_commit_matches_direct(void)
+{
+    static const char md[] = "> hello\n";
+    struct fymd_renderer_cfg cfg;
+    struct fymd_renderer *r;
+    struct vth h;
+    VTerm *direct;
+    VTermScreen *ds;
+    char *out = NULL;
+    char *framed = NULL;
+    size_t out_len = 0, framed_len, commit_len;
+    int dy, x, yd, yc, mismatches, first_dy, first_x;
+
+    memset(&cfg, 0, sizeof cfg);
+    cfg.width = 80;
+    cfg.flags = FYMD_RF_REVERSE;
+    r = fymd_renderer_create(&cfg);
+    CHECK(r != NULL);
+    if(!r) return;
+    CHECK(fymd_render(r, md, sizeof md - 1, &out, &out_len) == 0);
+    CHECK(out != NULL && out_len > 0);
+    if(!out || !out_len){ fymd_renderer_destroy(r); return; }
+    framed_len = 13 + out_len + 13;
+    framed = malloc(framed_len);
+    CHECK(framed != NULL);
+    if(!framed){ fymd_free(out); fymd_renderer_destroy(r); return; }
+    memcpy(framed, "\x1b[40m\x1b[K\x1b[0m\n", 13);
+    memcpy(framed + 13, out, out_len);
+    memcpy(framed + 13 + out_len, "\x1b[40m\x1b[K\x1b[0m\n", 13);
+
+    direct = vterm_new(24, 80);
+    CHECK(direct != NULL);
+    if(!direct){
+        free(framed);
+        fymd_free(out);
+        fymd_renderer_destroy(r);
+        return;
+    }
+    vterm_set_utf8(direct, 1);
+    ds = vterm_obtain_screen(direct);
+    vterm_screen_reset(ds, 1);
+    vterm_input_write(direct, framed, framed_len);
+    yd = screen_find_row(ds, 24, 80, "hello");
+    CHECK(yd > 0 && yd + 1 < 24);
+
+    if(!vth_open(&h)){
+        CHECK(0);
+        vterm_free(direct);
+        free(framed);
+        fymd_free(out);
+        fymd_renderer_destroy(r);
+        return;
+    }
+    commit_len = framed_len;
+    while(commit_len && (framed[commit_len - 1] == '\n' ||
+                         framed[commit_len - 1] == '\r'))
+        commit_len--;
+    CHECK(fytim_commit(h.ft, framed, commit_len) == FYTIM_OK);
+    vth_pump(&h);
+    yc = screen_find_row(h.vs, 24, 80, "hello");
+    CHECK(yc > 0 && yc + 1 < 24);
+
+    if(yd > 0 && yc > 0){
+        mismatches = 0;
+        first_dy = first_x = -1;
+        for(dy = -1; dy <= 1; dy++){
+            for(x = 0; x < 80; x++){
+                VTermScreenCell a, b;
+                VTermPos pa = { yd + dy, x };
+                VTermPos pb = { yc + dy, x };
+                vterm_screen_get_cell(ds, pa, &a);
+                vterm_screen_get_cell(h.vs, pb, &b);
+                vterm_screen_convert_color_to_rgb(ds, &a.bg);
+                vterm_screen_convert_color_to_rgb(h.vs, &b.bg);
+                if(!vterm_color_is_equal(&a.bg, &b.bg)){
+                    if(!mismatches){ first_dy = dy; first_x = x; }
+                    mismatches++;
+                }
+            }
+        }
+        if(mismatches)
+            printf("    reverse-card bg mismatch: %d cells, first row %+d col %d\n",
+                   mismatches, first_dy, first_x);
+        CHECK(mismatches == 0);
+    }
+    vth_close(&h);
+    vterm_free(direct);
+    free(framed);
+    fymd_free(out);
+    fymd_renderer_destroy(r);
+}
+
 /* Stream `doc` through the real renderer in `chunk`-byte pieces (whole
  * lines when chunk == 0), pumping and checking the bubble after every
  * push. */
@@ -227,6 +345,7 @@ static void test_bubble_pinned_single(void){ run_stream(1); }
 int main(int argc, char **argv)
 {
     struct { const char *name; void (*fn)(void); } tests[] = {
+        { "reverse_commit_matches_direct", test_reverse_commit_matches_direct },
         { "bubble_pinned_bytes",  test_bubble_pinned_bytes },
         { "bubble_pinned_lines",  test_bubble_pinned_lines },
         { "bubble_pinned_single", test_bubble_pinned_single },

@@ -602,17 +602,27 @@ TIMUI_API void timui_inline_paint_diff(TimuiTransport *t,
  * '\n' separates lines. Each line OVERWRITES a band row in place -- written,
  * style-closed, EL-cleared to remove any residue of the old row, then
  * "\r\n" -- so the band is never blanked wholesale (that flash was the
- * streaming flicker). The following band repaint (same flush) rewrites the
- * rows below. */
+ * streaming flicker). A rendered reverse-card row already carries a bare EL
+ * under its active background; do not erase it again after reset or the
+ * second erase replaces that fill with the default background. The following
+ * band repaint (same flush) rewrites the rows below. */
 TIMUI_API void timui_inline_commit_emit(TimuiTransport *t, TimuiStr text){
     size_t i = 0;
     if(!t || !text.ptr || text.len == 0) return;
     R_EMIT(t, "\x1b[0m\r");                      /* style closed, column 0 */
     while(i < text.len){
         size_t start = i;
+        size_t row_len;
+        int structural_fill;
         while(i < text.len && text.ptr[i] != '\n') i++;
-        r_emit(t, text.ptr + start, i - start);
-        R_EMIT(t, "\x1b[0m\x1b[K\r\n");
+        row_len = i - start;
+        structural_fill = memmem(text.ptr + start, row_len, "\x1b[K", 3)
+                          != NULL;
+        r_emit(t, text.ptr + start, row_len);
+        if(structural_fill)
+            R_EMIT(t, "\x1b[0m\r\n");
+        else
+            R_EMIT(t, "\x1b[0m\x1b[K\r\n");
         if(i < text.len) i++;                    /* skip the separator */
     }
     if(t->flush) t->flush(t);

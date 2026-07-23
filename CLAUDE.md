@@ -108,6 +108,37 @@ before trusting a green run.
 **Prefer deterministic predicates over wall-clock ones.** External-poll mode is
 asserted with an input-wait counter, not by timing `fytim_pump`.
 
+### Debugging rendering with libvterm
+
+Use libvterm whenever correctness depends on cells rather than byte presence:
+background fill, blank styled rows, wrapping, cursor placement, repaint
+damage, or SGR state carried across lines. A grep over captured escape bytes
+cannot prove any of these.
+
+The preferred oracle pattern is in `tests/test_fytim_md_vt.c`:
+
+1. Render the Markdown directly with libfymd4c and feed those bytes into one
+   `VTerm`.
+2. Send the exact same rendered bytes through the public `fytim_*` path, pump
+   it through the pipe transport, and feed the captured terminal output into
+   a second `VTerm`.
+3. Locate the same stable text row in both screens, then compare the relevant
+   `VTermScreenCell` fields across the whole row and adjacent blank rows.
+   Include cells after the last glyph: erase-to-EOL and background-fill bugs
+   hide there.
+4. Compare colors semantically. Call
+   `vterm_screen_convert_color_to_rgb()` against each screen's palette, then
+   use `vterm_color_is_equal()`; never `memcmp(VTermColor)`, and do not assume
+   indexed black and RGB black have identical representation.
+5. Register the case individually in `tests/CMakeLists.txt`, run it red against
+   the broken implementation, then run the full suite after the fix.
+
+When the cell grids differ but the emitted stream looks plausible, trace the
+transport writes (`strace -e trace=write -s 1000 ...` on Linux). Pay particular
+attention to later compositor cleanup: a correct styled `CSI K` can be undone
+by a subsequent reset plus `CSI K`, even though the original renderer bytes
+were preserved perfectly.
+
 ### Regression policy
 
 Every bug ⇒ a failing test in a `regression/` namespace named for the issue,
@@ -127,9 +158,10 @@ and retained** — never re-parsed per frame. Only the streaming tail re-renders
 Any change that moves SGR parsing or markdown layout into the per-frame path is
 a performance regression.
 
-Pane content may carry **SGR styling escapes only**. Cursor, erase, and
-screen-mode controls are rejected by the parser (`disallowed_seen`) —
-positioning belongs exclusively to the compositor.
+Rendered content may carry SGR, OSC-8 links, and libfymd4c's bare structural
+erase-to-EOL used to fill reverse-card rows. Cursor movement, parameterized
+erase, and screen-mode controls are rejected — positioning belongs exclusively
+to the compositor.
 
 ## Commits
 
