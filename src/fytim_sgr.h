@@ -53,6 +53,16 @@ struct fytim_sgr_parser {
     /* Carry for an escape sequence split across feeds. */
     char   pending[64];
     size_t pending_len;
+    /*
+     * An OSC carries a payload of arbitrary length - an OSC 8 hyperlink holds a
+     * whole URL - so it cannot be carried in a bounded buffer. Once its
+     * introducer has been seen it is tracked as state instead: skip bytes until
+     * the terminator arrives, however many feeds that takes.
+     */
+    bool   in_osc;
+    bool   osc_is_link;
+    bool   osc_saw_esc;      /* the ESC of a possible ST split across feeds */
+    unsigned osc_seen;       /* bytes seen, to classify OSC 8 across a split */
 };
 
 void fytim_sgr_init(struct fytim_sgr_parser *p);

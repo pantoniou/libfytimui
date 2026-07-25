@@ -181,6 +181,41 @@ static void test_osc8_hyperlink_allowed(void)
     CHECK(strcmp(c.text[c.n - 1], "ok") == 0);
 }
 
+/* A hyperlink URL is unbounded: the parser must not require the sequence to fit
+ * a carry buffer. A real OAuth authorization URL is ~470 bytes, well past both
+ * pending[64] and the 256-byte feed chunk, and rejecting it made libfytimui drop
+ * the whole row - a login link vanished from the transcript. */
+static void test_osc8_long_url_allowed(void)
+{
+    struct capture c = {0};
+    struct fytim_sgr_parser p;
+    static const char open_seq[] = "\x1b]8;;https://auth.example.com/oauth/authorize?";
+    static const char close_seq[] = "\x1b\\sign in\x1b]8;;\x1b\\";
+    char big[900];
+    size_t n = 0, i;
+
+    fytim_sgr_init(&p);
+    memcpy(big, open_seq, sizeof open_seq - 1);
+    n = sizeof open_seq - 1;
+    for(i = 0; i < 700; ++i) big[n++] = 'a' + (char)(i % 26);
+    memcpy(big + n, close_seq, sizeof close_seq - 1);
+    n += sizeof close_seq - 1;
+    fytim_sgr_feed(&p, big, n, cap_run, &c);
+    CHECK(!p.disallowed_seen);
+    /* the label is text; not one byte of the URL is */
+    CHECK(c.n == 1);
+    CHECK(strcmp(c.text[0], "sign in") == 0);
+
+    /* and the state survives a split anywhere inside that payload */
+    fytim_sgr_init(&p);
+    c.n = 0;
+    fytim_sgr_feed(&p, big, 300, cap_run, &c);
+    fytim_sgr_feed(&p, big + 300, n - 300, cap_run, &c);
+    CHECK(!p.disallowed_seen);
+    CHECK(c.n == 1);
+    CHECK(strcmp(c.text[0], "sign in") == 0);
+}
+
 /* Every OTHER OSC stays disallowed: titles, clipboard, palette. */
 static void test_other_osc_still_disallowed(void)
 {
@@ -325,6 +360,7 @@ int main(int argc, char **argv)
         { "escape_split_across_feeds", test_escape_split_across_feeds },
         { "disallowed_sequences_flagged", test_disallowed_sequences_flagged },
         { "osc8_hyperlink_allowed", test_osc8_hyperlink_allowed },
+        { "osc8_long_url_allowed", test_osc8_long_url_allowed },
         { "other_osc_still_disallowed", test_other_osc_still_disallowed },
         { "malformed_input_safe", test_malformed_input_safe },
         { "overlong_escape_safe", test_overlong_escape_safe },

@@ -127,6 +127,45 @@ static void handle_csi(struct fytim_sgr_parser *p, const char *body, size_t len,
 /* Scan buf for a complete escape sequence starting at offset 0 (buf[0] is
  * ESC). Returns the number of bytes consumed, or 0 if the sequence is
  * incomplete and should be carried to the next feed. */
+/*
+ * Consume bytes belonging to an OSC already in progress (p->in_osc). Returns the
+ * number consumed; the sequence ends at BEL or ST (ESC \), and only then is the
+ * verdict recorded: OSC 8 (hyperlink) is permitted, every other OSC - title,
+ * clipboard, palette - is not. An OSC payload is unbounded (a hyperlink carries
+ * a URL), which is why this is state rather than a carried buffer.
+ */
+static size_t consume_osc_tail(struct fytim_sgr_parser *p, const char *buf,
+                               size_t len)
+{
+    size_t i;
+
+    for(i = 0; i < len; ++i){
+        if(p->osc_saw_esc){
+            p->osc_saw_esc = false;
+            if(buf[i] == '\\'){                     /* ST: ESC backslash */
+                if(!p->osc_is_link) p->disallowed_seen = true;
+                p->in_osc = false;
+                return i + 1;
+            }
+            /* not an ST after all; the ESC was payload, keep scanning */
+        }
+        if(p->osc_seen < 2){
+            /* The two bytes after "ESC ]" decide whether this is OSC 8. */
+            if(p->osc_seen == 0) p->osc_is_link = buf[i] == '8';
+            else if(!(buf[i] == ';')) p->osc_is_link = false;
+            p->osc_seen++;
+        }
+        if(buf[i] == '\a'){
+            if(!p->osc_is_link) p->disallowed_seen = true;
+            p->in_osc = false;
+            return i + 1;
+        }
+        if(buf[i] == '\x1b')
+            p->osc_saw_esc = true;
+    }
+    return len;                                   /* still inside the OSC */
+}
+
 static size_t consume_escape(struct fytim_sgr_parser *p, const char *buf, size_t len)
 {
     size_t i;
@@ -140,20 +179,12 @@ static size_t consume_escape(struct fytim_sgr_parser *p, const char *buf, size_t
              * the one non-SGR escape that passes -- it has no cursor/erase
              * semantics and keeps committed links clickable in scrollback.
              * Every other OSC (title, clipboard, palette) stays rejected. */
-            bool is_link;
-            if(len < 4) return 0;                        /* can't classify yet */
-            is_link = buf[2] == '8' && buf[3] == ';';
-            for(i = 2; i < len; ++i){
-                if(buf[i] == '\a'){
-                    if(!is_link) p->disallowed_seen = true;
-                    return i + 1;
-                }
-                if(buf[i] == '\x1b' && i + 1 < len && buf[i + 1] == '\\'){
-                    if(!is_link) p->disallowed_seen = true;
-                    return i + 2;
-                }
-            }
-            return 0;   /* incomplete */
+            /* Hand the payload to the OSC state machine: it spans feeds. */
+            p->in_osc = true;
+            p->osc_is_link = true;      /* until a byte says otherwise */
+            p->osc_saw_esc = false;
+            p->osc_seen = 0;
+            return 2 + consume_osc_tail(p, buf + 2, len - 2);
         }
         p->disallowed_seen = true;
         return 2;
@@ -220,6 +251,10 @@ void fytim_sgr_feed(struct fytim_sgr_parser *p, const char *buf, size_t len,
 
         run_start = 0;
         i = 0;
+        if(p->in_osc){
+            i = consume_osc_tail(p, cur, curlen);
+            run_start = i;
+        }
         while(i < curlen){
             if(cur[i] != '\x1b'){ ++i; continue; }
 

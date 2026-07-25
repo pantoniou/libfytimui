@@ -200,6 +200,7 @@ endif()
 foreach(t plain_text bold_run combined_params truecolor indexed_color
           style_persists_across_feeds escape_split_across_feeds
           disallowed_sequences_flagged osc8_hyperlink_allowed
+          osc8_long_url_allowed
           other_osc_still_disallowed malformed_input_safe
           overlong_escape_safe null_and_empty_safe
           style_emit_roundtrip style_emit_default_and_tiny
