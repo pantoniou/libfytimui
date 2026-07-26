@@ -260,7 +260,24 @@ static int fd_write(TimuiTransport *t, const void *d, size_t n){
 }
 static int fd_read(TimuiTransport *t, void *b, size_t cap){
     TimuiFdCtx *c = (TimuiFdCtx *)t->ctx;
+    struct pollfd pfd;
     ssize_t r;
+    int pr;
+    /* Never assume the fd is still O_NONBLOCK. That flag lives on the open
+     * file description, which fork() shares, so any child - or a grandchild it
+     * execs - that clears it on an inherited terminal makes this read block,
+     * however carefully open() set it up. Ask first: a zero-timeout poll costs
+     * one syscall and makes the no-block guarantee ours rather than the rest of
+     * the process tree's. */
+    pfd.fd = c->read_fd;
+    pfd.events = POLLIN;
+    do {
+        pfd.revents = 0;
+        pr = poll(&pfd, 1, 0);
+    } while(pr < 0 && errno == EINTR);
+    if(pr == 0) return 0;                       /* nothing pending */
+    if(pr < 0) return -1;
+    if(!(pfd.revents & (POLLIN | POLLHUP | POLLERR))) return 0;
     do {
         r = read(c->read_fd, b, cap);
     } while(r < 0 && errno == EINTR);

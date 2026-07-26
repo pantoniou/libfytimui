@@ -12,6 +12,10 @@
 #include "test.h"
 #include "timui.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 /* Open a Timui over a pipe: a real fd, but not a tty, so termios_active is 0
@@ -47,6 +51,54 @@ TIMUI_TEST(test_default_mode_waits_for_input){
     timui_close(ui);
     close(rfd);
     close(wfd);
+}
+
+
+/*
+ * The no-wait guarantee must not be defeasible by another process. O_NONBLOCK
+ * is a property of the open file description, which fork() shares, so a child
+ * -- or any grandchild it execs -- that clears it on the inherited terminal
+ * makes *this* process's input fd blocking too. If a frame then reads that fd
+ * directly it blocks forever, inside whatever callback happened to be running.
+ * That is not hypothetical: it wedged fyai, with the host loop stuck in a
+ * repaint and no way left to interrupt it.
+ *
+ * Run under alarm() in a child, so a regression fails the case instead of
+ * hanging the suite.
+ */
+TIMUI_TEST(test_external_poll_survives_blocking_fd){
+    pid_t pid, w;
+    int status = 0;
+
+    pid = fork();
+    TIMUI_CHECK(pid >= 0);
+    if(pid == 0){
+        Timui *ui = NULL;
+        TimuiFrame *f = NULL;
+        int rfd = -1, wfd = -1, fl;
+
+        if(open_over_pipe_(&ui, TIMUI_FLAG_EXTERNAL_POLL, &rfd, &wfd) != TIMUI_OK)
+            _exit(0);              /* nothing to assert in this environment */
+
+        /* What the child did to us. */
+        fl = fcntl(rfd, F_GETFL, 0);
+        if(fl >= 0) (void)fcntl(rfd, F_SETFL, fl & ~O_NONBLOCK);
+
+        alarm(5);                  /* a block here is a failure, not a hang */
+        if(timui_begin_result(ui, &f) == TIMUI_OK) timui_end(f);
+        alarm(0);
+
+        if(timui_input_waits_for_test(ui) != 0) _exit(2);
+        timui_close(ui);
+        close(rfd);
+        close(wfd);
+        _exit(0);
+    }
+
+    do { w = waitpid(pid, &status, 0); } while(w < 0 && errno == EINTR);
+    TIMUI_CHECK(w == pid);
+    TIMUI_CHECK(WIFEXITED(status));      /* SIGALRM here means it blocked */
+    TIMUI_CHECK(WEXITSTATUS(status) == 0);
 }
 
 /* Positive: with external-poll mode the frame never waits internally. */

@@ -63,6 +63,7 @@ int main(int argc, char **argv){
         { "test_transport_close_hook", test_transport_close_hook },
         { "test_default_mode_waits_for_input", test_default_mode_waits_for_input },
         { "test_external_poll_never_waits", test_external_poll_never_waits },
+        { "test_external_poll_survives_blocking_fd", test_external_poll_survives_blocking_fd },
         { "test_external_poll_still_reads_ready_input", test_external_poll_still_reads_ready_input },
         { "test_external_poll_exposes_fd_and_timeout", test_external_poll_exposes_fd_and_timeout },
         { "test_open_failure_clears_output_handle", test_open_failure_clears_output_handle },

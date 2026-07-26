@@ -82,3 +82,26 @@ selects it from the new `TIMUI_FLAG_INTR_SIGNAL` config flag at both
 
 Covered by `timui.core.test_termios_intr_signal`. Worth upstreaming: the
 wedged-loop problem is general to any host-driven poll loop.
+
+## `fd_read()` polls before reading
+
+**File:** `core/src/timui_core.c`
+
+`fd_read()` read the input fd directly, relying on the `O_NONBLOCK` that
+`timui_open()` sets once. That flag lives on the *open file description*, which
+`fork()` shares — so a child, or any grandchild it execs, that clears it on an
+inherited terminal makes the parent's read block. The no-wait guarantee of
+`TIMUI_FLAG_EXTERNAL_POLL` was therefore defeasible by an unrelated process.
+
+Observed in fyai: a forked tool child's descendants cleared it on the shared
+tty, and the host then blocked inside `read(0, …)` in a repaint reached from a
+timer callback — the loop wedged with no way left to interrupt it.
+
+`fd_read()` now does a zero-timeout `poll()` first and returns "nothing
+pending" unless the fd is actually readable. One extra syscall per read, and
+the guarantee stops depending on the rest of the process tree.
+
+Covered by `timui.core.test_external_poll_survives_blocking_fd`, which clears
+`O_NONBLOCK` and runs the frame under `alarm()` in a child, so a regression
+fails instead of hanging. Worth upstreaming: any host embedding timui in its
+own loop is exposed.

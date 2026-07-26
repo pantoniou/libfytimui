@@ -73,6 +73,7 @@ void test_fake_grows(void);
 void test_transport_close_hook(void);
 void test_default_mode_waits_for_input(void);
 void test_external_poll_never_waits(void);
+void test_external_poll_survives_blocking_fd(void);
 void test_external_poll_still_reads_ready_input(void);
 void test_external_poll_exposes_fd_and_timeout(void);
 void test_open_failure_clears_output_handle(void);
