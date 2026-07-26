@@ -152,7 +152,8 @@ TIMUI_API void timui_screen_exit(TimuiTransport *t, TimuiScreenMode *m){
  * restore carve-out. */
 static int g_tcsetattr_fail_for_test = 0;
 TIMUI_API void timui_termios_fail_tcsetattr_for_test(int on){ g_tcsetattr_fail_for_test = on; }
-TIMUI_API TimuiResult timui_termios_enter(TimuiTermios *t, int fd){
+TIMUI_API TimuiResult timui_termios_enter_flags(TimuiTermios *t, int fd,
+                                                unsigned flags){
     struct termios *orig, raw;
     if(!t) return TIMUI_ERR_INVALID_ARGUMENT;
     t->fd = fd;
@@ -167,6 +168,13 @@ TIMUI_API TimuiResult timui_termios_enter(TimuiTermios *t, int fd){
     raw.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
     raw.c_oflag &= ~OPOST;
     raw.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    if(flags & TIMUI_TERMIOS_INTR_SIGNAL){
+        /* One key only: INTR keeps its signal, QUIT and SUSP are disabled so
+         * they still reach the application as ordinary input. */
+        raw.c_lflag |= ISIG;
+        raw.c_cc[VQUIT] = _POSIX_VDISABLE;
+        raw.c_cc[VSUSP] = _POSIX_VDISABLE;
+    }
     raw.c_cflag &= ~(CSIZE | PARENB);
     raw.c_cflag |= CS8;
     raw.c_cc[VMIN]  = 1;
@@ -176,6 +184,9 @@ TIMUI_API TimuiResult timui_termios_enter(TimuiTermios *t, int fd){
         free(orig); t->saved = NULL; t->have_saved = 0; return TIMUI_ERR_OS;
     }
     return TIMUI_OK;
+}
+TIMUI_API TimuiResult timui_termios_enter(TimuiTermios *t, int fd){
+    return timui_termios_enter_flags(t, fd, 0u);
 }
 TIMUI_API TimuiResult timui_termios_restore(TimuiTermios *t){
     if(!t || !t->have_saved) return TIMUI_ERR_INVALID_ARGUMENT;

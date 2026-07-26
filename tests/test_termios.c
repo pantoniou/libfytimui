@@ -52,6 +52,50 @@ static int pty_output_contains(int fd, const char *needle){
     return termios_contains(buf, used, needle);
 }
 
+/* With TIMUI_TERMIOS_INTR_SIGNAL the INTR key must keep generating SIGINT
+ * rather than being delivered as a byte, or a host whose loop is wedged has no
+ * way to be interrupted: reading ^C requires the very loop that is stuck. Only
+ * INTR survives -- QUIT and SUSP are disabled, so ^\ and ^Z stay application
+ * keys and the change is confined to the one key that needs it. */
+TIMUI_TEST(test_termios_intr_signal){
+    struct termios orig, plain, intr;
+    TimuiTermios t;
+    int master, slave;
+
+    if(!timui_test_open_pty_pair(__func__, &master, &slave)) return;
+
+    TIMUI_CHECK(tcgetattr(slave, &orig) == 0);
+
+    /* Default: signals off, exactly as before. */
+    TIMUI_CHECK(timui_termios_enter(&t, slave) == TIMUI_OK);
+    TIMUI_CHECK(tcgetattr(slave, &plain) == 0);
+    TIMUI_CHECK(!(plain.c_lflag & ISIG));
+    TIMUI_CHECK(timui_termios_restore(&t) == TIMUI_OK);
+    timui_termios_destroy(&t);
+
+    /* Opt in: ISIG on, INTR still ^C, QUIT and SUSP disabled. */
+    TIMUI_CHECK(timui_termios_enter_flags(&t, slave,
+                                          TIMUI_TERMIOS_INTR_SIGNAL) == TIMUI_OK);
+    TIMUI_CHECK(tcgetattr(slave, &intr) == 0);
+    TIMUI_CHECK(intr.c_lflag & ISIG);
+    TIMUI_CHECK(intr.c_cc[VINTR] == orig.c_cc[VINTR]);
+    TIMUI_CHECK(intr.c_cc[VQUIT] == _POSIX_VDISABLE);
+    TIMUI_CHECK(intr.c_cc[VSUSP] == _POSIX_VDISABLE);
+    /* Everything else stays raw. */
+    TIMUI_CHECK(!(intr.c_lflag & ICANON));
+    TIMUI_CHECK(!(intr.c_lflag & ECHO));
+
+    TIMUI_CHECK(timui_termios_restore(&t) == TIMUI_OK);
+    TIMUI_CHECK(tcgetattr(slave, &intr) == 0);
+    TIMUI_CHECK(intr.c_lflag == orig.c_lflag);
+    TIMUI_CHECK(intr.c_cc[VQUIT] == orig.c_cc[VQUIT]);
+    TIMUI_CHECK(intr.c_cc[VSUSP] == orig.c_cc[VSUSP]);
+
+    timui_termios_destroy(&t);
+    close(slave);
+    close(master);
+}
+
 /* Exercises the real termios path through a posix_openpt pty pair (no -lutil
  * needed): raw mode clears ICANON/ECHO; restore reproduces the original c_lflag. */
 TIMUI_TEST(test_termios_raw_and_restore){

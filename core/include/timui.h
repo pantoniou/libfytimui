@@ -181,7 +181,10 @@ typedef enum {
      * copy stay with the terminal. Overrides TIMUI_FLAG_ALT_SCREEN. The band
      * is fully repainted each frame (no cell diffing); cfg.inline_rows must be
      * > 0. Between frames the cursor rests at the band anchor, column 0. */
-    TIMUI_FLAG_INLINE          = 1u << 11
+    TIMUI_FLAG_INLINE          = 1u << 11,
+    /* Leave the INTR key as a signal; see TIMUI_TERMIOS_INTR_SIGNAL. The host
+     * then never sees ^C as input and must handle SIGINT itself. */
+    TIMUI_FLAG_INTR_SIGNAL     = 1u << 12
 } TimuiFlags;
 
 typedef struct {
@@ -901,6 +904,14 @@ typedef struct {
     int  have_saved;
 } TimuiTermios;
 
+/* Keep the INTR key (^C) generating SIGINT instead of delivering it as a byte.
+ * QUIT and SUSP are disabled alongside, so exactly one key becomes a signal and
+ * ^\ / ^Z stay application keys. For hosts that must remain interruptible when
+ * their own loop is wedged: reading ^C needs the loop that is stuck. */
+#define TIMUI_TERMIOS_INTR_SIGNAL 0x1u
+
+TIMUI_API TimuiResult timui_termios_enter_flags(TimuiTermios *t, int fd,
+                                                unsigned flags);
 TIMUI_API TimuiResult timui_termios_enter(TimuiTermios *t, int fd);
 TIMUI_API TimuiResult timui_termios_restore(TimuiTermios *t);
 TIMUI_API void        timui_termios_destroy(TimuiTermios *t);

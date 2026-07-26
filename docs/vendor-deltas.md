@@ -62,3 +62,23 @@ cp    ../timui.h/examples/*.h     examples/
 
 Then `ctest --test-dir build` — the vendored core tests are carried over
 precisely so a sync is validated here.
+
+## `TIMUI_TERMIOS_INTR_SIGNAL` / `TIMUI_FLAG_INTR_SIGNAL`
+
+**Files:** `core/include/timui.h`, `core/src/timui_term.c`,
+`core/src/timui_core.c`
+
+`timui_termios_enter()` cleared `ISIG` unconditionally, so `^C` was always
+delivered as a byte. A host that drives its own loop then has no way to be
+interrupted when that loop is wedged — reading the `^C` requires the very loop
+that is stuck, which is exactly the failure the key exists for.
+
+Added `timui_termios_enter_flags()` with `TIMUI_TERMIOS_INTR_SIGNAL`, which
+keeps `ISIG` set and disables `VQUIT`/`VSUSP` so precisely one key becomes a
+signal and `^\` / `^Z` stay application keys. `timui_termios_enter()` is now a
+wrapper passing zero, so existing callers and the ABI are unchanged. The core
+selects it from the new `TIMUI_FLAG_INTR_SIGNAL` config flag at both
+`timui_termios_enter` call sites (open, and the resume path).
+
+Covered by `timui.core.test_termios_intr_signal`. Worth upstreaming: the
+wedged-loop problem is general to any host-driven poll loop.

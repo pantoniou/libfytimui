@@ -150,6 +150,7 @@ void fytim_cfg_default(struct fytim_cfg *cfg)
     cfg->mouse     = false;   /* the inline band never grabs the mouse */
     cfg->clipboard = false;
     cfg->workband_rows = 0;   /* 0 selects the default */
+    cfg->intr_signal   = false;
 }
 
 static struct fytim_pane *pane_new(struct fytim *ft, const char *title)
@@ -202,6 +203,7 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
     tcfg.flags |= TIMUI_FLAG_EXTERNAL_POLL | TIMUI_FLAG_INLINE |
                   TIMUI_FLAG_HIDE_CURSOR |
                   TIMUI_FLAG_KITTY_KEYBOARD | TIMUI_FLAG_SYNC_OUTPUT;
+    if(cfg->intr_signal) tcfg.flags |= TIMUI_FLAG_INTR_SIGNAL;
 
     ft->wb_default_max = (cfg->workband_rows > 0) ? cfg->workband_rows
                                                   : FYTIM_WORKBAND_DEFAULT;

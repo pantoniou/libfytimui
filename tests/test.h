@@ -113,6 +113,7 @@ void test_input_esc_mid_csi_restarts(void);
 void test_input_truncated_csi_ss3_timeout_resyncs(void);
 void test_input_csi_subparam_ignored(void);
 void test_termios_raw_and_restore(void);
+void test_termios_intr_signal(void);
 void test_termios_setattr_failure(void);
 void test_termios_enter_failure_clears_state(void);
 void test_open_restores_input_fd_flags(void);

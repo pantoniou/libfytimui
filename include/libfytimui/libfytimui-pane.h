@@ -25,6 +25,13 @@ struct fytim_cfg {
     bool   clipboard;        /* OSC 52 copy out of a pane (pane model) */
     int    workband_rows;    /* default max content rows per work-band;
                                 0 selects the default (4) */
+    bool   intr_signal;      /* leave ^C generating SIGINT instead of
+                                delivering it as input. FYTIM_EVENT_INTERRUPT
+                                then fires only for Escape, and the host must
+                                handle SIGINT itself -- which is the point: a
+                                host whose loop is wedged cannot read ^C,
+                                because reading it needs that same loop. ^\
+                                and ^Z stay application keys. */
 };
 
 /* Fill cfg with defaults (stdin/stdout). */

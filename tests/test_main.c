@@ -103,6 +103,7 @@ int main(int argc, char **argv){
         { "test_input_truncated_csi_ss3_timeout_resyncs", test_input_truncated_csi_ss3_timeout_resyncs },
         { "test_input_csi_subparam_ignored", test_input_csi_subparam_ignored },
         { "test_termios_raw_and_restore", test_termios_raw_and_restore },
+        { "test_termios_intr_signal", test_termios_intr_signal },
         { "test_termios_setattr_failure", test_termios_setattr_failure },
         { "test_termios_enter_failure_clears_state", test_termios_enter_failure_clears_state },
         { "test_open_restores_input_fd_flags", test_open_restores_input_fd_flags },

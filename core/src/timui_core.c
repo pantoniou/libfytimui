@@ -532,7 +532,9 @@ TIMUI_API TimuiResult timui_open(const TimuiConfig *cfg, Timui **out_ui){
         return TIMUI_ERR_OS;
     }
     if(input_is_tty){
-        r = timui_termios_enter(&ui->termios, cfg->input_fd);
+        r = timui_termios_enter_flags(&ui->termios, cfg->input_fd,
+                                      (cfg->flags & TIMUI_FLAG_INTR_SIGNAL) ?
+                                      TIMUI_TERMIOS_INTR_SIGNAL : 0u);
         if(r != TIMUI_OK){
             timui_open_cleanup_failed(ui);
             al.free(al.userdata, ui, sizeof *ui);
@@ -1038,7 +1040,9 @@ TIMUI_API TimuiResult timui_resume(Timui *ui){
         /* the child may have changed the settings it inherited: save the
          * current state afresh and re-enter raw mode over it */
         timui_termios_destroy(&ui->termios);
-        if(timui_termios_enter(&ui->termios, ui->fd.read_fd) != TIMUI_OK)
+        if(timui_termios_enter_flags(&ui->termios, ui->fd.read_fd,
+                                     (ui->cfg.flags & TIMUI_FLAG_INTR_SIGNAL) ?
+                                     TIMUI_TERMIOS_INTR_SIGNAL : 0u) != TIMUI_OK)
             ui->termios_active = 0;
     }
     if(ui->screen_active)
