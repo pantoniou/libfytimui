@@ -1179,32 +1179,14 @@ static void draw_row_styled(TimuiFrame *f, TimuiCellBuffer *buf,
     }
 }
 
-/* Count the rows styled content occupies (its '\n' separated lines). */
-static int content_lines(const char *s)
-{
-    int n = 1;
-    const char *p;
-    if(!s || !*s) return 0;
-    for(p = s; *p; p++) if(*p == '\n') n++;
-    return n;
-}
-
-/* Rows a work-band wants: its content up to max_rows (at least one row, so
- * an idle band still shows), plus the optional top/bottom chrome rows. */
-static int wb_rows(const struct fytim_workband *wb)
-{
-    int n = content_lines(wb->content);
-    if(n < 1) n = 1;
-    if(n > wb->max_rows) n = wb->max_rows;
-    return n + (wb->top ? 1 : 0) + (wb->bottom ? 1 : 0);
-}
-
-/* Rows the tail occupies: its '\n'-terminated rows, plus the trailing
- * partial row only when it holds VISIBLE text. The cursor row after a
- * final '\n' -- empty, or only an SGR carry-over residue -- must not
- * count: it is a phantom row with no matching commit, and every miscount
- * moves the bubble (the frame resize it forces has no commit to cancel
- * against). */
+/* Rows styled text occupies: its '\n'-terminated rows, plus the trailing
+ * partial row only when it holds VISIBLE text. The row after a final '\n'
+ * -- empty, or only an SGR carry-over residue -- must not count: it is a
+ * phantom row. In the transcript tail it has no matching commit, and every
+ * miscount moves the bubble (the frame resize it forces has no commit to
+ * cancel against). In a work band, whose rendered content always ends on a
+ * newline, it costs the band a row and pushes the newest real row out of a
+ * capped window. */
 static bool sgr_probe_(void *user, const char *text, size_t len,
                        const struct fytim_sgr_style *style)
 {
@@ -1213,7 +1195,7 @@ static bool sgr_probe_(void *user, const char *text, size_t len,
     return false;
 }
 
-static int tail_rows(const char *s)
+static int styled_rows(const char *s)
 {
     int n = 0;
     const char *p, *last;
@@ -1230,6 +1212,16 @@ static int tail_rows(const char *s)
     return n;
 }
 
+/* Rows a work-band wants: its content up to max_rows (at least one row, so
+ * an idle band still shows), plus the optional top/bottom chrome rows. */
+static int wb_rows(const struct fytim_workband *wb)
+{
+    int n = styled_rows(wb->content);
+    if(n < 1) n = 1;
+    if(n > wb->max_rows) n = wb->max_rows;
+    return n + (wb->top ? 1 : 0) + (wb->bottom ? 1 : 0);
+}
+
 /* Rows above the chrome: the transcript's live tail, then the work-bands;
  * one spare row when nothing is live -- the layout always reserves a
  * transcript row, and sizing the band to exactly the chrome would shed a
@@ -1237,7 +1229,7 @@ static int tail_rows(const char *s)
 static int wb_rows_total(const struct fytim *ft)
 {
     const struct fytim_workband *wb;
-    int n = tail_rows(ft->tail);
+    int n = styled_rows(ft->tail);
     for(wb = ft->wbands; wb; wb = wb->next) n += wb_rows(wb);
     return n > 0 ? n : 1;
 }
@@ -1368,7 +1360,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
          * shorted band the top row goes first, then the bottom, then the
          * earliest content lines. */
         struct fytim_workband *wb;
-        int nb = 0, i, y, avail, tl = tail_rows(ft->tail);
+        int nb = 0, i, y, avail, tl = styled_rows(ft->tail);
         for(wb = ft->wbands; wb; wb = wb->next) nb++;
         {
             struct fytim_workband *arr[nb > 0 ? nb : 1];
@@ -1402,7 +1394,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
             for(i = 0; i < nb; i++){
                 int rows = give[i], top, bottom, content, lines, skip;
                 wb = arr[i];
-                lines = content_lines(wb->content);
+                lines = styled_rows(wb->content);
                 /* The band's own cap applies FIRST: past it, content shows
                  * its last max_rows lines and the chrome stays -- the rule
                  * and status row are what keep adjacent bands readable.
@@ -1540,7 +1532,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
          * bubble never moves -- all motion is text scrolling. An
          * unmatched shrink (a heal retracting rows: no commit to cancel
          * against) is HELD until later commits cover it; the stream-end
-         * settle takes whatever remains in one atomic hop. tail_rows()
+         * settle takes whatever remains in one atomic hop. styled_rows()
          * counting only visible rows is part of the same invariant. */
         if(ft->tail_streaming && want < ft->band_rows){
             int floor_rows = ft->band_rows - ft->pending_commit_rows;
