@@ -317,6 +317,29 @@ static void test_workband_caps_last_rows(void)
     h_close(&h);
 }
 
+/* A trailing newline does not cost the band a row: rendered content always
+ * ends on one, and counting the empty row after it as content pushes the
+ * newest real row out of a capped window. */
+static void test_workband_trailing_newline_not_a_row(void)
+{
+    struct harness h;
+    struct fytim_workband *wb;
+    char buf[16384];
+    size_t n;
+    if(!h_open(&h)){ CHECK(0); return; }
+    wb = fytim_workband_create(h.ft);
+    CHECK(wb != NULL);
+    CHECK(fytim_workband_set_max_rows(wb, 2) == FYTIM_OK);
+    CHECK(fytim_workband_set(wb, "L1\nL2\nL3\nL4\n", 12) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "L3"));
+    CHECK(contains(buf, n, "L4"));
+    CHECK(!contains(buf, n, "L1"));
+    CHECK(!contains(buf, n, "L2"));
+    h_close(&h);
+}
+
 /* Optional per-band top and bottom rows frame the live content. */
 static void test_workband_top_bottom(void)
 {
@@ -868,6 +891,8 @@ int main(int argc, char **argv)
         { "chrome_and_workband", test_chrome_and_workband },
         { "workband_lifecycle", test_workband_lifecycle },
         { "workband_caps_last_rows", test_workband_caps_last_rows },
+        { "workband_trailing_newline_not_a_row",
+          test_workband_trailing_newline_not_a_row },
         { "workband_top_bottom", test_workband_top_bottom },
         { "workband_order_and_independence", test_workband_order_and_independence },
         { "workband_rejects_disallowed", test_workband_rejects_disallowed },

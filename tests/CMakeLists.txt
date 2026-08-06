@@ -121,6 +121,7 @@ foreach(t create_paints_inline commit_batches_into_pump
           page_key_emits_scrollback history_recall completion
           chrome_and_workband chrome_style_contract
           workband_lifecycle workband_caps_last_rows workband_top_bottom
+          workband_trailing_newline_not_a_row
           workband_order_and_independence workband_rejects_disallowed
           workband_commit_defers_during_stream
           workband_defer_survives_empty_tail
