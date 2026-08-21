@@ -230,6 +230,7 @@ if(VTERM_FOUND)
         target_link_options(test_fytim_surface_vt PRIVATE ${ASAN_C_FLAGS})
     endif()
     foreach(t colour_reaches_the_cell prompt_leaves_while_a_surface_holds_keys
+              prompt_leaves_when_it_is_not_wanted
               empty_chrome_gives_its_rows_back margin_shifts_the_grid
               wide_glyph_keeps_the_row
               combining_stays_one_cell cursor_is_a_reverse_cell
