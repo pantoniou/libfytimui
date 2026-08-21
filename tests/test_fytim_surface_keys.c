@@ -152,6 +152,26 @@ static void test_control_chord_is_a_control_byte(void)
     h_close(&h);
 }
 
+/* Every control byte reaches the program, not only the letters: ^\ (0x1c) is
+ * a key a host reserves for itself, and it must arrive. */
+static void test_every_control_byte_arrives(void)
+{
+    struct harness h;
+    struct fytim_surface *s;
+    char got[64];
+    if(!h_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 2, 8);
+    CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+    CHECK(type(&h, s, "\x1c", 1, got, sizeof got) == 1);
+    CHECK(got[0] == '\x1c');
+    CHECK(type(&h, s, "\x01", 1, got, sizeof got) == 1);
+    CHECK(got[0] == '\x01');
+    fytim_surface_close(s);
+    h_close(&h);
+}
+
 /* An arrow key is the sequence a terminal sends for it. */
 static void test_arrow_is_a_csi_sequence(void)
 {
@@ -327,6 +347,7 @@ static const struct case_ent cases[] = {
     { "typed_text_reaches_the_surface",  test_typed_text_reaches_the_surface },
     { "enter_is_a_return",               test_enter_is_a_return },
     { "control_chord_is_a_control_byte", test_control_chord_is_a_control_byte },
+    { "every_control_byte_arrives",      test_every_control_byte_arrives },
     { "arrow_is_a_csi_sequence",         test_arrow_is_a_csi_sequence },
     { "editing_keys_keep_their_codes",   test_editing_keys_keep_their_codes },
     { "prompt_does_not_see_the_keys",    test_prompt_does_not_see_the_keys },
