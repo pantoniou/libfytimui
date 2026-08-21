@@ -176,7 +176,7 @@ if(VTERM_FOUND)
         target_link_options(test_fytim_surface_vt PRIVATE ${ASAN_C_FLAGS})
     endif()
     foreach(t colour_reaches_the_cell wide_glyph_keeps_the_row
-              cursor_is_a_reverse_cell
+              combining_stays_one_cell cursor_is_a_reverse_cell
               short_region_keeps_the_last_rows two_surfaces_stack_in_order)
         add_test(NAME fytim.surface.vt.${t}
                  COMMAND test_fytim_surface_vt ${t})

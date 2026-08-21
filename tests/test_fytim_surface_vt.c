@@ -193,6 +193,37 @@ static void test_wide_glyph_keeps_the_row(void)
     vth_close(&h);
 }
 
+/* A base character and its combining mark are one cell, not two. */
+static void test_combining_stays_one_cell(void)
+{
+    struct fytim_cell cells[4];
+    struct fytim_surface *s;
+    VTermScreenCell c;
+    struct vth h;
+    int row;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 1, 4);
+    blank_row(cells, 4);
+    cells[0].chars[0] = 'e';
+    cells[0].chars[1] = 0x0301;    /* combining acute */
+    cells[1].chars[0] = '!';
+    CHECK(fytim_surface_put_row(s, 0, cells, 4) == FYTIM_OK);
+    vth_pump(&h);
+
+    row = row_starting_with(&h, 'e');
+    CHECK(row >= 0);
+    if(row >= 0){
+        c = cell_at(&h, row, 0);
+        CHECK(c.chars[0] == 'e');
+        CHECK(c.chars[1] == 0x0301);
+        c = cell_at(&h, row, 1);
+        CHECK(c.chars[0] == '!');
+    }
+    fytim_surface_close(s);
+    vth_close(&h);
+}
+
 /* The cursor is a reverse-video cell, and only that one cell. */
 static void test_cursor_is_a_reverse_cell(void)
 {
@@ -297,6 +328,7 @@ struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "colour_reaches_the_cell",        test_colour_reaches_the_cell },
     { "wide_glyph_keeps_the_row",       test_wide_glyph_keeps_the_row },
+    { "combining_stays_one_cell",       test_combining_stays_one_cell },
     { "cursor_is_a_reverse_cell",       test_cursor_is_a_reverse_cell },
     { "short_region_keeps_the_last_rows", test_short_region_keeps_the_last_rows },
     { "two_surfaces_stack_in_order",    test_two_surfaces_stack_in_order },
