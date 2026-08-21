@@ -1633,9 +1633,14 @@ static int wb_rows_total(const struct fytim *ft)
     return n > 0 ? n : 1;
 }
 
+/*
+ * Rows the prompt asks for, and none at all while a surface holds the keys:
+ * a prompt that cannot be typed into is a row taken from the program.
+ */
 static int prompt_lines(const struct fytim *ft)
 {
     const char *marker = ft->marker ? ft->marker : "> ";
+    if(ft->keys) return 0;
     const char *p = ft->input;
     size_t len = strlen(p), i = 0, next;
     int width = ft->term_w - sgr_disp_width(marker);
@@ -1700,6 +1705,49 @@ static void draw_completion_ribbon(struct fytim *ft, TimuiFrame *f,
                  truncated ? "\xe2\x80\xa6" : "");
     }
     timui_label(f, r->x, r->y, (TimuiStr){ line, strlen(line) }, st);
+}
+
+/*
+ * A chrome row with nothing in it is not a row, while a surface holds the
+ * keys.
+ *
+ * The layout solves geometry and cannot know whether the host set a header or
+ * a status line, so it reserves them. Here the content is known. This applies
+ * only to the full-screen case, though: the streaming transcript pins its
+ * bubble against the chrome below it, and taking those rows away when they
+ * happen to be empty would move it.
+ */
+static void layout_drop_empty_chrome(const struct fytim *ft,
+                                     struct fytim_layout *lay)
+{
+    int freed = 0;
+    size_t i;
+
+    if(!ft->keys) return;
+
+    if(!ft->header && lay->band[FYTIM_BAND_HEADER].h){
+        freed += lay->band[FYTIM_BAND_HEADER].h;
+        lay->band[FYTIM_BAND_HEADER].h = 0;
+    }
+    if(!ft->status[0] && !ft->status[1] && !ft->comp_active &&
+       lay->band[FYTIM_BAND_STATUS].h){
+        freed += lay->band[FYTIM_BAND_STATUS].h;
+        lay->band[FYTIM_BAND_STATUS].h = 0;
+        /* The trailing separator borders nothing once the status is gone. */
+        freed += lay->band[FYTIM_BAND_SEP_BOTTOM].h;
+        lay->band[FYTIM_BAND_SEP_BOTTOM].h = 0;
+    }
+    if(!freed) return;
+
+    lay->band[FYTIM_BAND_TRANSCRIPT].h += freed;
+    /* The bands below the transcript move up by what it took. */
+    for(i = 0; i < FYTIM_BAND_COUNT; i++){
+        int y = 0;
+        size_t j;
+        for(j = 0; j < i; j++)
+            y += lay->band[j].h;
+        lay->band[i].y = lay->band[i].h ? y : 0;
+    }
 }
 
 static void draw_band(struct fytim *ft, TimuiFrame *f,
@@ -1873,15 +1921,11 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
         draw_row_styled(f, buf, r->x, r->y, r->w, marker, marker_st);
         marker_w = sgr_disp_width(marker);
         /*
-         * A surface holding the keys leaves the prompt shown but not edited:
-         * a focused text area would eat the same typed text the surface was
-         * just given, so the line is drawn as a label instead.
+         * A surface holding the keys leaves no prompt band at all, so this
+         * runs only when the prompt is the user's. Drawing a focused text
+         * area then would also eat the text the surface was just given.
          */
-        if(ft->keys){
-            if(ft->input[0])
-                draw_row_styled(f, buf, r->x + marker_w, r->y,
-                                r->w - marker_w, ft->input, in_st);
-        }else{
+        if(!ft->keys){
             timui_set_focus(f, id);   /* no focus model: the prompt owns keys */
             if(ft->prompt_style_set)
                 res = timui_text_area_mut_styled(
@@ -2117,8 +2161,10 @@ enum fytim_result fytim_pump(struct fytim *ft)
     if(ft->keys){
         surface_keys_collect(ft, f);
         if(fytim_layout_compute_ex(timui_width(f), timui_height(f),
-                                   prompt_lines(ft), &lay))
+                                   prompt_lines(ft), &lay)){
+            layout_drop_empty_chrome(ft, &lay);
             draw_band(ft, f, &lay, &submitted);
+        }
         timui_end(f);
         return FYTIM_OK;
     }
