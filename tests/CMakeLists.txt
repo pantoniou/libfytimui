@@ -164,6 +164,30 @@ foreach(t open_reports_its_size put_row_paints close_removes_content
     add_test(NAME fytim.surface.${t} COMMAND test_fytim_surface ${t})
 endforeach()
 
+# Keys handed to a surface: the encoding, and the prompt standing aside.
+add_executable(test_fytim_surface_keys test_fytim_surface_keys.c
+               ${CMAKE_SOURCE_DIR}/src/libfytimui.c
+               ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c
+               ${CMAKE_SOURCE_DIR}/src/fytim_layout.c
+               $<TARGET_OBJECTS:fytimui-core>)
+target_include_directories(test_fytim_surface_keys PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/core/include)
+if(ASAN_C_FLAGS)
+    target_compile_options(test_fytim_surface_keys PRIVATE ${ASAN_C_FLAGS})
+    target_link_options(test_fytim_surface_keys PRIVATE ${ASAN_C_FLAGS})
+endif()
+
+foreach(t typed_text_reaches_the_surface enter_is_a_return
+          control_chord_is_a_control_byte arrow_is_a_csi_sequence
+          editing_keys_keep_their_codes prompt_does_not_see_the_keys
+          keys_return_to_the_prompt close_returns_the_keys
+          only_one_surface_holds_the_keys null_safety)
+    add_test(NAME fytim.surface.keys.${t}
+             COMMAND test_fytim_surface_keys ${t})
+endforeach()
+
 # What a published cell looks like on a REAL terminal: only with libvterm.
 if(VTERM_FOUND)
     add_executable(test_fytim_surface_vt test_fytim_surface_vt.c

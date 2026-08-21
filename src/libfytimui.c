@@ -104,6 +104,7 @@ struct fytim {
     /* live work-bands, oldest first (nearest the transcript). Creation
      * order fixes the stacking only; bands commit in completion order. */
     struct fytim_workband *wbands;
+    struct fytim_surface  *keys;   /* the surface the keys go to, or NULL */
     int   wb_default_max;
     int   wb_finish_seq;
 
@@ -872,6 +873,8 @@ struct fytim_surface *fytim_surface_open(struct fytim *ft, int rows, int cols)
 void fytim_surface_close(struct fytim_surface *sf)
 {
     if(!sf) return;
+    /* The keys cannot stay with something that is gone. */
+    if(sf->owner->keys == sf) sf->owner->keys = NULL;
     /* Retiring the band frees the surface with it (see wb_free). */
     wb_retire(sf->wb);
 }
@@ -974,6 +977,19 @@ enum fytim_result fytim_surface_set_cursor(struct fytim_surface *sf, int row,
     sf->cur_col = col;
     sf->cur_visible = true;
     return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_set_keys(struct fytim_surface *sf, bool take)
+{
+    if(!sf) return FYTIM_ERR_INVALID;
+    if(take) sf->owner->keys = sf;
+    else if(sf->owner->keys == sf) sf->owner->keys = NULL;
+    return FYTIM_OK;
+}
+
+bool fytim_surface_has_keys(const struct fytim_surface *sf)
+{
+    return sf && sf->owner->keys == sf;
 }
 
 enum fytim_result fytim_surface_set_top(struct fytim_surface *sf,
@@ -1739,18 +1755,29 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
          * through the styled path, width from visible glyphs only */
         draw_row_styled(f, buf, r->x, r->y, r->w, marker, marker_st);
         marker_w = sgr_disp_width(marker);
-        timui_set_focus(f, id);   /* no focus model: the prompt owns keys */
-        if(ft->prompt_style_set)
-            res = timui_text_area_mut_styled(
-                f, id, TIMUI_RECT(r->x + marker_w, r->y,
-                                  r->w - marker_w, r->h),
-                &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS, in_st);
-        else
-            res = timui_text_area_mut(
-                f, id, TIMUI_RECT(r->x + marker_w, r->y,
-                                  r->w - marker_w, r->h),
-                &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS);
-        if(res.submitted) *submitted = true;
+        /*
+         * A surface holding the keys leaves the prompt shown but not edited:
+         * a focused text area would eat the same typed text the surface was
+         * just given, so the line is drawn as a label instead.
+         */
+        if(ft->keys){
+            if(ft->input[0])
+                draw_row_styled(f, buf, r->x + marker_w, r->y,
+                                r->w - marker_w, ft->input, in_st);
+        }else{
+            timui_set_focus(f, id);   /* no focus model: the prompt owns keys */
+            if(ft->prompt_style_set)
+                res = timui_text_area_mut_styled(
+                    f, id, TIMUI_RECT(r->x + marker_w, r->y,
+                                      r->w - marker_w, r->h),
+                    &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS, in_st);
+            else
+                res = timui_text_area_mut(
+                    f, id, TIMUI_RECT(r->x + marker_w, r->y,
+                                      r->w - marker_w, r->h),
+                    &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS);
+            if(res.submitted) *submitted = true;
+        }
     }
     r = &lay->band[FYTIM_BAND_SEP_BOTTOM];
     if(r->h > 0){
@@ -1769,6 +1796,106 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
         if(r->h > 1 && ft->status[1])
             draw_row_styled(f, buf, r->x, r->y + 1, r->w,
                             ft->status[1], status_st);
+    }
+}
+
+
+/* ---- keys handed to a surface ------------------------------------------ */
+
+struct key_out {
+    char buf[512];
+    size_t len;
+};
+
+static void key_put(struct key_out *k, const char *bytes, size_t n)
+{
+    if(k->len + n > sizeof k->buf) return;
+    memcpy(k->buf + k->len, bytes, n);
+    k->len += n;
+}
+
+static void key_put_str(struct key_out *k, const char *s)
+{
+    key_put(k, s, strlen(s));
+}
+
+/*
+ * One named key as the bytes a terminal sends for it. The sequences are the
+ * xterm ones, which is what a program on a pseudo-terminal expects, and what
+ * this library's own input parser reads back.
+ */
+static void key_named(TimuiFrame *f, struct key_out *k, TimuiKey key,
+                      const char *seq)
+{
+    if(timui_key_pressed(f, key)) key_put_str(k, seq);
+}
+
+/*
+ * Collect the keys of one frame for the surface holding them. Text arrives as
+ * text; the named keys are asked for one at a time, because the frame reports
+ * what was pressed rather than handing out a list.
+ */
+static void surface_keys_collect(struct fytim *ft, TimuiFrame *f)
+{
+    struct key_out k;
+    TimuiStr text;
+    uint32_t cp;
+    char ctl;
+    int ctrl;
+
+    k.len = 0;
+    text = timui_text_input(f);
+    if(text.ptr && text.len) key_put(&k, text.ptr, text.len);
+
+    key_named(f, &k, TIMUI_KEY_ENTER, "\r");
+    key_named(f, &k, TIMUI_KEY_TAB, "\t");
+    key_named(f, &k, TIMUI_KEY_BACKSPACE, "\x7f");
+    key_named(f, &k, TIMUI_KEY_ESCAPE, "\x1b");
+    key_named(f, &k, TIMUI_KEY_UP, "\x1b[A");
+    key_named(f, &k, TIMUI_KEY_DOWN, "\x1b[B");
+    key_named(f, &k, TIMUI_KEY_RIGHT, "\x1b[C");
+    key_named(f, &k, TIMUI_KEY_LEFT, "\x1b[D");
+    key_named(f, &k, TIMUI_KEY_HOME, "\x1b[H");
+    key_named(f, &k, TIMUI_KEY_END, "\x1b[F");
+    key_named(f, &k, TIMUI_KEY_INSERT, "\x1b[2~");
+    key_named(f, &k, TIMUI_KEY_DELETE, "\x1b[3~");
+    key_named(f, &k, TIMUI_KEY_PAGE_UP, "\x1b[5~");
+    key_named(f, &k, TIMUI_KEY_PAGE_DOWN, "\x1b[6~");
+    key_named(f, &k, TIMUI_KEY_F1, "\x1bOP");
+    key_named(f, &k, TIMUI_KEY_F2, "\x1bOQ");
+    key_named(f, &k, TIMUI_KEY_F3, "\x1bOR");
+    key_named(f, &k, TIMUI_KEY_F4, "\x1bOS");
+    key_named(f, &k, TIMUI_KEY_F5, "\x1b[15~");
+    key_named(f, &k, TIMUI_KEY_F6, "\x1b[17~");
+    key_named(f, &k, TIMUI_KEY_F7, "\x1b[18~");
+    key_named(f, &k, TIMUI_KEY_F8, "\x1b[19~");
+    key_named(f, &k, TIMUI_KEY_F9, "\x1b[20~");
+    key_named(f, &k, TIMUI_KEY_F10, "\x1b[21~");
+    key_named(f, &k, TIMUI_KEY_F11, "\x1b[23~");
+    key_named(f, &k, TIMUI_KEY_F12, "\x1b[24~");
+
+    /* A control chord the key table cannot name arrives as a code point with
+     * the control modifier: ^C is 0x03, which is the byte the program wants
+     * and not an interrupt for this library to act on. */
+    ctrl = timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN, TIMUI_MOD_CTRL);
+    cp = timui_key_codepoint(f);
+    if(ctrl && cp){
+        if(cp >= 'a' && cp <= 'z') ctl = (char)(cp - 'a' + 1);
+        else if(cp >= 'A' && cp <= 'Z') ctl = (char)(cp - 'A' + 1);
+        else if(cp >= '@' && cp <= '_') ctl = (char)(cp - '@');
+        else ctl = 0;
+        if(ctl) key_put(&k, &ctl, 1);
+    }
+
+    if(!k.len) return;
+    {
+        char *dup = malloc(k.len + 1);
+        if(!dup) return;
+        memcpy(dup, k.buf, k.len);
+        dup[k.len] = '\0';
+        ev_push(ft, FYTIM_EVENT_SURFACE_KEYS, dup, k.len, 0, 0);
+        ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP].surface =
+            ft->keys;
     }
 }
 
@@ -1837,6 +1964,20 @@ enum fytim_result fytim_pump(struct fytim *ft)
     /* free the previous pop's text now that a pump invalidates it */
     free(ft->ev_last);
     ft->ev_last = NULL;
+
+    /*
+     * A surface holding the keys takes every one of them, Escape and ^C
+     * included: they belong to the program it stands for. The host keeps a
+     * key of its own and finds it in the bytes it is given.
+     */
+    if(ft->keys){
+        surface_keys_collect(ft, f);
+        if(fytim_layout_compute_ex(timui_width(f), timui_height(f),
+                                   prompt_lines(ft), &lay))
+            draw_band(ft, f, &lay, &submitted);
+        timui_end(f);
+        return FYTIM_OK;
+    }
 
     if(timui_key_pressed(f, TIMUI_KEY_ESCAPE))
         ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
