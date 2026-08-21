@@ -12,6 +12,7 @@
 
 #include <libfytimui/libfytimui-util.h>
 #include <libfytimui/libfytimui-pane.h>
+#include <libfytimui/libfytimui-surface.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -24,9 +25,11 @@ enum fytim_event_type {
     FYTIM_EVENT_RESIZE,
     FYTIM_EVENT_SCROLLBACK, /* wheel/PageUp/PageDown reached the application */
     FYTIM_EVENT_PANE_SELECT, /* the user selected a pane to expand */
-    FYTIM_EVENT_EDIT         /* ^G: the user asked for an external editor;
+    FYTIM_EVENT_EDIT,        /* ^G: the user asked for an external editor;
                                 the host runs it between fytim_suspend and
                                 fytim_resume, then fytim_set_input */
+    FYTIM_EVENT_SURFACE_KEYS /* keys for the surface holding them, already
+                                encoded as the bytes a terminal would send */
 };
 
 struct fytim_event {
@@ -39,6 +42,10 @@ struct fytim_event {
 
     /* FYTIM_EVENT_PANE_SELECT: the pane concerned. */
     struct fytim_pane *pane;
+
+    /* FYTIM_EVENT_SURFACE_KEYS: the surface holding the keys. The bytes are
+     * in text/text_len, with the same lifetime. */
+    struct fytim_surface *surface;
 
     /* FYTIM_EVENT_RESIZE: the new terminal geometry, in cells. */
     int width;

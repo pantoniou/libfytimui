@@ -84,6 +84,21 @@ enum fytim_result fytim_surface_clear(struct fytim_surface *s) FYTIM_EXPORT;
 enum fytim_result fytim_surface_set_cursor(struct fytim_surface *s, int row,
                                            int col, bool visible) FYTIM_EXPORT;
 
+/*
+ * Give the keys to this surface. While a surface holds them, what the user
+ * types is encoded back into terminal bytes and delivered as
+ * FYTIM_EVENT_SURFACE_KEYS instead of reaching the prompt: the host writes
+ * those bytes to the program it is driving. One surface holds the keys at a
+ * time, and taking them takes them from whichever held them before.
+ *
+ * Escape and ^C are the program's while it holds the keys, so a host that
+ * wants a way out of the surface reserves a key of its own and watches for it
+ * in the bytes it receives.
+ */
+enum fytim_result fytim_surface_set_keys(struct fytim_surface *s, bool take)
+    FYTIM_EXPORT;
+bool fytim_surface_has_keys(const struct fytim_surface *s) FYTIM_EXPORT;
+
 /* Chrome rows above and below the grid, as a work band has. NULL removes. */
 enum fytim_result fytim_surface_set_top(struct fytim_surface *s,
                                         const char *text) FYTIM_EXPORT;
