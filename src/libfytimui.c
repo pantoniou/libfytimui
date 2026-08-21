@@ -1796,8 +1796,15 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                 if(content > wb->max_rows) content = wb->max_rows;
                 top = wb->top ? 1 : 0;
                 bottom = wb->bottom ? 1 : 0;
+                /*
+                 * A band sheds its chrome first, because its content is the
+                 * report. A surface sheds content first: its chrome is the
+                 * state row of a running program, and a screen one row
+                 * shorter costs less than losing what the program is doing.
+                 */
                 while(top + content + bottom > rows){
-                    if(top) top = 0;
+                    if(wb->surface && content > 1) content--;
+                    else if(top) top = 0;
                     else if(bottom) bottom = 0;
                     else content--;
                 }

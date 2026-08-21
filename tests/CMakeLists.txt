@@ -160,6 +160,7 @@ foreach(t open_reports_its_size put_row_paints put_row_after_a_frame_paints
           composes_with_workband two_surfaces_are_independent
           granted_rows_respects_cap resize_keeps_content
           clear_blanks_the_grid chrome_rows_paint commit_keeps_the_screen
+          chrome_survives_a_short_region
           rejects_bad_geometry
           put_row_clips_to_width cursor_is_bounded null_safety
           destroy_with_open_surface)
