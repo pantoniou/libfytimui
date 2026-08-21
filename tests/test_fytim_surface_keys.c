@@ -215,6 +215,59 @@ static void test_editing_keys_keep_their_codes(void)
     h_close(&h);
 }
 
+/*
+ * Keys arrive in the order they were typed, even when they land in one frame.
+ * A host reserves a key for itself and reads the key after it: with the order
+ * reversed, the reserved key is consumed by the program instead.
+ */
+static void test_keys_keep_their_order(void)
+{
+    struct harness h;
+    struct fytim_surface *s;
+    char got[64];
+    if(!h_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 2, 8);
+    CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+
+    /* A control byte followed by a letter, in one write. */
+    CHECK(type(&h, s, "\x1cq", 2, got, sizeof got) == 2);
+    CHECK(got[0] == '\x1c');
+    CHECK(got[1] == 'q');
+
+    /* Text, then a named key. */
+    CHECK(type(&h, s, "ab\r", 3, got, sizeof got) == 3);
+    CHECK(memcmp(got, "ab\r", 3) == 0);
+
+    /* A named key, then text. */
+    CHECK(type(&h, s, "\rzy", 3, got, sizeof got) == 3);
+    CHECK(memcmp(got, "\rzy", 3) == 0);
+
+    fytim_surface_close(s);
+    h_close(&h);
+}
+
+/* Two presses of one key in a frame are two presses, not one. */
+static void test_repeated_keys_all_arrive(void)
+{
+    struct harness h;
+    struct fytim_surface *s;
+    char got[64];
+    if(!h_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 2, 8);
+    CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+    CHECK(type(&h, s, "\x1b[A\x1b[A", 6, got, sizeof got) == 6);
+    CHECK(memcmp(got, "\x1b[A\x1b[A", 6) == 0);
+    /* Two different keys keep both, and their order. */
+    CHECK(type(&h, s, "\x1b[A\x1b[B", 6, got, sizeof got) == 6);
+    CHECK(memcmp(got, "\x1b[A\x1b[B", 6) == 0);
+    fytim_surface_close(s);
+    h_close(&h);
+}
+
 /* Text typed while a surface holds the keys must not land in the prompt. */
 static void test_prompt_does_not_see_the_keys(void)
 {
@@ -350,6 +403,8 @@ static const struct case_ent cases[] = {
     { "every_control_byte_arrives",      test_every_control_byte_arrives },
     { "arrow_is_a_csi_sequence",         test_arrow_is_a_csi_sequence },
     { "editing_keys_keep_their_codes",   test_editing_keys_keep_their_codes },
+    { "keys_keep_their_order",           test_keys_keep_their_order },
+    { "repeated_keys_all_arrive",        test_repeated_keys_all_arrive },
     { "prompt_does_not_see_the_keys",    test_prompt_does_not_see_the_keys },
     { "keys_return_to_the_prompt",       test_keys_return_to_the_prompt },
     { "close_returns_the_keys",          test_close_returns_the_keys },
