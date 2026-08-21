@@ -155,10 +155,12 @@ if(ASAN_C_FLAGS)
     target_link_options(test_fytim_surface PRIVATE ${ASAN_C_FLAGS})
 endif()
 
-foreach(t open_reports_its_size put_row_paints close_removes_content
+foreach(t open_reports_its_size put_row_paints put_row_after_a_frame_paints
+          close_removes_content
           composes_with_workband two_surfaces_are_independent
           granted_rows_respects_cap resize_keeps_content
-          clear_blanks_the_grid chrome_rows_paint rejects_bad_geometry
+          clear_blanks_the_grid chrome_rows_paint commit_keeps_the_screen
+          rejects_bad_geometry
           put_row_clips_to_width cursor_is_bounded null_safety
           destroy_with_open_surface)
     add_test(NAME fytim.surface.${t} COMMAND test_fytim_surface ${t})
@@ -183,7 +185,8 @@ foreach(t typed_text_reaches_the_surface enter_is_a_return
           control_chord_is_a_control_byte arrow_is_a_csi_sequence
           editing_keys_keep_their_codes prompt_does_not_see_the_keys
           keys_return_to_the_prompt close_returns_the_keys
-          only_one_surface_holds_the_keys null_safety)
+          only_one_surface_holds_the_keys content_paints_while_holding_keys
+          null_safety)
     add_test(NAME fytim.surface.keys.${t}
              COMMAND test_fytim_surface_keys ${t})
 endforeach()

@@ -121,6 +121,29 @@ static void test_put_row_paints(void)
     h_close(&h);
 }
 
+/* Cells published AFTER a frame has already been painted must reach the
+ * terminal: the first paint is blank, and what a program draws arrives later.
+ */
+static void test_put_row_after_a_frame_paints(void)
+{
+    struct fytim_cell cells[8];
+    struct harness h;
+    struct fytim_surface *s;
+    char buf[16384];
+    size_t n;
+    if(!h_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 3, 8);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);      /* the first, blank frame */
+    fill_row(cells, 8, 'L');
+    CHECK(fytim_surface_put_row(s, 0, cells, 8) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "LLLLLLLL"));
+    fytim_surface_close(s);
+    h_close(&h);
+}
+
 /* A closed surface leaves the band; its content stops being painted. */
 static void test_close_removes_content(void)
 {
@@ -275,6 +298,28 @@ static void test_chrome_rows_paint(void)
     h_close(&h);
 }
 
+/* A committed surface leaves its screen in the transcript: the handle is
+ * gone, and what the program drew is still there. */
+static void test_commit_keeps_the_screen(void)
+{
+    struct fytim_cell cells[8];
+    struct harness h;
+    struct fytim_surface *s;
+    char buf[16384];
+    size_t n;
+    if(!h_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 2, 8);
+    fill_row(cells, 8, 'C');
+    CHECK(fytim_surface_put_row(s, 0, cells, 8) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    CHECK(fytim_surface_commit(s) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "CCCCCCCC"));
+    h_close(&h);
+}
+
 /* ---- negative cases ---------------------------------------------------- */
 
 static void test_rejects_bad_geometry(void)
@@ -357,6 +402,7 @@ static void test_null_safety(void)
     CHECK(fytim_surface_set_cursor(NULL, 0, 0, true) == FYTIM_ERR_INVALID);
     CHECK(fytim_surface_set_top(NULL, "x") == FYTIM_ERR_INVALID);
     CHECK(fytim_surface_set_bottom(NULL, "x") == FYTIM_ERR_INVALID);
+    CHECK(fytim_surface_commit(NULL) == FYTIM_ERR_INVALID);
     fytim_surface_close(NULL);   /* must not crash */
 }
 
@@ -380,6 +426,7 @@ struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "open_reports_its_size",       test_open_reports_its_size },
     { "put_row_paints",              test_put_row_paints },
+    { "put_row_after_a_frame_paints", test_put_row_after_a_frame_paints },
     { "close_removes_content",       test_close_removes_content },
     { "composes_with_workband",      test_composes_with_workband },
     { "two_surfaces_are_independent", test_two_surfaces_are_independent },
@@ -387,6 +434,7 @@ static const struct case_ent cases[] = {
     { "resize_keeps_content",        test_resize_keeps_content },
     { "clear_blanks_the_grid",       test_clear_blanks_the_grid },
     { "chrome_rows_paint",           test_chrome_rows_paint },
+    { "commit_keeps_the_screen",     test_commit_keeps_the_screen },
     { "rejects_bad_geometry",        test_rejects_bad_geometry },
     { "put_row_clips_to_width",      test_put_row_clips_to_width },
     { "cursor_is_bounded",           test_cursor_is_bounded },
