@@ -611,8 +611,14 @@ typedef enum {
     TIMUI_CELL_LINK         = 1u << 4   /* reserved */
 } TimuiCellFlags;
 
+/* Marks that combine with a cell's base character. A grapheme is one cell:
+ * a mark has no width of its own, so it belongs to the character it modifies
+ * and not to a cell of its own. */
+#define TIMUI_CELL_COMBINING_MAX 3
+
 typedef struct {
     uint32_t codepoint;
+    uint32_t combining[TIMUI_CELL_COMBINING_MAX];
     uint32_t fg;
     uint32_t bg;
     uint32_t attrs;
