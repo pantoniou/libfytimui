@@ -126,3 +126,30 @@ Observed with `fytim.surface.vt.combining_stays_one_cell`, which reads the
 grid back out of libvterm: the mark was missing from the cell before the fix.
 Worth upstreaming: the defect is in the general text path, not in anything this
 library added.
+
+## A frame keeps its input in the order it arrived
+
+**Files:** `core/include/timui.h`, `core/src/timui_int.h`, `core/src/timui_core.c`
+
+`timui_begin` drained the frame's events into aggregates: one `key_pressed`
+field, which keeps the LAST key of the frame, and a text buffer collected apart
+from it. That answers "was this key pressed", which is what a widget asks, and
+it cannot answer "what was typed, in order". Two consequences, both visible to
+a host that forwards input somewhere else:
+
+- a chord and the key after it arrive as two facts with no order, so a host
+  that reserves a key for itself and reads the key after it gets them the wrong
+  way round - `^\ q` typed in one burst sent `q` to the program and kept the
+  `^\`; and
+- two presses of one key inside a frame became one.
+
+`TimuiInputRecord input_log[256]` now records each key and typed character as
+the drain sees it, pasted text included, and
+`timui_input_log_count()` / `timui_input_log_at()` read it back. The aggregates
+are untouched, so no widget behaviour changes. The log is bounded; input past
+the bound is dropped rather than reordered.
+
+Covered by `fytim.surface.keys.keys_keep_their_order` and
+`fytim.surface.keys.repeated_keys_all_arrive`, which type into a surface
+through the public interface. Worth upstreaming: any host embedding timui and
+forwarding input - a terminal pane, a remote session - has the same need.
