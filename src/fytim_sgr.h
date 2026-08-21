@@ -18,21 +18,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum {
-    FYTIM_ATTR_BOLD      = 1u << 0,
-    FYTIM_ATTR_DIM       = 1u << 1,
-    FYTIM_ATTR_ITALIC    = 1u << 2,
-    FYTIM_ATTR_UNDERLINE = 1u << 3,
-    FYTIM_ATTR_REVERSE   = 1u << 4,
-    FYTIM_ATTR_STRIKE    = 1u << 5
-};
-
-/* Colours are 0xRRGGBB with FYTIM_COLOR_DEFAULT meaning "terminal default".
- * Indexed (16/256) colours are kept as an index with FYTIM_COLOR_INDEXED set,
- * so the backend can map them to the active palette rather than guessing RGB
- * here. */
-#define FYTIM_COLOR_DEFAULT  0xFF000000u
-#define FYTIM_COLOR_INDEXED  0x01000000u
+/* The colours and attributes are the public ones: content given as SGR text
+ * and content given as cells must mean the same thing by them. */
+#include <libfytimui/libfytimui-style.h>
 
 struct fytim_sgr_style {
     uint32_t fg;
