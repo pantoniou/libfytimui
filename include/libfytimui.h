@@ -26,7 +26,9 @@ extern "C" {
 #include <libfytimui/libfytimui-util.h>
 #include <libfytimui/libfytimui-layout.h>
 #include <libfytimui/libfytimui-pane.h>
+#include <libfytimui/libfytimui-style.h>
 #include <libfytimui/libfytimui-band.h>
+#include <libfytimui/libfytimui-surface.h>
 #include <libfytimui/libfytimui-event.h>
 
 #ifdef __cplusplus

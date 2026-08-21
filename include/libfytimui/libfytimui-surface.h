@@ -1,0 +1,93 @@
+/*
+ * libfytimui-surface.h - a grid of cells the host publishes.
+ *
+ * A work band carries text. Some content is not text: a program driven on a
+ * pseudo-terminal draws a grid, and the bytes that produced it are cursor
+ * movements that mean nothing on their own. The host interprets those bytes -
+ * it owns the emulator - and publishes the result here as cells.
+ *
+ * A surface composes exactly like a work band: it takes rows in the same
+ * region, in the order it was opened, and sheds rows under the same rules.
+ * Thus several of them - one for each program being watched - stand side by
+ * side above the prompt, and the library still owns layout and repainting.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+#ifndef LIBFYTIMUI_SURFACE_H
+#define LIBFYTIMUI_SURFACE_H
+
+#include <libfytimui/libfytimui-style.h>
+#include <libfytimui/libfytimui-util.h>
+
+#include <stdbool.h>
+#include <stdint.h>
+
+struct fytim;
+struct fytim_surface;   /* opaque; owned by the fytim it was opened on */
+
+/* A base character and the characters that combine with it. */
+#define FYTIM_CELL_CHARS 6
+
+/*
+ * One cell. A cell with no character is blank and takes the surface style.
+ * @width is 2 for a double-width glyph, which leaves the cell after it unused;
+ * the library steps over that cell rather than drawing it.
+ */
+struct fytim_cell {
+    uint32_t chars[FYTIM_CELL_CHARS];
+    uint32_t fg;            /* FYTIM_COLOR_DEFAULT, INDEXED | n, or 0xRRGGBB */
+    uint32_t bg;
+    uint32_t attrs;         /* FYTIM_ATTR_* */
+    unsigned char width;    /* 0 and 1 are one cell wide, 2 is a wide glyph */
+};
+
+/*
+ * Open a surface of @rows by @cols. The size is what the host draws into and
+ * not what the terminal grants: a short terminal shows the last rows of it,
+ * the way a work band shows the last lines of its content.
+ */
+struct fytim_surface *fytim_surface_open(struct fytim *ft, int rows, int cols)
+    FYTIM_EXPORT;
+void fytim_surface_close(struct fytim_surface *s) FYTIM_EXPORT;
+
+/* Give the grid a new size. Content inside the new size is kept. */
+enum fytim_result fytim_surface_resize(struct fytim_surface *s, int rows,
+                                       int cols) FYTIM_EXPORT;
+enum fytim_result fytim_surface_size(const struct fytim_surface *s, int *rows,
+                                     int *cols) FYTIM_EXPORT;
+
+/*
+ * The rows the layout granted at the last frame, which is what the user can
+ * see. A host that drives a pseudo-terminal sizes it to this, so that the
+ * program draws what fits instead of drawing into rows nobody shows.
+ */
+enum fytim_result fytim_surface_granted_rows(const struct fytim_surface *s,
+                                             int *rows) FYTIM_EXPORT;
+
+/* Never grant more than @rows, whatever the terminal has. 0 lifts the cap. */
+enum fytim_result fytim_surface_set_max_rows(struct fytim_surface *s, int rows)
+    FYTIM_EXPORT;
+
+/* Replace row @row with @n cells. Cells beyond the width are dropped. */
+enum fytim_result fytim_surface_put_row(struct fytim_surface *s, int row,
+                                        const struct fytim_cell *cells, int n)
+    FYTIM_EXPORT;
+
+/* Blank the whole grid. */
+enum fytim_result fytim_surface_clear(struct fytim_surface *s) FYTIM_EXPORT;
+
+/*
+ * Where the program left its cursor. The library draws it as a reverse-video
+ * cell and does not move the cursor of the terminal, which belongs to the
+ * prompt: a surface is watched while the user is typing somewhere else.
+ */
+enum fytim_result fytim_surface_set_cursor(struct fytim_surface *s, int row,
+                                           int col, bool visible) FYTIM_EXPORT;
+
+/* Chrome rows above and below the grid, as a work band has. NULL removes. */
+enum fytim_result fytim_surface_set_top(struct fytim_surface *s,
+                                        const char *text) FYTIM_EXPORT;
+enum fytim_result fytim_surface_set_bottom(struct fytim_surface *s,
+                                           const char *text) FYTIM_EXPORT;
+
+#endif /* LIBFYTIMUI_SURFACE_H */

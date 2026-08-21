@@ -50,6 +50,24 @@ struct fytim_workband {
      * the stream ends (interleaving would split the streaming reply) */
     int   finished;
     int   finish_seq;
+    /* Set when this band draws a grid of cells instead of styled text. The
+     * band node is what composes; the surface is what it holds. */
+    struct fytim_surface *surface;
+};
+
+/*
+ * A grid of cells the host publishes. It rides on a work-band node, so
+ * ordering, row granting and chrome are the band rules and not a second set
+ * of them: a surface and a band shed rows the same way.
+ */
+struct fytim_surface {
+    struct fytim_workband *wb;
+    struct fytim          *owner;
+    struct fytim_cell     *grid;   /* rows * cols, row-major */
+    int rows, cols;
+    int cur_row, cur_col;
+    bool cur_visible;
+    int granted;                   /* content rows drawn at the last frame */
 };
 
 struct fytim_completions {
@@ -251,6 +269,13 @@ static void comp_free_candidates(struct fytim *ft)
 static void wb_free(struct fytim_workband *wb)
 {
     if(!wb) return;
+    if(wb->surface){
+        /* The band owns the surface once it is attached: the UI can outlive
+         * the host's handle, and destroying the UI must free both. */
+        free(wb->surface->grid);
+        free(wb->surface);
+        wb->surface = NULL;
+    }
     free(wb->content);
     free(wb->commit);
     free(wb->top);
@@ -802,6 +827,169 @@ void fytim_workband_destroy(struct fytim_workband *wb)
     wb_retire(wb);
 }
 
+
+/* ---- the cell surface -------------------------------------------------- */
+
+/* Rows a surface asks for: its grid, capped by the band's own cap. */
+static int surface_content_rows(const struct fytim_surface *sf)
+{
+    int n = sf->rows;
+    if(n < 1) n = 1;
+    if(n > sf->wb->max_rows) n = sf->wb->max_rows;
+    return n;
+}
+
+struct fytim_surface *fytim_surface_open(struct fytim *ft, int rows, int cols)
+{
+    struct fytim_surface *sf;
+    struct fytim_workband *wb;
+
+    if(!ft || rows < 1 || cols < 1) return NULL;
+    /* A grid is rows * cols cells: refuse a size whose product overflows. */
+    if((size_t)rows > SIZE_MAX / sizeof(struct fytim_cell) / (size_t)cols)
+        return NULL;
+
+    sf = calloc(1, sizeof *sf);
+    if(!sf) return NULL;
+    sf->grid = calloc((size_t)rows * (size_t)cols, sizeof *sf->grid);
+    if(!sf->grid){ free(sf); return NULL; }
+
+    wb = fytim_workband_create(ft);
+    if(!wb){ free(sf->grid); free(sf); return NULL; }
+
+    sf->wb = wb;
+    sf->owner = ft;
+    sf->rows = rows;
+    sf->cols = cols;
+    sf->cur_row = sf->cur_col = -1;
+    /* The grid is the content: a surface is not capped below its own size
+     * unless the host asks for it. */
+    wb->max_rows = rows;
+    wb->surface = sf;
+    return sf;
+}
+
+void fytim_surface_close(struct fytim_surface *sf)
+{
+    if(!sf) return;
+    /* Retiring the band frees the surface with it (see wb_free). */
+    wb_retire(sf->wb);
+}
+
+enum fytim_result fytim_surface_resize(struct fytim_surface *sf, int rows,
+                                       int cols)
+{
+    struct fytim_cell *grid;
+    int r, keep_rows, keep_cols;
+
+    if(!sf || rows < 1 || cols < 1) return FYTIM_ERR_INVALID;
+    if((size_t)rows > SIZE_MAX / sizeof *grid / (size_t)cols)
+        return FYTIM_ERR_INVALID;
+    if(rows == sf->rows && cols == sf->cols) return FYTIM_OK;
+
+    grid = calloc((size_t)rows * (size_t)cols, sizeof *grid);
+    if(!grid) return FYTIM_ERR_NOMEM;
+
+    /* Keep what still fits. The host redraws anyway, but a resize that
+     * blanked the grid would flash an empty pane in the meantime. */
+    keep_rows = rows < sf->rows ? rows : sf->rows;
+    keep_cols = cols < sf->cols ? cols : sf->cols;
+    for(r = 0; r < keep_rows; r++)
+        memcpy(grid + (size_t)r * (size_t)cols,
+               sf->grid + (size_t)r * (size_t)sf->cols,
+               (size_t)keep_cols * sizeof *grid);
+
+    free(sf->grid);
+    sf->grid = grid;
+    if(sf->wb->max_rows == sf->rows) sf->wb->max_rows = rows;
+    sf->rows = rows;
+    sf->cols = cols;
+    if(sf->cur_row >= rows || sf->cur_col >= cols){
+        sf->cur_row = sf->cur_col = -1;
+        sf->cur_visible = false;
+    }
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_size(const struct fytim_surface *sf, int *rows,
+                                     int *cols)
+{
+    if(!sf) return FYTIM_ERR_INVALID;
+    if(rows) *rows = sf->rows;
+    if(cols) *cols = sf->cols;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_granted_rows(const struct fytim_surface *sf,
+                                             int *rows)
+{
+    if(!sf || !rows) return FYTIM_ERR_INVALID;
+    *rows = sf->granted;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_set_max_rows(struct fytim_surface *sf, int rows)
+{
+    if(!sf || rows < 0) return FYTIM_ERR_INVALID;
+    sf->wb->max_rows = rows > 0 ? rows : sf->rows;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_put_row(struct fytim_surface *sf, int row,
+                                        const struct fytim_cell *cells, int n)
+{
+    if(!sf || !cells || n < 0) return FYTIM_ERR_INVALID;
+    if(row < 0 || row >= sf->rows) return FYTIM_ERR_INVALID;
+    /* More cells than the row holds is not an error: a host that publishes
+     * a wider screen than the surface has is showing part of it. */
+    if(n > sf->cols) n = sf->cols;
+
+    memcpy(sf->grid + (size_t)row * (size_t)sf->cols, cells,
+           (size_t)n * sizeof *cells);
+    if(n < sf->cols)
+        memset(sf->grid + (size_t)row * (size_t)sf->cols + n, 0,
+               (size_t)(sf->cols - n) * sizeof *cells);
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_clear(struct fytim_surface *sf)
+{
+    if(!sf) return FYTIM_ERR_INVALID;
+    memset(sf->grid, 0,
+           (size_t)sf->rows * (size_t)sf->cols * sizeof *sf->grid);
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_set_cursor(struct fytim_surface *sf, int row,
+                                           int col, bool visible)
+{
+    if(!sf) return FYTIM_ERR_INVALID;
+    if(!visible){
+        sf->cur_visible = false;
+        return FYTIM_OK;
+    }
+    if(row < 0 || col < 0 || row >= sf->rows || col >= sf->cols)
+        return FYTIM_ERR_INVALID;
+    sf->cur_row = row;
+    sf->cur_col = col;
+    sf->cur_visible = true;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_set_top(struct fytim_surface *sf,
+                                        const char *text)
+{
+    if(!sf) return FYTIM_ERR_INVALID;
+    return fytim_workband_set_top(sf->wb, text);
+}
+
+enum fytim_result fytim_surface_set_bottom(struct fytim_surface *sf,
+                                           const char *text)
+{
+    if(!sf) return FYTIM_ERR_INVALID;
+    return fytim_workband_set_bottom(sf->wb, text);
+}
+
 enum fytim_result fytim_set_header(struct fytim *ft, const char *text)
 {
     if(!ft) return FYTIM_ERR_INVALID;
@@ -1076,6 +1264,40 @@ static uint32_t sgr_color_(uint32_t c)
     return c;
 }
 
+static uint32_t timui_attrs_from_fytim_(uint32_t attrs)
+{
+    uint32_t out = 0;
+    if(attrs & FYTIM_ATTR_BOLD)      out |= TIMUI_ATTR_BOLD;
+    if(attrs & FYTIM_ATTR_DIM)       out |= TIMUI_ATTR_DIM;
+    if(attrs & FYTIM_ATTR_ITALIC)    out |= TIMUI_ATTR_ITALIC;
+    if(attrs & FYTIM_ATTR_UNDERLINE) out |= TIMUI_ATTR_UNDERLINE;
+    if(attrs & FYTIM_ATTR_REVERSE)   out |= TIMUI_ATTR_REVERSE;
+    if(attrs & FYTIM_ATTR_STRIKE)    out |= TIMUI_ATTR_STRIKE;
+    return out;
+}
+
+/* Encode one code point; @out holds at least 4 bytes. */
+static size_t fytim_utf8_put_(char *out, uint32_t cp)
+{
+    if(cp < 0x80){ out[0] = (char)cp; return 1; }
+    if(cp < 0x800){
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if(cp < 0x10000){
+        out[0] = (char)(0xE0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
 static TimuiStyle timui_style_from_sgr_(const struct fytim_sgr_style *s,
                                         TimuiStyle base)
 {
@@ -1193,10 +1415,61 @@ static int content_lines(const char *s)
  * an idle band still shows), plus the optional top/bottom chrome rows. */
 static int wb_rows(const struct fytim_workband *wb)
 {
-    int n = content_lines(wb->content);
+    int n = wb->surface ? surface_content_rows(wb->surface)
+                        : content_lines(wb->content);
     if(n < 1) n = 1;
     if(n > wb->max_rows) n = wb->max_rows;
     return n + (wb->top ? 1 : 0) + (wb->bottom ? 1 : 0);
+}
+
+/*
+ * Draw @rows rows of the grid at @y, the LAST rows of it when the region is
+ * short: the bottom of a screen is where a program is working, so that is
+ * what a shortened surface keeps.
+ *
+ * One cell is drawn as text rather than written to the buffer directly,
+ * because a cell here carries a base character and the characters that
+ * combine with it, and the core resolves such a cluster - its width, and the
+ * continuation cell a wide glyph needs - on the way in.
+ */
+static void draw_surface(TimuiCellBuffer *buf, const struct fytim_surface *sf,
+                         int x, int y, int w, int rows)
+{
+    char utf8[FYTIM_CELL_CHARS * 4];
+    const struct fytim_cell *cell;
+    TimuiStyle st;
+    TimuiStr str;
+    int first, row, col, i;
+    size_t len;
+
+    first = sf->rows - rows;
+    if(first < 0) first = 0;
+
+    for(row = first; row < sf->rows; row++, y++){
+        for(col = 0; col < sf->cols && col < w; col++){
+            cell = &sf->grid[(size_t)row * (size_t)sf->cols + (size_t)col];
+            st = timui_style_make(sgr_color_(cell->fg), sgr_color_(cell->bg),
+                                  timui_attrs_from_fytim_(cell->attrs));
+            /* The cursor is a reverse-video cell: the cursor of the terminal
+             * belongs to the prompt, and a surface is watched while the user
+             * types somewhere else. */
+            if(sf->cur_visible && row == sf->cur_row && col == sf->cur_col)
+                st.attrs ^= TIMUI_ATTR_REVERSE;
+            len = 0;
+            for(i = 0; i < FYTIM_CELL_CHARS && cell->chars[i]; i++)
+                len += fytim_utf8_put_(utf8 + len, cell->chars[i]);
+            if(!len){
+                /* A blank cell still carries its colours. */
+                utf8[0] = ' ';
+                len = 1;
+            }
+            str.ptr = utf8;
+            str.len = len;
+            timui_draw_text(buf, x + col, y, str, st);
+            /* A double-width glyph owns the cell after it. */
+            if(cell->width > 1) col++;
+        }
+    }
 }
 
 /* Rows the tail occupies: its '\n'-terminated rows, plus the trailing
@@ -1402,7 +1675,8 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
             for(i = 0; i < nb; i++){
                 int rows = give[i], top, bottom, content, lines, skip;
                 wb = arr[i];
-                lines = content_lines(wb->content);
+                lines = wb->surface ? surface_content_rows(wb->surface)
+                                    : content_lines(wb->content);
                 /* The band's own cap applies FIRST: past it, content shows
                  * its last max_rows lines and the chrome stays -- the rule
                  * and status row are what keep adjacent bands readable.
@@ -1424,7 +1698,11 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                         timui_draw_hline(buf, r->x, y, r->w, wb_st);
                     y++;
                 }
-                if(content > 0 && wb->content){
+                if(wb->surface){
+                    if(content > 0)
+                        draw_surface(buf, wb->surface, r->x, y, r->w, content);
+                    wb->surface->granted = content > 0 ? content : 0;
+                }else if(content > 0 && wb->content){
                     const char *p = wb->content;
                     struct draw_run_ctx ctx;
                     struct fytim_sgr_parser sp;

@@ -75,7 +75,8 @@ endif()
 # These link the sources directly rather than the library, so internal units
 # (the SGR parser) can be tested without exporting them.
 add_executable(test_fytim_sgr test_fytim_sgr.c ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c)
-target_include_directories(test_fytim_sgr PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(test_fytim_sgr PRIVATE ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include)
 if(ASAN_C_FLAGS)
     target_compile_options(test_fytim_sgr PRIVATE ${ASAN_C_FLAGS})
     target_link_options(test_fytim_sgr PRIVATE ${ASAN_C_FLAGS})
@@ -131,6 +132,56 @@ foreach(t create_paints_inline commit_batches_into_pump
           transcript_tail tail_apply null_safety)
     add_test(NAME fytim.band.${t} COMMAND test_fytim_band ${t})
 endforeach()
+
+# The cell surface: the public interface, driven through pipes like the band
+# tests. What a cell looks like on a real terminal is test_fytim_surface_vt.
+add_executable(test_fytim_surface test_fytim_surface.c
+               ${CMAKE_SOURCE_DIR}/src/libfytimui.c
+               ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c
+               ${CMAKE_SOURCE_DIR}/src/fytim_layout.c
+               $<TARGET_OBJECTS:fytimui-core>)
+target_include_directories(test_fytim_surface PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/core/include)
+if(ASAN_C_FLAGS)
+    target_compile_options(test_fytim_surface PRIVATE ${ASAN_C_FLAGS})
+    target_link_options(test_fytim_surface PRIVATE ${ASAN_C_FLAGS})
+endif()
+
+foreach(t open_reports_its_size put_row_paints close_removes_content
+          composes_with_workband two_surfaces_are_independent
+          granted_rows_respects_cap resize_keeps_content
+          clear_blanks_the_grid chrome_rows_paint rejects_bad_geometry
+          put_row_clips_to_width cursor_is_bounded null_safety
+          destroy_with_open_surface)
+    add_test(NAME fytim.surface.${t} COMMAND test_fytim_surface ${t})
+endforeach()
+
+# What a published cell looks like on a REAL terminal: only with libvterm.
+if(VTERM_FOUND)
+    add_executable(test_fytim_surface_vt test_fytim_surface_vt.c
+                   ${CMAKE_SOURCE_DIR}/src/libfytimui.c
+                   ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c
+                   ${CMAKE_SOURCE_DIR}/src/fytim_layout.c
+                   $<TARGET_OBJECTS:fytimui-core>)
+    target_include_directories(test_fytim_surface_vt PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${VTERM_INCLUDE_DIRS})
+    target_link_libraries(test_fytim_surface_vt PRIVATE ${VTERM_LIBRARIES})
+    if(ASAN_C_FLAGS)
+        target_compile_options(test_fytim_surface_vt PRIVATE ${ASAN_C_FLAGS})
+        target_link_options(test_fytim_surface_vt PRIVATE ${ASAN_C_FLAGS})
+    endif()
+    foreach(t colour_reaches_the_cell wide_glyph_keeps_the_row
+              cursor_is_a_reverse_cell
+              short_region_keeps_the_last_rows two_surfaces_stack_in_order)
+        add_test(NAME fytim.surface.vt.${t}
+                 COMMAND test_fytim_surface_vt ${t})
+    endforeach()
+endif()
 
 # The bubble invariant against the REAL renderer: only when libfymd4c is
 # ALSO installed. Streams actual markdown through fymd_render_push into
