@@ -1091,6 +1091,32 @@ TIMUI_API size_t timui_input_feed(TimuiInputParser *p, const void *bytes, size_t
 TIMUI_API void    timui_input_set_now(TimuiInputParser *p, uint64_t now_ms);
 TIMUI_API void    timui_input_flush_esc(TimuiInputParser *p, uint64_t now_ms, TimuiEventFn cb, void *ctx);
 TIMUI_API uint64_t timui_now_ms(void);   /* monotonic milliseconds */
+/*
+ * The input of one frame, in the order it arrived.
+ *
+ * The aggregates above answer "was this key pressed", which is what a widget
+ * asks. They cannot answer "what was typed, in order": one key field keeps the
+ * last key of the frame, and typed text is collected apart from it. A host
+ * that forwards input to something else - a program on a pseudo-terminal -
+ * needs the sequence, because a chord and the key after it are one order and
+ * not two facts.
+ *
+ * The log is rebuilt by each timui_begin and holds keys and typed characters,
+ * pasted text included. It is bounded; input past the bound is dropped rather
+ * than reordered.
+ */
+typedef struct {
+    int      is_text;     /* a typed character, rather than a named key */
+    TimuiKey key;         /* the key, when is_text is 0 */
+    uint32_t codepoint;   /* the character, or the one a chord was typed with */
+    uint32_t mods;        /* TIMUI_MOD_* */
+} TimuiInputRecord;
+
+TIMUI_API int timui_input_log_count(const TimuiFrame *f);
+/* Copy record @i; returns 0 when @i is outside the log. */
+TIMUI_API int timui_input_log_at(const TimuiFrame *f, int i,
+                                 TimuiInputRecord *out);
+
 TIMUI_API int    timui_key_pressed(TimuiFrame *f, TimuiKey key);
 TIMUI_API int    timui_key_pressed_mods(TimuiFrame *f, TimuiKey key, uint32_t mods);
 /* Codepoint carried by this frame's key event (0 if none). For chords the

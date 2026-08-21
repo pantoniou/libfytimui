@@ -639,6 +639,29 @@ TIMUI_API uint64_t timui_now_ms(void){
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
+/* Append one record to the frame's input log; a full log drops the rest. */
+static void timui_input_log_add_(Timui *ui, int is_text, TimuiKey key,
+                                 uint32_t cp, uint32_t mods){
+    TimuiInputRecord *r;
+    if(ui->input_log_count >= (int)(sizeof(ui->input_log) / sizeof(ui->input_log[0])))
+        return;
+    r = &ui->input_log[ui->input_log_count++];
+    r->is_text   = is_text;
+    r->key       = key;
+    r->codepoint = cp;
+    r->mods      = mods;
+}
+/* Pasted text is typed text: log each character of it, in order. */
+static void timui_input_log_add_paste_(Timui *ui, const char *ptr, size_t len){
+    size_t off = 0;
+    while(ptr && off < len){
+        uint32_t cp = 0;
+        int adv = timui_utf8_decode(ptr + off, len - off, &cp);
+        if(adv <= 0) break;
+        timui_input_log_add_(ui, 1, TIMUI_KEY_UNKNOWN, cp, TIMUI_MOD_NONE);
+        off += (size_t)adv;
+    }
+}
 TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
     if(out_frame) *out_frame = NULL;
     if(!ui || !out_frame) return TIMUI_ERR_INVALID_ARGUMENT;
@@ -700,6 +723,7 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
         ui->edit_count = 0;
     }
     ui->key_in = 0;
+    ui->input_log_count = 0;
     ui->key_pressed = TIMUI_KEY_UNKNOWN;
     ui->key_cp = 0;
     ui->key_mods = 0;
@@ -736,6 +760,8 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
                     if(!ev.as.mouse.motion && ev.as.mouse.released) saw_mouse_release = 1;
                 }
             } else if(ev.kind == TIMUI_EVENT_KEY){
+                timui_input_log_add_(ui, 0, ev.as.key.key,
+                                     ev.as.key.codepoint, ev.as.key.mods);
                 ui->key_pressed = ev.as.key.key;   /* app-level key detection */
                 ui->key_cp = ev.as.key.codepoint;
                 ui->key_mods = ev.as.key.mods;
@@ -795,11 +821,15 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
                 /* UTF-8 encode the codepoint into text_in (supports international
                  * input) via the single shared encoder (Z6). */
                 uint32_t cp = ev.as.text.codepoint;
+                timui_input_log_add_(ui, 1, TIMUI_KEY_UNKNOWN, cp,
+                                     TIMUI_MOD_NONE);
                 int start = ui->text_in_len;
                 int n = timui_append_text_cp_(ui, cp);
                 if(n > 0) timui_edit_add_text_(ui, start, n);
             } else if(ev.kind == TIMUI_EVENT_PASTE){
                 int start = ui->text_in_len;
+                timui_input_log_add_paste_(ui, ev.as.paste.ptr,
+                                           ev.as.paste.len);
                 int n = timui_append_paste_bytes_(ui, ev.as.paste.ptr, ev.as.paste.len);
                 if(n > 0) timui_edit_add_text_(ui, start, n);
             } else if(ev.kind == TIMUI_EVENT_FOCUS){
@@ -1084,6 +1114,14 @@ TIMUI_API void timui_full_redraw(Timui *ui){
         ui->prev.cells[i].codepoint = 0xFFFFFFFFu;   /* impossible live cell: force a diff, including blanks */
         ui->prev.cells[i].width = 1;
     }
+}
+TIMUI_API int timui_input_log_count(const TimuiFrame *f){
+    return (f && f->ui) ? f->ui->input_log_count : 0;
+}
+TIMUI_API int timui_input_log_at(const TimuiFrame *f, int i, TimuiInputRecord *out){
+    if(!f || !f->ui || !out || i < 0 || i >= f->ui->input_log_count) return 0;
+    *out = f->ui->input_log[i];
+    return 1;
 }
 TIMUI_API int timui_poll_event(Timui *ui, TimuiEvent *out_event){
     int i;

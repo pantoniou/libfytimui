@@ -139,6 +139,9 @@ struct Timui {
      * deferred ESC — 16 dropped all but the first 16 chars of a dropped path. */
     TimuiEvent        events[512];
     int               event_count;
+    /* The frame's input in arrival order; see timui_input_log_count(). */
+    TimuiInputRecord  input_log[256];
+    int               input_log_count;
     struct TimuiClipSnapshot { TimuiRect clip; int has_clip; } *clip_stack;
     int               clip_count;
     int               clip_cap;
