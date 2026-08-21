@@ -210,6 +210,56 @@ static void test_prompt_leaves_while_a_surface_holds_keys(void)
 }
 
 /*
+ * A host that nobody types into asks for no prompt, and there is none - and
+ * with it go the separators that framed it, so a surface reaches the row the
+ * prompt would have taken.
+ */
+static void test_prompt_leaves_when_it_is_not_wanted(void)
+{
+    struct fytim_cell cells[8];
+    struct fytim_surface *s;
+    struct vth h;
+    int rows = 0, granted, i;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "PROMPTMARK ") == FYTIM_OK);
+    /* Ask for the whole screen, so what is granted says what is left over. */
+    s = fytim_surface_open(h.ft, ROWS, 8);
+    CHECK(s != NULL);
+    blank_row(cells, 8);
+    for(i = 0; i < 3; i++)
+        cells[i].chars[0] = (uint32_t)('P' + i);
+    CHECK(fytim_surface_put_row(s, 0, cells, 8) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(row_with_text(&h, "PROMPTMARK") >= 0);
+    CHECK(row_starting_with(&h, 'P') >= 0);
+    CHECK(fytim_surface_granted_rows(s, &granted) == FYTIM_OK);
+    CHECK(granted > 0);
+
+    CHECK(fytim_set_prompt_enabled(h.ft, false) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(row_with_text(&h, "PROMPTMARK") < 0);
+    /*
+     * The prompt and the separators that framed it go to the content, and
+     * with nothing left in the header or the status those rows follow: the
+     * surface has the whole screen.
+     */
+    CHECK(fytim_surface_granted_rows(s, &rows) == FYTIM_OK);
+    CHECK(rows == ROWS);
+    CHECK(rows > granted);
+
+    /* Asking for it again brings it back. */
+    CHECK(fytim_set_prompt_enabled(h.ft, true) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(row_with_text(&h, "PROMPTMARK") >= 0);
+    CHECK(fytim_surface_granted_rows(s, &rows) == FYTIM_OK);
+    CHECK(rows == granted);
+
+    fytim_surface_close(s);
+    vth_close(&h);
+}
+
+/*
  * A chrome row with nothing in it is not a row: with no header, no status and
  * no prompt, a surface reaches the last line of the screen.
  */
@@ -447,6 +497,8 @@ static const struct case_ent cases[] = {
     { "margin_shifts_the_grid",         test_margin_shifts_the_grid },
     { "prompt_leaves_while_a_surface_holds_keys",
       test_prompt_leaves_while_a_surface_holds_keys },
+    { "prompt_leaves_when_it_is_not_wanted",
+      test_prompt_leaves_when_it_is_not_wanted },
     { "wide_glyph_keeps_the_row",       test_wide_glyph_keeps_the_row },
     { "combining_stays_one_cell",       test_combining_stays_one_cell },
     { "cursor_is_a_reverse_cell",       test_cursor_is_a_reverse_cell },
