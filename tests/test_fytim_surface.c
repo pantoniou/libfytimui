@@ -298,6 +298,32 @@ static void test_chrome_rows_paint(void)
     h_close(&h);
 }
 
+/* What is committed is what was shown: the chrome rows a surface carries are
+ * part of its screen, and a title says what the screen was. */
+static void test_commit_keeps_the_chrome(void)
+{
+    struct fytim_cell cells[8];
+    struct harness h;
+    struct fytim_surface *s;
+    char buf[16384];
+    size_t n;
+    if(!h_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 2, 8);
+    CHECK(fytim_surface_set_top(s, "TITLEROW") == FYTIM_OK);
+    CHECK(fytim_surface_set_bottom(s, "STATEROW") == FYTIM_OK);
+    fill_row(cells, 8, 'm');
+    CHECK(fytim_surface_put_row(s, 0, cells, 8) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    CHECK(fytim_surface_commit(s) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "TITLEROW"));
+    CHECK(contains(buf, n, "mmmmmmmm"));
+    CHECK(contains(buf, n, "STATEROW"));
+    h_close(&h);
+}
+
 /* A committed surface leaves its screen in the transcript: the handle is
  * gone, and what the program drew is still there. */
 static void test_commit_keeps_the_screen(void)
@@ -464,6 +490,7 @@ static const struct case_ent cases[] = {
     { "clear_blanks_the_grid",       test_clear_blanks_the_grid },
     { "chrome_rows_paint",           test_chrome_rows_paint },
     { "commit_keeps_the_screen",     test_commit_keeps_the_screen },
+    { "commit_keeps_the_chrome",     test_commit_keeps_the_chrome },
     { "chrome_survives_a_short_region", test_chrome_survives_a_short_region },
     { "rejects_bad_geometry",        test_rejects_bad_geometry },
     { "put_row_clips_to_width",      test_put_row_clips_to_width },
