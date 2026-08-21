@@ -149,6 +149,14 @@ enum fytim_result fytim_set_marker(struct fytim *ft, const char *marker) FYTIM_E
  * the theme's input style and separator rules. */
 enum fytim_result fytim_set_prompt_style(struct fytim *ft,
                                          const char *sgr) FYTIM_EXPORT;
+/*
+ * Say whether there is a user at this keyboard. A host that nobody types
+ * into - a program driven by another program - asks for no prompt, and the
+ * rows the prompt and its empty chrome would take go to the content. The
+ * default is a prompt.
+ */
+enum fytim_result fytim_set_prompt_enabled(struct fytim *ft,
+                                           bool enabled) FYTIM_EXPORT;
 
 enum fytim_chrome_style {
     FYTIM_CHROME_HEADER = 0,

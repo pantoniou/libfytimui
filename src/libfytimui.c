@@ -92,6 +92,7 @@ struct fytim {
     char *marker;
     struct fytim_sgr_style prompt_style;
     bool prompt_style_set;
+    bool no_prompt;      /* nobody types here: draw no prompt band */
     struct fytim_sgr_style chrome_style[FYTIM_CHROME_STYLE_COUNT];
     bool chrome_style_set[FYTIM_CHROME_STYLE_COUNT];
 
@@ -1185,6 +1186,13 @@ enum fytim_result fytim_set_prompt_style(struct fytim *ft, const char *sgr)
     return FYTIM_OK;
 }
 
+enum fytim_result fytim_set_prompt_enabled(struct fytim *ft, bool enabled)
+{
+    if(!ft) return FYTIM_ERR_INVALID;
+    ft->no_prompt = !enabled;
+    return FYTIM_OK;
+}
+
 enum fytim_result fytim_set_chrome_style(struct fytim *ft,
         enum fytim_chrome_style slot, const char *sgr)
 {
@@ -1672,7 +1680,7 @@ static int wb_rows_total(const struct fytim *ft)
 static int prompt_lines(const struct fytim *ft)
 {
     const char *marker = ft->marker ? ft->marker : "> ";
-    if(ft->keys) return 0;
+    if(ft->keys || ft->no_prompt) return 0;
     const char *p = ft->input;
     size_t len = strlen(p), i = 0, next;
     int width = ft->term_w - sgr_disp_width(marker);
@@ -1755,7 +1763,7 @@ static void layout_drop_empty_chrome(const struct fytim *ft,
     int freed = 0;
     size_t i;
 
-    if(!ft->keys) return;
+    if(!ft->keys && !ft->no_prompt) return;
 
     if(!ft->header && lay->band[FYTIM_BAND_HEADER].h){
         freed += lay->band[FYTIM_BAND_HEADER].h;
@@ -2152,7 +2160,16 @@ enum fytim_result fytim_pump(struct fytim *ft)
              * on screen is stale regardless of our own geometry */
             timui_full_redraw(ft->ui);
         }
-        want = FYTIM_CHROME_ROWS + wb_rows_total(ft) + (prompt_lines(ft) - 1);
+        /*
+         * With no prompt the separators that frame it go too, so the band
+         * asks only for what is left: the header, the status and the work
+         * bands. The layout drops an empty header or status after that.
+         */
+        if(prompt_lines(ft) > 0)
+            want = FYTIM_CHROME_ROWS + wb_rows_total(ft) +
+                   (prompt_lines(ft) - 1);
+        else
+            want = FYTIM_HEADER_ROWS + FYTIM_STATUS_ROWS + wb_rows_total(ft);
         /* Growth is immediate; a shrink is allowed only up to the rows
          * COMMITTED in this same pump, so shrink and scroll cancel and the
          * bubble never moves -- all motion is text scrolling. An
@@ -2233,8 +2250,10 @@ enum fytim_result fytim_pump(struct fytim *ft)
     }
 
     if(fytim_layout_compute_ex(timui_width(f), timui_height(f),
-                               prompt_lines(ft), &lay))
+                               prompt_lines(ft), &lay)){
+        layout_drop_empty_chrome(ft, &lay);
         draw_band(ft, f, &lay, &submitted);
+    }
 
     if(submitted){
         char *text = strdup(ft->input);
