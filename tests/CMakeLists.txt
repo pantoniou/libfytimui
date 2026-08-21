@@ -183,7 +183,8 @@ if(ASAN_C_FLAGS)
 endif()
 
 foreach(t typed_text_reaches_the_surface enter_is_a_return
-          control_chord_is_a_control_byte arrow_is_a_csi_sequence
+          control_chord_is_a_control_byte every_control_byte_arrives
+          arrow_is_a_csi_sequence
           editing_keys_keep_their_codes prompt_does_not_see_the_keys
           keys_return_to_the_prompt close_returns_the_keys
           only_one_surface_holds_the_keys content_paints_while_holding_keys

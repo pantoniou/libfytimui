@@ -1989,9 +1989,13 @@ static void surface_keys_collect(struct fytim *ft, TimuiFrame *f)
     ctrl = timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN, TIMUI_MOD_CTRL);
     cp = timui_key_codepoint(f);
     if(ctrl && cp){
+        /* The chord is reported either as the letter it was typed with or as
+         * the control byte itself, and a host reserving a key such as ^\
+         * needs both to arrive. */
         if(cp >= 'a' && cp <= 'z') ctl = (char)(cp - 'a' + 1);
         else if(cp >= 'A' && cp <= 'Z') ctl = (char)(cp - 'A' + 1);
         else if(cp >= '@' && cp <= '_') ctl = (char)(cp - '@');
+        else if(cp < 0x20 || cp == 0x7f) ctl = (char)cp;
         else ctl = 0;
         if(ctl) key_put(&k, &ctl, 1);
     }
