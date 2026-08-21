@@ -159,6 +159,84 @@ static void test_colour_reaches_the_cell(void)
     vth_close(&h);
 }
 
+/* The row that holds @text, or -1. The screen is read, not the bytes: an
+ * unchanged row emits nothing, so a byte capture cannot say what is on screen.
+ */
+static int row_with_text(struct vth *h, const char *text)
+{
+    char line[COLS + 1];
+    VTermRect rect;
+    int r;
+
+    for(r = 0; r < ROWS; r++){
+        rect.start_row = r;
+        rect.end_row = r + 1;
+        rect.start_col = 0;
+        rect.end_col = COLS;
+        memset(line, 0, sizeof line);
+        vterm_screen_get_text(h->vs, line, sizeof line - 1, rect);
+        if(strstr(line, text)) return r;
+    }
+    return -1;
+}
+
+/*
+ * The prompt is not on screen while a surface holds the keys: there is
+ * nothing to type into it, and its rows belong to the program instead.
+ */
+static void test_prompt_leaves_while_a_surface_holds_keys(void)
+{
+    struct fytim_surface *s;
+    struct vth h;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "PROMPTMARK ") == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(row_with_text(&h, "PROMPTMARK") >= 0);
+
+    s = fytim_surface_open(h.ft, 4, 8);
+    CHECK(s != NULL);
+    CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(row_with_text(&h, "PROMPTMARK") < 0);
+
+    /* Giving the keys back brings it out again. */
+    CHECK(fytim_surface_set_keys(s, false) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(row_with_text(&h, "PROMPTMARK") >= 0);
+
+    fytim_surface_close(s);
+    vth_close(&h);
+}
+
+/*
+ * A chrome row with nothing in it is not a row: with no header, no status and
+ * no prompt, a surface reaches the last line of the screen.
+ */
+static void test_empty_chrome_gives_its_rows_back(void)
+{
+    struct fytim_cell cells[8];
+    struct fytim_surface *s;
+    struct vth h;
+    int row, i;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(&h == NULL ? NULL : h.ft, ROWS, 8);
+    CHECK(s != NULL);
+    CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
+    blank_row(cells, 8);
+    for(i = 0; i < 8; i++)
+        cells[i].chars[0] = 'b';
+    /* The last row of the grid: it can only be seen if nothing is below. */
+    CHECK(fytim_surface_put_row(s, ROWS - 1, cells, 8) == FYTIM_OK);
+    vth_pump(&h);
+
+    row = row_starting_with(&h, 'b');
+    CHECK(row == ROWS - 1);
+    fytim_surface_close(s);
+    vth_close(&h);
+}
+
 /* A double-width glyph occupies two columns and the text after it is not
  * pushed: the filler cell is stepped over, not drawn as a space. */
 static void test_wide_glyph_keeps_the_row(void)
@@ -327,6 +405,9 @@ static void test_two_surfaces_stack_in_order(void)
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "colour_reaches_the_cell",        test_colour_reaches_the_cell },
+    { "empty_chrome_gives_its_rows_back", test_empty_chrome_gives_its_rows_back },
+    { "prompt_leaves_while_a_surface_holds_keys",
+      test_prompt_leaves_while_a_surface_holds_keys },
     { "wide_glyph_keeps_the_row",       test_wide_glyph_keeps_the_row },
     { "combining_stays_one_cell",       test_combining_stays_one_cell },
     { "cursor_is_a_reverse_cell",       test_cursor_is_a_reverse_cell },

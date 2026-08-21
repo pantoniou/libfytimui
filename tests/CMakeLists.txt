@@ -97,7 +97,8 @@ if(ASAN_C_FLAGS)
     target_link_options(test_fytim_layout PRIVATE ${ASAN_C_FLAGS})
 endif()
 
-foreach(t full_size only_transcript_grows width_propagates
+foreach(t full_size no_prompt_frees_its_rows no_prompt_degenerate_heights
+          prompt_survives_when_asked_for only_transcript_grows width_propagates
           multirow_prompt_grows multirow_prompt_sheds_last
           minimum_untruncated degrades_in_priority_order
           no_trailing_separator prompt_always_present degenerate_geometry_rejected
@@ -232,7 +233,9 @@ if(VTERM_FOUND)
         target_compile_options(test_fytim_surface_vt PRIVATE ${ASAN_C_FLAGS})
         target_link_options(test_fytim_surface_vt PRIVATE ${ASAN_C_FLAGS})
     endif()
-    foreach(t colour_reaches_the_cell wide_glyph_keeps_the_row
+    foreach(t colour_reaches_the_cell prompt_leaves_while_a_surface_holds_keys
+              empty_chrome_gives_its_rows_back
+              wide_glyph_keeps_the_row
               combining_stays_one_cell cursor_is_a_reverse_cell
               short_region_keeps_the_last_rows two_surfaces_stack_in_order)
         add_test(NAME fytim.surface.vt.${t}
