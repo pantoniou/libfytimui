@@ -1067,9 +1067,18 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
             if(sf->grid[(size_t)row * (size_t)sf->cols + (size_t)col].chars[0])
                 last = row;
     }
+    /* The chrome is part of the screen: a title says what the screen was. */
+    if(sf->wb->top && sf->wb->top[0] &&
+       rt_add(&out, sf->wb->top, strlen(sf->wb->top))) goto nomem;
+
     for(row = 0; row <= last; row++){
-        if(row && rt_add(&out, "\n", 1)) goto nomem;
+        if(out.len && rt_add(&out, "\n", 1)) goto nomem;
         if(surface_row_text(sf, row, &out)) goto nomem;
+    }
+
+    if(sf->wb->bottom && sf->wb->bottom[0]){
+        if(out.len && rt_add(&out, "\n", 1)) goto nomem;
+        if(rt_add(&out, sf->wb->bottom, strlen(sf->wb->bottom))) goto nomem;
     }
     if(out.len) commit_norm(sf->owner, out.buf, out.len);
     free(out.buf);
