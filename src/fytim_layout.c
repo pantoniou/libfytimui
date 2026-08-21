@@ -31,7 +31,13 @@ bool fytim_layout_compute_ex(int w, int h, int prompt_rows,
     if(!out) return false;
     memset(out, 0, sizeof *out);
     if(w <= 0 || h <= 0) return false;
-    if(prompt_rows < 1) prompt_rows = 1;   /* the prompt is never absent */
+    /*
+     * Zero asks for no prompt at all: a host whose keys belong to something
+     * else - a program on a surface - has nothing to type into one. Removing
+     * it must be asked for, so a negative count is a caller's slip and keeps
+     * the prompt; with one, the prompt is never dropped.
+     */
+    if(prompt_rows < 0) prompt_rows = FYTIM_PROMPT_ROWS;
     if(prompt_rows > h) prompt_rows = h;   /* cannot exceed the screen */
     if(prompt_rows > (1 << 24)) prompt_rows = 1 << 24;   /* chrome sum must not
                                               overflow even for an INT_MAX
@@ -47,7 +53,15 @@ bool fytim_layout_compute_ex(int w, int h, int prompt_rows,
     /* One row for the transcript is part of the budget, not a leftover: the
      * transcript is squeezed to its last row before any chrome is dropped,
      * and only then does chrome start to go. */
-    chrome  = (FYTIM_CHROME_ROWS - FYTIM_PROMPT_ROWS) + prompt_rows;
+    /* The separators frame the prompt; with no prompt they border nothing. */
+    if(prompt_rows == 0){
+        heights[FYTIM_BAND_SEP_TOP]    = 0;
+        heights[FYTIM_BAND_SEP_BOTTOM] = 0;
+    }
+
+    chrome = heights[FYTIM_BAND_HEADER] + heights[FYTIM_BAND_SEP_TOP] +
+             prompt_rows + heights[FYTIM_BAND_SEP_BOTTOM] +
+             heights[FYTIM_BAND_STATUS];
     deficit = (chrome + 1) - h;
 
     for(i = 0; i < sizeof shed_order / sizeof shed_order[0] && deficit > 0; ++i){
@@ -60,7 +74,7 @@ bool fytim_layout_compute_ex(int w, int h, int prompt_rows,
     /* Extra prompt rows are the most valuable chrome -- the user is mid-edit
      * in them -- so they are shed only after everything above, and only down
      * to the single row that is never given up. */
-    if(deficit > 0){
+    if(deficit > 0 && prompt_rows > 0){
         int give = heights[FYTIM_BAND_PROMPT] - 1;
         if(give > deficit) give = deficit;
         if(give > 0){

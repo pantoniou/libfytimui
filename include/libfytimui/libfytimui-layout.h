@@ -21,7 +21,8 @@
  *
  * A band with h == 0 is hidden. As height shrinks the chrome degrades in a
  * fixed order, least important first, so that the prompt is the last thing
- * standing: it is the only band the user cannot operate without.
+ * standing: it is the only band the user cannot operate without - unless the
+ * host asked for no prompt at all, which a full-screen program does.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -76,7 +77,12 @@ bool fytim_layout_compute(int w, int h, struct fytim_layout *out)
  * the degradation order -- the user is mid-edit in them -- but the transcript
  * still keeps its final row against any request, and the prompt's single
  * guaranteed row is never given up. rows == FYTIM_PROMPT_ROWS reproduces
- * fytim_layout_compute exactly. */
+ * fytim_layout_compute exactly.
+ *
+ * rows == 0 asks for NO prompt: a host whose keys belong to something else has
+ * nothing to type into one, and the separators that frame it go with it. It is
+ * the only value that removes the prompt - a negative count is a caller's slip
+ * and keeps it. */
 bool fytim_layout_compute_ex(int w, int h, int prompt_rows,
                              struct fytim_layout *out)
     FYTIM_EXPORT;
