@@ -320,6 +320,35 @@ static void test_commit_keeps_the_screen(void)
     h_close(&h);
 }
 
+/*
+ * A short region takes rows from the grid, not from the chrome: the state row
+ * of a surface says what the program is doing, and a screen one row shorter is
+ * a far smaller loss than losing that. A work band sheds the other way round.
+ */
+static void test_chrome_survives_a_short_region(void)
+{
+    struct fytim_cell cells[8];
+    struct harness h;
+    struct fytim_surface *s;
+    char buf[16384];
+    size_t n;
+    int granted = -1;
+    if(!h_open(&h)){ CHECK(0); return; }
+    /* Taller than any region the default geometry can grant. */
+    s = fytim_surface_open(h.ft, 40, 8);
+    CHECK(fytim_surface_set_bottom(s, "STATEROW") == FYTIM_OK);
+    fill_row(cells, 8, 'g');
+    CHECK(fytim_surface_put_row(s, 39, cells, 8) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "STATEROW"));
+    CHECK(fytim_surface_granted_rows(s, &granted) == FYTIM_OK);
+    CHECK(granted > 0);
+    CHECK(granted < 40);
+    fytim_surface_close(s);
+    h_close(&h);
+}
+
 /* ---- negative cases ---------------------------------------------------- */
 
 static void test_rejects_bad_geometry(void)
@@ -435,6 +464,7 @@ static const struct case_ent cases[] = {
     { "clear_blanks_the_grid",       test_clear_blanks_the_grid },
     { "chrome_rows_paint",           test_chrome_rows_paint },
     { "commit_keeps_the_screen",     test_commit_keeps_the_screen },
+    { "chrome_survives_a_short_region", test_chrome_survives_a_short_region },
     { "rejects_bad_geometry",        test_rejects_bad_geometry },
     { "put_row_clips_to_width",      test_put_row_clips_to_width },
     { "cursor_is_bounded",           test_cursor_is_bounded },
