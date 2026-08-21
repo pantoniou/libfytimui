@@ -1928,76 +1928,99 @@ static void key_put_str(struct key_out *k, const char *s)
     key_put(k, s, strlen(s));
 }
 
-/*
- * One named key as the bytes a terminal sends for it. The sequences are the
- * xterm ones, which is what a program on a pseudo-terminal expects, and what
- * this library's own input parser reads back.
- */
-static void key_named(TimuiFrame *f, struct key_out *k, TimuiKey key,
-                      const char *seq)
+/* The bytes a terminal sends for a named key, or NULL when it has none. */
+static const char *key_sequence(TimuiKey key)
 {
-    if(timui_key_pressed(f, key)) key_put_str(k, seq);
+    switch(key){
+    case TIMUI_KEY_ENTER:     return "\r";
+    case TIMUI_KEY_TAB:       return "\t";
+    case TIMUI_KEY_BACKSPACE: return "\x7f";
+    case TIMUI_KEY_ESCAPE:    return "\x1b";
+    case TIMUI_KEY_UP:        return "\x1b[A";
+    case TIMUI_KEY_DOWN:      return "\x1b[B";
+    case TIMUI_KEY_RIGHT:     return "\x1b[C";
+    case TIMUI_KEY_LEFT:      return "\x1b[D";
+    case TIMUI_KEY_HOME:      return "\x1b[H";
+    case TIMUI_KEY_END:       return "\x1b[F";
+    case TIMUI_KEY_INSERT:    return "\x1b[2~";
+    case TIMUI_KEY_DELETE:    return "\x1b[3~";
+    case TIMUI_KEY_PAGE_UP:   return "\x1b[5~";
+    case TIMUI_KEY_PAGE_DOWN: return "\x1b[6~";
+    case TIMUI_KEY_F1:        return "\x1bOP";
+    case TIMUI_KEY_F2:        return "\x1bOQ";
+    case TIMUI_KEY_F3:        return "\x1bOR";
+    case TIMUI_KEY_F4:        return "\x1bOS";
+    case TIMUI_KEY_F5:        return "\x1b[15~";
+    case TIMUI_KEY_F6:        return "\x1b[17~";
+    case TIMUI_KEY_F7:        return "\x1b[18~";
+    case TIMUI_KEY_F8:        return "\x1b[19~";
+    case TIMUI_KEY_F9:        return "\x1b[20~";
+    case TIMUI_KEY_F10:       return "\x1b[21~";
+    case TIMUI_KEY_F11:       return "\x1b[23~";
+    case TIMUI_KEY_F12:       return "\x1b[24~";
+    default:                  return NULL;
+    }
 }
 
 /*
- * Collect the keys of one frame for the surface holding them. Text arrives as
- * text; the named keys are asked for one at a time, because the frame reports
- * what was pressed rather than handing out a list.
+ * The control byte of a chord, or 0 when it is not one. A chord is reported
+ * either as the letter it was typed with or as the control byte itself, and a
+ * host reserving a key such as ^\ needs both to arrive.
+ */
+static char key_control_byte(uint32_t cp)
+{
+    if(cp >= 'a' && cp <= 'z') return (char)(cp - 'a' + 1);
+    if(cp >= 'A' && cp <= 'Z') return (char)(cp - 'A' + 1);
+    if(cp >= '@' && cp <= '_') return (char)(cp - '@');
+    if(cp && (cp < 0x20 || cp == 0x7f)) return (char)cp;
+    return 0;
+}
+
+/*
+ * Encode the input of one frame for the surface holding the keys, in the order
+ * it was typed. Order is the whole point: a host reserves a key for itself and
+ * reads the key after it, so a chord and its command must not be swapped, and
+ * two presses of one key are two presses.
  */
 static void surface_keys_collect(struct fytim *ft, TimuiFrame *f)
 {
+    TimuiInputRecord rec;
     struct key_out k;
-    TimuiStr text;
-    uint32_t cp;
+    const char *seq;
+    char utf8[4];
     char ctl;
-    int ctrl;
+    int i, n;
 
     k.len = 0;
-    text = timui_text_input(f);
-    if(text.ptr && text.len) key_put(&k, text.ptr, text.len);
-
-    key_named(f, &k, TIMUI_KEY_ENTER, "\r");
-    key_named(f, &k, TIMUI_KEY_TAB, "\t");
-    key_named(f, &k, TIMUI_KEY_BACKSPACE, "\x7f");
-    key_named(f, &k, TIMUI_KEY_ESCAPE, "\x1b");
-    key_named(f, &k, TIMUI_KEY_UP, "\x1b[A");
-    key_named(f, &k, TIMUI_KEY_DOWN, "\x1b[B");
-    key_named(f, &k, TIMUI_KEY_RIGHT, "\x1b[C");
-    key_named(f, &k, TIMUI_KEY_LEFT, "\x1b[D");
-    key_named(f, &k, TIMUI_KEY_HOME, "\x1b[H");
-    key_named(f, &k, TIMUI_KEY_END, "\x1b[F");
-    key_named(f, &k, TIMUI_KEY_INSERT, "\x1b[2~");
-    key_named(f, &k, TIMUI_KEY_DELETE, "\x1b[3~");
-    key_named(f, &k, TIMUI_KEY_PAGE_UP, "\x1b[5~");
-    key_named(f, &k, TIMUI_KEY_PAGE_DOWN, "\x1b[6~");
-    key_named(f, &k, TIMUI_KEY_F1, "\x1bOP");
-    key_named(f, &k, TIMUI_KEY_F2, "\x1bOQ");
-    key_named(f, &k, TIMUI_KEY_F3, "\x1bOR");
-    key_named(f, &k, TIMUI_KEY_F4, "\x1bOS");
-    key_named(f, &k, TIMUI_KEY_F5, "\x1b[15~");
-    key_named(f, &k, TIMUI_KEY_F6, "\x1b[17~");
-    key_named(f, &k, TIMUI_KEY_F7, "\x1b[18~");
-    key_named(f, &k, TIMUI_KEY_F8, "\x1b[19~");
-    key_named(f, &k, TIMUI_KEY_F9, "\x1b[20~");
-    key_named(f, &k, TIMUI_KEY_F10, "\x1b[21~");
-    key_named(f, &k, TIMUI_KEY_F11, "\x1b[23~");
-    key_named(f, &k, TIMUI_KEY_F12, "\x1b[24~");
-
-    /* A control chord the key table cannot name arrives as a code point with
-     * the control modifier: ^C is 0x03, which is the byte the program wants
-     * and not an interrupt for this library to act on. */
-    ctrl = timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN, TIMUI_MOD_CTRL);
-    cp = timui_key_codepoint(f);
-    if(ctrl && cp){
-        /* The chord is reported either as the letter it was typed with or as
-         * the control byte itself, and a host reserving a key such as ^\
-         * needs both to arrive. */
-        if(cp >= 'a' && cp <= 'z') ctl = (char)(cp - 'a' + 1);
-        else if(cp >= 'A' && cp <= 'Z') ctl = (char)(cp - 'A' + 1);
-        else if(cp >= '@' && cp <= '_') ctl = (char)(cp - '@');
-        else if(cp < 0x20 || cp == 0x7f) ctl = (char)cp;
-        else ctl = 0;
-        if(ctl) key_put(&k, &ctl, 1);
+    n = timui_input_log_count(f);
+    for(i = 0; i < n; i++){
+        if(!timui_input_log_at(f, i, &rec)) break;
+        if(rec.is_text){
+            key_put(&k, utf8, fytim_utf8_put_(utf8, rec.codepoint));
+            continue;
+        }
+        seq = key_sequence(rec.key);
+        if(seq){
+            key_put_str(&k, seq);
+            continue;
+        }
+        /* A chord the key table cannot name: ^C is 0x03, which is the byte
+         * the program wants and not an interrupt for this library to act on.
+         * An Alt chord is the same byte with an escape before it, which is
+         * how a terminal sends one. */
+        ctl = (rec.mods & TIMUI_MOD_CTRL) ? key_control_byte(rec.codepoint) : 0;
+        if(ctl){
+            if(rec.mods & TIMUI_MOD_ALT) key_put_str(&k, "\x1b");
+            key_put(&k, &ctl, 1);
+            continue;
+        }
+        if(rec.codepoint && (rec.mods & TIMUI_MOD_ALT)){
+            key_put_str(&k, "\x1b");
+            key_put(&k, utf8, fytim_utf8_put_(utf8, rec.codepoint));
+            continue;
+        }
+        if(rec.codepoint && !rec.mods)
+            key_put(&k, utf8, fytim_utf8_put_(utf8, rec.codepoint));
     }
 
     if(!k.len) return;
