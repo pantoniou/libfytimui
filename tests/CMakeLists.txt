@@ -193,6 +193,27 @@ foreach(t typed_text_reaches_the_surface enter_is_a_return
              COMMAND test_fytim_surface_keys ${t})
 endforeach()
 
+# The terminal changed size: needs a real pty, because a pipe has no size.
+add_executable(test_fytim_resize test_fytim_resize.c
+               ${CMAKE_SOURCE_DIR}/src/libfytimui.c
+               ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c
+               ${CMAKE_SOURCE_DIR}/src/fytim_layout.c
+               $<TARGET_OBJECTS:fytimui-core>)
+target_include_directories(test_fytim_resize PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR})
+if(ASAN_C_FLAGS)
+    target_compile_options(test_fytim_resize PRIVATE ${ASAN_C_FLAGS})
+    target_link_options(test_fytim_resize PRIVATE ${ASAN_C_FLAGS})
+endif()
+
+foreach(t resize_is_seen resize_is_seen_with_keys
+          granted_rows_follow_the_window)
+    add_test(NAME fytim.resize.${t} COMMAND test_fytim_resize ${t})
+endforeach()
+
 # What a published cell looks like on a REAL terminal: only with libvterm.
 if(VTERM_FOUND)
     add_executable(test_fytim_surface_vt test_fytim_surface_vt.c
