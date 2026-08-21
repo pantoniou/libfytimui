@@ -197,6 +197,20 @@ static void put_glyph_link(TimuiCellBuffer *buf, int x, int y, uint32_t cp, Timu
     }
 }
 /* Unlinked convenience for the drawing primitives (box/fill/lines). */
+/* Attach a zero-width mark to the glyph at (x,y). Dropped when the cell has
+ * no base character to modify, or already carries as many marks as it holds. */
+static void put_combining_(TimuiCellBuffer *buf, int x, int y, uint32_t cp){
+    TimuiCell *c;
+    int i;
+    if(!buf || x < 0 || y < 0 || x >= buf->w || y >= buf->h) return;
+    c = timui_cells_get(buf, x, y);
+    if(!c || !c->codepoint) return;
+    for(i = 0; i < TIMUI_CELL_COMBINING_MAX; i++){
+        if(c->combining[i]) continue;
+        c->combining[i] = cp;
+        return;
+    }
+}
 static void put_glyph(TimuiCellBuffer *buf, int x, int y, uint32_t cp, TimuiStyle st){
     put_glyph_link(buf, x, y, cp, st, 0);
 }
@@ -241,6 +255,10 @@ TIMUI_API void timui_draw_text_linked(TimuiCellBuffer *buf, int x, int y, TimuiS
         if(w > 0){
             put_glyph_link(buf, cx, y, cp, st, link);
             cx += w;
+        }else if(cx > x){
+            /* A combining mark modifies the glyph already written. Dropping
+             * it here would silently change the text. */
+            put_combining_(buf, cx - 1, y, cp);
         }
         i += (size_t)adv;
     }
@@ -390,6 +408,17 @@ static void emit_cup(TimuiTransport *t, int x, int y){
     n += fmt_uint(buf + n, (unsigned)(x + 1)); buf[n++] = 'H';
     r_emit(t, buf, (size_t)n);
 }
+/* Write the marks that belong to a cell, after its base character. */
+static void emit_combining_(TimuiTransport *t, const TimuiCell *c){
+    char gb[4];
+    int i, gn;
+    if(!c->codepoint) return;
+    for(i = 0; i < TIMUI_CELL_COMBINING_MAX; i++){
+        if(!c->combining[i]) continue;
+        gn = timui_utf8_encode_(c->combining[i], gb);
+        r_emit(t, gb, (size_t)gn);
+    }
+}
 static void emit_sgr(TimuiTransport *t, TimuiRenderer *r, const TimuiCell *c){
     if((int)c->fg == r->last_fg && (int)c->bg == r->last_bg && (int)c->attrs == r->last_attrs) return;
     R_EMIT(t, "\x1b[0m");                 /* reset, then re-apply the full style */
@@ -460,7 +489,9 @@ TIMUI_API void timui_render_diff(TimuiTransport *t, const TimuiCellBuffer *prev,
              * Never emit it — line 336 would render codepoint 0 as a space,
              * clobbering the right half of a just-drawn wide glyph. */
             if(cc->flags & TIMUI_CELL_CONTINUATION) continue;
-            if(pc->codepoint == cc->codepoint && pc->fg == cc->fg &&
+            if(pc->codepoint == cc->codepoint &&
+               memcmp(pc->combining, cc->combining,
+                      sizeof pc->combining) == 0 && pc->fg == cc->fg &&
                pc->bg == cc->bg && pc->attrs == cc->attrs &&
                pc->width == cc->width &&
                (pc->flags & TIMUI_CELL_CONTINUATION) == (cc->flags & TIMUI_CELL_CONTINUATION) &&
@@ -486,6 +517,7 @@ TIMUI_API void timui_render_diff(TimuiTransport *t, const TimuiCellBuffer *prev,
             }
             gn = timui_utf8_encode_(render_safe_cp(cc->codepoint), gb);
             r_emit(t, gb, (size_t)gn);
+            emit_combining_(t, cc);
             r->last_x = x + (cc->width >= 2 ? 2 : 1);   /* wide glyph advances cursor by 2 */
             r->last_y = y;
         }
@@ -544,6 +576,7 @@ TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf)
             emit_sgr(t, &r, c);
             gn = timui_utf8_encode_(render_safe_cp(c->codepoint), gb);
             r_emit(t, gb, (size_t)gn);
+            emit_combining_(t, c);
         }
     }
     R_EMIT(t, "\x1b[0m\r");                      /* reset so commits stay clean */
@@ -609,6 +642,7 @@ TIMUI_API void timui_inline_paint_diff(TimuiTransport *t,
             emit_sgr(t, &r, c);
             gn = timui_utf8_encode_(render_safe_cp(c->codepoint), gb);
             r_emit(t, gb, (size_t)gn);
+            emit_combining_(t, c);
         }
         R_EMIT(t, "\x1b[0m");                    /* leave SGR clean for commits */
         timui_renderer_reset(&r);                /* the reset voided SGR state */

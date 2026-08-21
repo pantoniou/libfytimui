@@ -105,3 +105,24 @@ Covered by `timui.core.test_external_poll_survives_blocking_fd`, which clears
 `O_NONBLOCK` and runs the frame under `alarm()` in a child, so a regression
 fails instead of hanging. Worth upstreaming: any host embedding timui in its
 own loop is exposed.
+
+## A combining mark stays on the cell it modifies
+
+**Files:** `core/include/timui.h`, `core/src/timui_render.c`
+
+`timui_draw_text_linked()` decoded each code point and drew it only when
+`timui_utf8_width()` reported a width above zero. A combining mark has no width
+of its own, so every mark was dropped: text that arrives decomposed - `e` plus
+U+0301 rather than `é` - lost its accent, silently, on every path that draws
+text.
+
+A grapheme is one cell, thus a mark belongs to the base character and not to a
+cell of its own. `TimuiCell` now carries `combining[TIMUI_CELL_COMBINING_MAX]`,
+a zero-width code point is attached to the glyph before it, the frame diff
+compares the marks, and each of the three emit paths writes them after the base
+character.
+
+Observed with `fytim.surface.vt.combining_stays_one_cell`, which reads the
+grid back out of libvterm: the mark was missing from the cell before the fix.
+Worth upstreaming: the defect is in the general text path, not in anything this
+library added.
