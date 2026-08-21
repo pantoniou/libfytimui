@@ -375,6 +375,63 @@ static void test_chrome_survives_a_short_region(void)
     h_close(&h);
 }
 
+/* The margin is drawn on every row of the grid and takes its columns from it. */
+static void test_margin_takes_columns_from_the_grid(void)
+{
+    struct fytim_cell cells[8];
+    struct harness h;
+    struct fytim_surface *s;
+    char buf[16384];
+    int wide = 0, narrow = 0;
+    size_t n;
+    if(!h_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 2, 8);
+    fill_row(cells, 8, 'x');
+    CHECK(fytim_surface_put_row(s, 0, cells, 8) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    CHECK(fytim_surface_granted_cols(s, &wide) == FYTIM_OK);
+
+    CHECK(fytim_surface_set_margin(s, "| ") == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "| "));
+    CHECK(fytim_surface_granted_cols(s, &narrow) == FYTIM_OK);
+    CHECK(wide > 0);
+    CHECK(narrow == wide - 2);
+
+    /* Taking it away gives the columns back. */
+    CHECK(fytim_surface_set_margin(s, NULL) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    CHECK(fytim_surface_granted_cols(s, &narrow) == FYTIM_OK);
+    CHECK(narrow == wide);
+    fytim_surface_close(s);
+    h_close(&h);
+}
+
+/* What is committed keeps the margin: the alignment is part of the screen. */
+static void test_commit_keeps_the_margin(void)
+{
+    struct fytim_cell cells[4];
+    struct harness h;
+    struct fytim_surface *s;
+    char buf[16384];
+    size_t n;
+    if(!h_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 2, 4);
+    CHECK(fytim_surface_set_margin(s, "| ") == FYTIM_OK);
+    fill_row(cells, 4, 'y');
+    CHECK(fytim_surface_put_row(s, 0, cells, 4) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    CHECK(fytim_surface_commit(s) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "| yy"));
+    h_close(&h);
+}
+
 /* ---- negative cases ---------------------------------------------------- */
 
 static void test_rejects_bad_geometry(void)
@@ -458,6 +515,8 @@ static void test_null_safety(void)
     CHECK(fytim_surface_set_top(NULL, "x") == FYTIM_ERR_INVALID);
     CHECK(fytim_surface_set_bottom(NULL, "x") == FYTIM_ERR_INVALID);
     CHECK(fytim_surface_commit(NULL) == FYTIM_ERR_INVALID);
+    CHECK(fytim_surface_set_margin(NULL, "|") == FYTIM_ERR_INVALID);
+    CHECK(fytim_surface_granted_cols(NULL, &rows) == FYTIM_ERR_INVALID);
     fytim_surface_close(NULL);   /* must not crash */
 }
 
@@ -491,6 +550,8 @@ static const struct case_ent cases[] = {
     { "chrome_rows_paint",           test_chrome_rows_paint },
     { "commit_keeps_the_screen",     test_commit_keeps_the_screen },
     { "commit_keeps_the_chrome",     test_commit_keeps_the_chrome },
+    { "margin_takes_columns_from_the_grid", test_margin_takes_columns_from_the_grid },
+    { "commit_keeps_the_margin",     test_commit_keeps_the_margin },
     { "chrome_survives_a_short_region", test_chrome_survives_a_short_region },
     { "rejects_bad_geometry",        test_rejects_bad_geometry },
     { "put_row_clips_to_width",      test_put_row_clips_to_width },
