@@ -237,6 +237,44 @@ static void test_empty_chrome_gives_its_rows_back(void)
     vth_close(&h);
 }
 
+/*
+ * The margin stands to the left of the screen and the screen starts after it.
+ * A byte capture can only say the margin was written; where the cells landed
+ * is a property of the grid.
+ */
+static void test_margin_shifts_the_grid(void)
+{
+    struct fytim_cell cells[6];
+    struct fytim_surface *s;
+    VTermScreenCell c;
+    struct vth h;
+    int row;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 2, 6);
+    CHECK(s != NULL);
+    CHECK(fytim_surface_set_margin(s, "\xe2\x94\x82 ") == FYTIM_OK);
+    blank_row(cells, 6);
+    cells[0].chars[0] = 'S';
+    cells[1].chars[0] = 'T';
+    CHECK(fytim_surface_put_row(s, 0, cells, 6) == FYTIM_OK);
+    vth_pump(&h);
+
+    row = row_starting_with(&h, 0x2502);
+    CHECK(row >= 0);
+    if(row >= 0){
+        /* The bar, a space, then the first cell of the grid. */
+        c = cell_at(&h, row, 1);
+        CHECK(c.chars[0] == ' ' || c.chars[0] == 0);
+        c = cell_at(&h, row, 2);
+        CHECK(c.chars[0] == 'S');
+        c = cell_at(&h, row, 3);
+        CHECK(c.chars[0] == 'T');
+    }
+    fytim_surface_close(s);
+    vth_close(&h);
+}
+
 /* A double-width glyph occupies two columns and the text after it is not
  * pushed: the filler cell is stepped over, not drawn as a space. */
 static void test_wide_glyph_keeps_the_row(void)
@@ -406,6 +444,7 @@ struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "colour_reaches_the_cell",        test_colour_reaches_the_cell },
     { "empty_chrome_gives_its_rows_back", test_empty_chrome_gives_its_rows_back },
+    { "margin_shifts_the_grid",         test_margin_shifts_the_grid },
     { "prompt_leaves_while_a_surface_holds_keys",
       test_prompt_leaves_while_a_surface_holds_keys },
     { "wide_glyph_keeps_the_row",       test_wide_glyph_keeps_the_row },

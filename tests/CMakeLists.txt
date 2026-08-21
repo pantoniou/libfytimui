@@ -155,7 +155,8 @@ foreach(t open_reports_its_size put_row_paints put_row_after_a_frame_paints
           composes_with_workband two_surfaces_are_independent
           granted_rows_respects_cap resize_keeps_content
           clear_blanks_the_grid chrome_rows_paint commit_keeps_the_screen
-          commit_keeps_the_chrome
+          commit_keeps_the_chrome margin_takes_columns_from_the_grid
+          commit_keeps_the_margin
           chrome_survives_a_short_region
           rejects_bad_geometry
           put_row_clips_to_width cursor_is_bounded null_safety
@@ -229,7 +230,7 @@ if(VTERM_FOUND)
         target_link_options(test_fytim_surface_vt PRIVATE ${ASAN_C_FLAGS})
     endif()
     foreach(t colour_reaches_the_cell prompt_leaves_while_a_surface_holds_keys
-              empty_chrome_gives_its_rows_back
+              empty_chrome_gives_its_rows_back margin_shifts_the_grid
               wide_glyph_keeps_the_row
               combining_stays_one_cell cursor_is_a_reverse_cell
               short_region_keeps_the_last_rows two_surfaces_stack_in_order)

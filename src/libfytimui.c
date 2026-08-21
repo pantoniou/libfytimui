@@ -64,7 +64,9 @@ struct fytim_surface {
     struct fytim_workband *wb;
     struct fytim          *owner;
     struct fytim_cell     *grid;   /* rows * cols, row-major */
+    char *margin;                  /* chrome at the left of every row */
     int rows, cols;
+    int granted_cols;              /* columns the grid was given last frame */
     int cur_row, cur_col;
     bool cur_visible;
     int granted;                   /* content rows drawn at the last frame */
@@ -274,6 +276,7 @@ static void wb_free(struct fytim_workband *wb)
         /* The band owns the surface once it is attached: the UI can outlive
          * the host's handle, and destroying the UI must free both. */
         free(wb->surface->grid);
+        free(wb->surface->margin);
         free(wb->surface);
         wb->surface = NULL;
     }
@@ -1073,6 +1076,9 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
 
     for(row = 0; row <= last; row++){
         if(out.len && rt_add(&out, "\n", 1)) goto nomem;
+        /* The alignment is part of the screen: keep it in the transcript. */
+        if(sf->margin && sf->margin[0] &&
+           rt_add(&out, sf->margin, strlen(sf->margin))) goto nomem;
         if(surface_row_text(sf, row, &out)) goto nomem;
     }
 
@@ -1088,6 +1094,21 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
 nomem:
     free(out.buf);
     return FYTIM_ERR_NOMEM;
+}
+
+enum fytim_result fytim_surface_set_margin(struct fytim_surface *sf,
+                                           const char *text)
+{
+    if(!sf) return FYTIM_ERR_INVALID;
+    return set_dup_sgr(&sf->margin, text);
+}
+
+enum fytim_result fytim_surface_granted_cols(const struct fytim_surface *sf,
+                                             int *cols)
+{
+    if(!sf || !cols) return FYTIM_ERR_INVALID;
+    *cols = sf->granted_cols;
+    return FYTIM_OK;
 }
 
 enum fytim_result fytim_surface_set_keys(struct fytim_surface *sf, bool take)
@@ -1559,7 +1580,8 @@ static int wb_rows(const struct fytim_workband *wb)
  * combine with it, and the core resolves such a cluster - its width, and the
  * continuation cell a wide glyph needs - on the way in.
  */
-static void draw_surface(TimuiCellBuffer *buf, const struct fytim_surface *sf,
+static void draw_surface(TimuiFrame *f, TimuiCellBuffer *buf,
+                         struct fytim_surface *sf, TimuiStyle chrome,
                          int x, int y, int w, int rows)
 {
     char utf8[FYTIM_CELL_CHARS * 4];
@@ -1567,13 +1589,22 @@ static void draw_surface(TimuiCellBuffer *buf, const struct fytim_surface *sf,
     TimuiStyle st;
     TimuiStr str;
     int first, row, col, i;
+    int margin_w;
     size_t len;
 
     first = sf->rows - rows;
     if(first < 0) first = 0;
 
+    /* The margin is chrome drawn at the left of every row; the grid gets what
+     * is left of the width, which is what the host is told it has. */
+    margin_w = sf->margin ? sgr_disp_width(sf->margin) : 0;
+    if(margin_w > w) margin_w = w;
+    sf->granted_cols = w - margin_w;
+
     for(row = first; row < sf->rows; row++, y++){
-        for(col = 0; col < sf->cols && col < w; col++){
+        if(margin_w)
+            draw_row_styled(f, buf, x, y, margin_w, sf->margin, chrome);
+        for(col = 0; col < sf->cols && col < w - margin_w; col++){
             cell = &sf->grid[(size_t)row * (size_t)sf->cols + (size_t)col];
             st = timui_style_make(sgr_color_(cell->fg), sgr_color_(cell->bg),
                                   timui_attrs_from_fytim_(cell->attrs));
@@ -1592,7 +1623,7 @@ static void draw_surface(TimuiCellBuffer *buf, const struct fytim_surface *sf,
             }
             str.ptr = utf8;
             str.len = len;
-            timui_draw_text(buf, x + col, y, str, st);
+            timui_draw_text(buf, x + margin_w + col, y, str, st);
             /* A double-width glyph owns the cell after it. */
             if(cell->width > 1) col++;
         }
@@ -1882,7 +1913,8 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                 }
                 if(wb->surface){
                     if(content > 0)
-                        draw_surface(buf, wb->surface, r->x, y, r->w, content);
+                        draw_surface(f, buf, wb->surface, wb_st, r->x, y,
+                                     r->w, content);
                     wb->surface->granted = content > 0 ? content : 0;
                 }else if(content > 0 && wb->content){
                     const char *p = wb->content;

@@ -107,6 +107,21 @@ bool fytim_surface_has_keys(const struct fytim_surface *s) FYTIM_EXPORT;
  */
 enum fytim_result fytim_surface_commit(struct fytim_surface *s) FYTIM_EXPORT;
 
+/*
+ * A margin drawn at the left of every row of the grid, so that the screen of a
+ * program reads as one thing and as something that belongs to whatever opened
+ * it. The margin is chrome: it takes columns from the grid, and
+ * fytim_surface_granted_cols() reports what is left, which is what the host
+ * should size its program to. NULL removes it.
+ */
+enum fytim_result fytim_surface_set_margin(struct fytim_surface *s,
+                                           const char *text) FYTIM_EXPORT;
+
+/* The columns the grid was given at the last frame: the width less the
+ * margin. */
+enum fytim_result fytim_surface_granted_cols(const struct fytim_surface *s,
+                                             int *cols) FYTIM_EXPORT;
+
 /* Chrome rows above and below the grid, as a work band has. NULL removes. */
 enum fytim_result fytim_surface_set_top(struct fytim_surface *s,
                                         const char *text) FYTIM_EXPORT;
