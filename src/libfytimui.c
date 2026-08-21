@@ -829,6 +829,29 @@ void fytim_workband_destroy(struct fytim_workband *wb)
 }
 
 
+
+static size_t fytim_utf8_put_(char *out, uint32_t cp);
+
+/* A growable byte buffer, for serialising a grid into committed text. */
+struct response_text { char *buf; size_t len, cap; };
+
+static int rt_add(struct response_text *t, const char *data, size_t n)
+{
+    if(t->len + n + 1 > t->cap){
+        size_t cap = t->cap ? t->cap * 2 : 256;
+        char *nb;
+        while(cap < t->len + n + 1) cap *= 2;
+        nb = realloc(t->buf, cap);
+        if(!nb) return -1;
+        t->buf = nb;
+        t->cap = cap;
+    }
+    memcpy(t->buf + t->len, data, n);
+    t->len += n;
+    t->buf[t->len] = '\0';
+    return 0;
+}
+
 /* ---- the cell surface -------------------------------------------------- */
 
 /* Rows a surface asks for: its grid, capped by the band's own cap. */
@@ -977,6 +1000,85 @@ enum fytim_result fytim_surface_set_cursor(struct fytim_surface *sf, int row,
     sf->cur_col = col;
     sf->cur_visible = true;
     return FYTIM_OK;
+}
+
+
+/*
+ * Serialise one row of the grid as styled text: an SGR run is written when the
+ * style changes, and the blank tail of the row is left off. This is the same
+ * form a work band's content takes, so a committed surface reaches the
+ * transcript through the one commit path.
+ */
+static int surface_row_text(const struct fytim_surface *sf, int row,
+                            struct response_text *out)
+{
+    struct fytim_sgr_style st, prev;
+    const struct fytim_cell *cell;
+    char esc[64], utf8[4];
+    bool have_prev = false;
+    int col, last, i;
+    size_t n;
+
+    last = -1;
+    for(col = 0; col < sf->cols; col++)
+        if(sf->grid[(size_t)row * (size_t)sf->cols + (size_t)col].chars[0])
+            last = col;
+
+    memset(&prev, 0, sizeof prev);
+    for(col = 0; col <= last; col++){
+        cell = &sf->grid[(size_t)row * (size_t)sf->cols + (size_t)col];
+        st.fg = cell->fg;
+        st.bg = cell->bg;
+        st.attrs = cell->attrs;
+        if(!have_prev || st.fg != prev.fg || st.bg != prev.bg ||
+           st.attrs != prev.attrs){
+            n = fytim_sgr_style_emit(&st, esc, sizeof esc);
+            if(n && rt_add(out, esc, n)) return -1;
+            prev = st;
+            have_prev = true;
+        }
+        if(!cell->chars[0]){
+            if(rt_add(out, " ", 1)) return -1;
+            continue;
+        }
+        for(i = 0; i < FYTIM_CELL_CHARS && cell->chars[i]; i++){
+            n = fytim_utf8_put_(utf8, cell->chars[i]);
+            if(rt_add(out, utf8, n)) return -1;
+        }
+        if(cell->width > 1) col++;
+    }
+    if(have_prev && rt_add(out, "\x1b[0m", 4)) return -1;
+    return 0;
+}
+
+enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
+{
+    struct response_text out;
+    int row, last;
+
+    if(!sf) return FYTIM_ERR_INVALID;
+
+    memset(&out, 0, sizeof out);
+    /* A screen is mostly blank at the bottom: commit what was drawn. */
+    last = -1;
+    for(row = 0; row < sf->rows; row++){
+        int col;
+        for(col = 0; col < sf->cols; col++)
+            if(sf->grid[(size_t)row * (size_t)sf->cols + (size_t)col].chars[0])
+                last = row;
+    }
+    for(row = 0; row <= last; row++){
+        if(row && rt_add(&out, "\n", 1)) goto nomem;
+        if(surface_row_text(sf, row, &out)) goto nomem;
+    }
+    if(out.len) commit_norm(sf->owner, out.buf, out.len);
+    free(out.buf);
+    fytim_surface_close(sf);
+    return FYTIM_OK;
+
+nomem:
+    free(out.buf);
+    return FYTIM_ERR_NOMEM;
 }
 
 enum fytim_result fytim_surface_set_keys(struct fytim_surface *sf, bool take)

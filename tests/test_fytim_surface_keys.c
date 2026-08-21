@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#define _GNU_SOURCE
 #include <string.h>
 #include <unistd.h>
 
@@ -280,6 +281,41 @@ static void test_only_one_surface_holds_the_keys(void)
     h_close(&h);
 }
 
+/* A surface holding the keys is still drawn: taking the keys must not take
+ * the frame with them. */
+static void test_content_paints_while_holding_keys(void)
+{
+    struct fytim_cell cells[8];
+    struct harness h;
+    struct fytim_surface *s;
+    char buf[16384];
+    size_t n = 0;
+    ssize_t r;
+    int i;
+    if(!h_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 3, 8);
+    CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+    memset(cells, 0, sizeof cells);
+    for(i = 0; i < 8; i++){
+        cells[i].chars[0] = 'K';
+        cells[i].fg = FYTIM_COLOR_DEFAULT;
+        cells[i].bg = FYTIM_COLOR_DEFAULT;
+        cells[i].width = 1;
+    }
+    CHECK(fytim_surface_put_row(s, 0, cells, 8) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    while(n < sizeof buf - 1 &&
+          (r = read(h.out[0], buf + n, sizeof buf - 1 - n)) > 0)
+        n += (size_t)r;
+    buf[n] = '\0';
+    CHECK(n > 0);
+    CHECK(memmem(buf, n, "KKKKKKKK", 8) != NULL);
+    fytim_surface_close(s);
+    h_close(&h);
+}
+
 static void test_null_safety(void)
 {
     CHECK(fytim_surface_set_keys(NULL, true) == FYTIM_ERR_INVALID);
@@ -297,6 +333,7 @@ static const struct case_ent cases[] = {
     { "keys_return_to_the_prompt",       test_keys_return_to_the_prompt },
     { "close_returns_the_keys",          test_close_returns_the_keys },
     { "only_one_surface_holds_the_keys", test_only_one_surface_holds_the_keys },
+    { "content_paints_while_holding_keys", test_content_paints_while_holding_keys },
     { "null_safety",                     test_null_safety },
 };
 

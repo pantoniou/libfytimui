@@ -99,6 +99,14 @@ enum fytim_result fytim_surface_set_keys(struct fytim_surface *s, bool take)
     FYTIM_EXPORT;
 bool fytim_surface_has_keys(const struct fytim_surface *s) FYTIM_EXPORT;
 
+/*
+ * The program is done: keep its last screen. The grid is written into the
+ * transcript as styled rows, exactly as a work band commits its content, and
+ * the surface is retired - the handle is invalid afterwards, as it is after
+ * fytim_surface_close(). Closing instead leaves nothing behind.
+ */
+enum fytim_result fytim_surface_commit(struct fytim_surface *s) FYTIM_EXPORT;
+
 /* Chrome rows above and below the grid, as a work band has. NULL removes. */
 enum fytim_result fytim_surface_set_top(struct fytim_surface *s,
                                         const char *text) FYTIM_EXPORT;
