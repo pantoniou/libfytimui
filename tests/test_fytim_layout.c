@@ -40,6 +40,47 @@ static void check_tiles(const struct fytim_layout *l, int w, int h)
     CHECK(y == h);                       /* covers the screen exactly */
 }
 
+/*
+ * No prompt at all: a host whose keys belong to something else has nothing to
+ * type into, so the prompt goes and the separators that frame it go with it.
+ * The rows return to the transcript.
+ */
+static void test_no_prompt_frees_its_rows(void)
+{
+    struct fytim_layout l;
+    CHECK(fytim_layout_compute_ex(80, 24, 0, &l));
+    CHECK(band(&l, FYTIM_BAND_PROMPT)->h == 0);
+    CHECK(band(&l, FYTIM_BAND_SEP_TOP)->h == 0);
+    CHECK(band(&l, FYTIM_BAND_SEP_BOTTOM)->h == 0);
+    CHECK(band(&l, FYTIM_BAND_TRANSCRIPT)->h ==
+          24 - FYTIM_HEADER_ROWS - FYTIM_STATUS_ROWS);
+    check_tiles(&l, 80, 24);
+}
+
+/* With no prompt the screen still tiles at every height, down to one row. */
+static void test_no_prompt_degenerate_heights(void)
+{
+    struct fytim_layout l;
+    int h;
+    for(h = 1; h <= 12; ++h){
+        CHECK(fytim_layout_compute_ex(40, h, 0, &l));
+        CHECK(band(&l, FYTIM_BAND_PROMPT)->h == 0);
+        check_tiles(&l, 40, h);
+    }
+}
+
+/* A prompt asked for is still never dropped. */
+static void test_prompt_survives_when_asked_for(void)
+{
+    struct fytim_layout l;
+    int h;
+    for(h = 1; h <= 12; ++h){
+        CHECK(fytim_layout_compute_ex(40, h, 1, &l));
+        CHECK(band(&l, FYTIM_BAND_PROMPT)->h == 1);
+        check_tiles(&l, 40, h);
+    }
+}
+
 /* A roomy terminal: full chrome, transcript absorbs the remainder. */
 static void test_full_size(void)
 {
@@ -250,9 +291,12 @@ static void test_multirow_prompt_grows(void)
     CHECK(fytim_layout_compute(80, 24, &plain));
     CHECK(memcmp(&one, &plain, sizeof one) == 0);
 
-    /* degenerate row counts clamp to a single row */
+    /* Zero asks for no prompt, and is the one value that removes it. */
     CHECK(fytim_layout_compute_ex(80, 24, 0, &one));
-    CHECK(memcmp(&one, &plain, sizeof one) == 0);
+    CHECK(memcmp(&one, &plain, sizeof one) != 0);
+    CHECK(one.band[FYTIM_BAND_PROMPT].h == 0);
+
+    /* A negative count is a slip, not a request: the prompt stays. */
     CHECK(fytim_layout_compute_ex(80, 24, -5, &one));
     CHECK(memcmp(&one, &plain, sizeof one) == 0);
 }
@@ -310,6 +354,9 @@ int main(int argc, char **argv)
 {
     struct { const char *name; void (*fn)(void); } tests[] = {
         { "full_size", test_full_size },
+        { "no_prompt_frees_its_rows", test_no_prompt_frees_its_rows },
+        { "no_prompt_degenerate_heights", test_no_prompt_degenerate_heights },
+        { "prompt_survives_when_asked_for", test_prompt_survives_when_asked_for },
         { "only_transcript_grows", test_only_transcript_grows },
         { "width_propagates", test_width_propagates },
         { "minimum_untruncated", test_minimum_untruncated },
