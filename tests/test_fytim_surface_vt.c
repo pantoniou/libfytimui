@@ -11,7 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "libfytimui.h"
-#include <vterm.h>
+#include <libfyvterm.h>
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -33,8 +33,8 @@ static int failures;
 
 struct vth {
     struct fytim *ft;
-    VTerm *vt;
-    VTermScreen *vs;
+    struct fyvt *vt;
+    struct fyvt_screen *vs;
     int in[2], out[2];
 };
 
@@ -45,10 +45,12 @@ static int vth_open(struct vth *h)
     if(pipe(h->in) != 0) return 0;
     if(pipe(h->out) != 0){ close(h->in[0]); close(h->in[1]); return 0; }
     fcntl(h->out[0], F_SETFL, O_NONBLOCK);
-    h->vt = vterm_new(ROWS, COLS);
-    vterm_set_utf8(h->vt, 1);
-    h->vs = vterm_obtain_screen(h->vt);
-    vterm_screen_reset(h->vs, 1);
+    h->vt = fyvt_create(&(struct fyvt_cfg){
+		    .struct_size = sizeof(struct fyvt_cfg), .rows = ROWS, .cols = COLS }
+		    );
+    fyvt_set_utf8(h->vt, 1);
+    h->vs = fyvt_obtain_screen(h->vt);
+    fyvt_screen_reset(h->vs, 1);
     fytim_cfg_default(&cfg);
     cfg.input_fd  = h->in[0];
     cfg.output_fd = h->out[1];
@@ -59,7 +61,7 @@ static int vth_open(struct vth *h)
 static void vth_close(struct vth *h)
 {
     fytim_destroy(h->ft);
-    if(h->vt) vterm_free(h->vt);
+    if(h->vt) fyvt_destroy(h->vt);
     close(h->in[0]); close(h->in[1]);
     close(h->out[0]); close(h->out[1]);
 }
@@ -70,18 +72,18 @@ static void vth_pump(struct vth *h)
     ssize_t n;
     CHECK(fytim_pump(h->ft) == FYTIM_OK);
     while((n = read(h->out[0], buf, sizeof buf)) > 0)
-        vterm_input_write(h->vt, buf, (size_t)n);
-    vterm_screen_flush_damage(h->vs);
+        fyvt_input_write(h->vt, buf, (size_t)n);
+    fyvt_screen_flush_damage(h->vs);
 }
 
-static VTermScreenCell cell_at(struct vth *h, int row, int col)
+static struct fyvt_screen_cell cell_at(struct vth *h, int row, int col)
 {
-    VTermScreenCell c;
-    VTermPos pos;
+    struct fyvt_screen_cell c;
+    struct fyvt_pos pos;
     memset(&c, 0, sizeof c);
     pos.row = row;
     pos.col = col;
-    vterm_screen_get_cell(h->vs, pos, &c);
+    fyvt_screen_get_cell(h->vs, pos, &c);
     return c;
 }
 
@@ -94,14 +96,14 @@ static int row_starting_with(struct vth *h, uint32_t ch)
     return -1;
 }
 
-static int rgb_equal(struct vth *h, VTermColor got, uint32_t want_rgb)
+static int rgb_equal(struct vth *h, union fyvt_color got, uint32_t want_rgb)
 {
-    VTermColor want;
-    vterm_color_rgb(&want, (uint8_t)(want_rgb >> 16),
+    union fyvt_color want;
+    fyvt_color_rgb(&want, (uint8_t)(want_rgb >> 16),
                     (uint8_t)(want_rgb >> 8), (uint8_t)want_rgb);
-    vterm_screen_convert_color_to_rgb(h->vs, &got);
-    vterm_screen_convert_color_to_rgb(h->vs, &want);
-    return vterm_color_is_equal(&got, &want);
+    fyvt_screen_convert_color_to_rgb(h->vs, &got);
+    fyvt_screen_convert_color_to_rgb(h->vs, &want);
+    return fyvt_color_is_equal(&got, &want);
 }
 
 static void blank_row(struct fytim_cell *cells, int n)
@@ -121,7 +123,7 @@ static void test_colour_reaches_the_cell(void)
 {
     struct fytim_cell cells[8];
     struct fytim_surface *s;
-    VTermScreenCell c;
+    struct fyvt_screen_cell c;
     struct vth h;
     int row, i;
 
@@ -165,7 +167,7 @@ static void test_colour_reaches_the_cell(void)
 static int row_with_text(struct vth *h, const char *text)
 {
     char line[COLS + 1];
-    VTermRect rect;
+    struct fyvt_rect rect;
     int r;
 
     for(r = 0; r < ROWS; r++){
@@ -174,7 +176,7 @@ static int row_with_text(struct vth *h, const char *text)
         rect.start_col = 0;
         rect.end_col = COLS;
         memset(line, 0, sizeof line);
-        vterm_screen_get_text(h->vs, line, sizeof line - 1, rect);
+        fyvt_screen_get_text(h->vs, line, sizeof line - 1, rect);
         if(strstr(line, text)) return r;
     }
     return -1;
@@ -271,7 +273,7 @@ static void test_empty_chrome_gives_its_rows_back(void)
     int row, i;
 
     if(!vth_open(&h)){ CHECK(0); return; }
-    s = fytim_surface_open(&h == NULL ? NULL : h.ft, ROWS, 8);
+    s = fytim_surface_open(h.ft, ROWS, 8);
     CHECK(s != NULL);
     CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
     blank_row(cells, 8);
@@ -296,7 +298,7 @@ static void test_margin_shifts_the_grid(void)
 {
     struct fytim_cell cells[6];
     struct fytim_surface *s;
-    VTermScreenCell c;
+    struct fyvt_screen_cell c;
     struct vth h;
     int row;
 
@@ -331,7 +333,7 @@ static void test_wide_glyph_keeps_the_row(void)
 {
     struct fytim_cell cells[6];
     struct fytim_surface *s;
-    VTermScreenCell c;
+    struct fyvt_screen_cell c;
     struct vth h;
     int row;
 
@@ -364,7 +366,7 @@ static void test_combining_stays_one_cell(void)
 {
     struct fytim_cell cells[4];
     struct fytim_surface *s;
-    VTermScreenCell c;
+    struct fyvt_screen_cell c;
     struct vth h;
     int row;
 
@@ -395,7 +397,7 @@ static void test_cursor_is_a_reverse_cell(void)
 {
     struct fytim_cell cells[4];
     struct fytim_surface *s;
-    VTermScreenCell c;
+    struct fyvt_screen_cell c;
     struct vth h;
     int row;
 

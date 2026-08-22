@@ -228,9 +228,8 @@ if(VTERM_FOUND)
     target_include_directories(test_fytim_surface_vt PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}/core/include
-        ${VTERM_INCLUDE_DIRS})
-    target_link_libraries(test_fytim_surface_vt PRIVATE ${VTERM_LIBRARIES})
+        ${CMAKE_SOURCE_DIR}/core/include)
+    target_link_libraries(test_fytim_surface_vt PRIVATE libfyvterm::libfyvterm)
     if(ASAN_C_FLAGS)
         target_compile_options(test_fytim_surface_vt PRIVATE ${ASAN_C_FLAGS})
         target_link_options(test_fytim_surface_vt PRIVATE ${ASAN_C_FLAGS})

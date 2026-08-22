@@ -1617,6 +1617,20 @@ static void draw_surface(TimuiFrame *f, TimuiCellBuffer *buf,
     }
 }
 
+/* Rows the tail occupies: its '\n'-terminated rows, plus the trailing
+ * partial row only when it holds VISIBLE text. The cursor row after a
+ * final '\n' -- empty, or only an SGR carry-over residue -- must not
+ * count: it is a phantom row with no matching commit, and every miscount
+ * moves the bubble (the frame resize it forces has no commit to cancel
+ * against). */
+static bool sgr_probe_(void *user, const char *text, size_t len,
+                       const struct fytim_sgr_style *style)
+{
+    (void)text; (void)len; (void)style;
+    *(bool *)user = true;      /* a run was delivered: visible bytes exist */
+    return false;
+}
+
 /* Rows styled text occupies: its '\n'-terminated rows, plus the trailing
  * partial row only when it holds VISIBLE text. The row after a final '\n'
  * -- empty, or only an SGR carry-over residue -- must not count: it is a
@@ -1640,14 +1654,6 @@ static int styled_rows(const char *s)
         if(visible) n++;
     }
     return n;
-}
-
-static bool sgr_probe_(void *user, const char *text, size_t len,
-                       const struct fytim_sgr_style *style)
-{
-    (void)text; (void)len; (void)style;
-    *(bool *)user = true;      /* a run was delivered: visible bytes exist */
-    return false;
 }
 
 /* Rows a work-band wants: its content up to max_rows (at least one row, so

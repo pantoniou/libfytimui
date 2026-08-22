@@ -13,7 +13,6 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
-#define _GNU_SOURCE
 #include <string.h>
 #include <unistd.h>
 
@@ -56,17 +55,6 @@ static void h_close(struct harness *h)
 static void h_keys(struct harness *h, const char *bytes, size_t len)
 {
     CHECK(write(h->in[1], bytes, len) == (ssize_t)len);
-}
-
-/* Take everything the library has painted so far. */
-static size_t h_out(struct harness *h, char *buf, size_t cap)
-{
-    size_t n = 0;
-    ssize_t r;
-    while(n < cap - 1 && (r = read(h->out[0], buf + n, cap - 1 - n)) > 0)
-        n += (size_t)r;
-    buf[n] = '\0';
-    return n;
 }
 
 static void h_drain(struct harness *h)
