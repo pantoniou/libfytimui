@@ -4,7 +4,7 @@
  * Validates timui's diff renderer end-to-end against a real VT emulator:
  *   scene cell buffer
  *     -> timui_render_diff through a fake transport (captures the escapes)
- *     -> vterm_input_write into a fresh libvterm of the same size
+ *     -> fyvt_input_write into a fresh libvterm of the same size
  *     -> read back libvterm's screen grid
  *     -> compare it cell-by-cell against the original scene.
  * This catches SGR / CUP / OSC-8 / truecolor / wide-glyph bugs that
@@ -18,16 +18,16 @@
 #include "test.h"
 #include "timui.h"
 #include "scenes.h"      /* scene_panel / scene_wide — shared with goldens */
-#include <vterm.h>
+#include <libfyvterm.h>
 
 #include <stdio.h>
 #include <string.h>
 
-/* ---- TimuiCell <-> VTermScreenCell mapping ------------------------------ *
+/* ---- TimuiCell <-> struct fyvt_screen_cell mapping ------------------------------ *
  * Rationale (see docs/visual-tests.md):
- *  - vterm_new takes (rows, cols); timui buffers are (w, h)  ->  transpose.
+ *  - fyvt_new takes (rows, cols); timui buffers are (w, h)  ->  transpose.
  *  - timui fg/bg == TIMUI_COLOR_DEFAULT means "default" (emit_sgr emits no
- *    color SGR), which maps to libvterm's VTERM_COLOR_IS_DEFAULT_FG/BG. NB:
+ *    color SGR), which maps to libvterm's FYVT_COLOR_IS_DEFAULT_FG/BG. NB:
  *    convert_color_to_rgb RESETS the default flags, so the default check must
  *    happen BEFORE any conversion.
  *  - An empty timui cell (codepoint 0) renders as a space (' '), and a reset
@@ -41,25 +41,25 @@
 
 /* Decode a vterm color into a packed 0xRRGGBB timui value. Default colors
  * (fg or bg) map to TIMUI_COLOR_DEFAULT, timui's "no SGR" sentinel. */
-static uint32_t vterm_color_to_timui(VTermScreen *s, const VTermColor *col){
-    if(VTERM_COLOR_IS_DEFAULT_FG(col) || VTERM_COLOR_IS_DEFAULT_BG(col)) return TIMUI_COLOR_DEFAULT;
-    { VTermColor c = *col;
-      vterm_screen_convert_color_to_rgb(s, &c);   /* indexed/rgb -> rgb */
+static uint32_t fyvt_color_to_timui(struct fyvt_screen *s, const union fyvt_color *col){
+    if(FYVT_COLOR_IS_DEFAULT_FG(col) || FYVT_COLOR_IS_DEFAULT_BG(col)) return TIMUI_COLOR_DEFAULT;
+    { union fyvt_color c = *col;
+      fyvt_screen_convert_color_to_rgb(s, &c);   /* indexed/rgb -> rgb */
       return ((uint32_t)c.rgb.red << 16) | ((uint32_t)c.rgb.green << 8) | (uint32_t)c.rgb.blue;
     }
 }
 
 /* Compare one timui cell against the libvterm cell at (x,y). Returns 1 on
  * match; on mismatch, writes a one-line description to msg. */
-static int cell_matches_vterm(VTermScreen *s, int x, int y,
+static int cell_matches_vterm(struct fyvt_screen *s, int x, int y,
                               const TimuiCell *tc, char *msg, size_t msgcap){
-    VTermScreenCell vc;
-    VTermPos pos = { y, x };
+    struct fyvt_screen_cell vc;
+    struct fyvt_pos pos = { y, x };
     uint32_t vfg, vbg;
     int t_under, v_under, t_blank, v_blank;
     uint32_t tm;
 
-    if(!vterm_screen_get_cell(s, pos, &vc)){
+    if(!fyvt_screen_get_cell(s, pos, &vc)){
         if(msg) snprintf(msg, msgcap, "get_cell failed at (%d,%d)", x, y);
         return 0;
     }
@@ -80,8 +80,8 @@ static int cell_matches_vterm(VTermScreen *s, int x, int y,
     }
 
     /* colors: check default flags BEFORE conversion */
-    vfg = vterm_color_to_timui(s, &vc.fg);
-    vbg = vterm_color_to_timui(s, &vc.bg);
+    vfg = fyvt_color_to_timui(s, &vc.fg);
+    vbg = fyvt_color_to_timui(s, &vc.bg);
     if(vfg != tc->fg){
         if(msg) snprintf(msg, msgcap, "fg (%d,%d): timui 0x%06x vterm 0x%06x", x, y, tc->fg, vfg);
         return 0;
@@ -94,7 +94,7 @@ static int cell_matches_vterm(VTermScreen *s, int x, int y,
     /* attrs: normalize both sides; drop DIM (no vterm faint); underline is a
      * 2-bit enum on the vterm side (SINGLE == 1) vs a single bit on timui. */
     tm = tc->attrs & ~(uint32_t)TIMUI_ATTR_DIM;
-    t_under = (tm & TIMUI_ATTR_UNDERLINE) ? VTERM_UNDERLINE_SINGLE : VTERM_UNDERLINE_OFF;
+    t_under = (tm & TIMUI_ATTR_UNDERLINE) ? FYVT_UNDERLINE_SINGLE : FYVT_UNDERLINE_OFF;
     v_under = (int)vc.attrs.underline;
     if(((tm & TIMUI_ATTR_BOLD)      ? 1 : 0) != (int)vc.attrs.bold   ||
        ((tm & TIMUI_ATTR_ITALIC)    ? 1 : 0) != (int)vc.attrs.italic ||
@@ -116,7 +116,7 @@ static int cell_matches_vterm(VTermScreen *s, int x, int y,
 
 /* Compare the whole scene grid against the libvterm screen, skipping timui
  * continuation cells (wide-glyph second columns). */
-static int grid_matches_vterm(const TimuiCellBuffer *curr, VTermScreen *s,
+static int grid_matches_vterm(const TimuiCellBuffer *curr, struct fyvt_screen *s,
                               char *msg, size_t msgcap){
     int x, y;
     for(y = 0; y < curr->h; y++){
@@ -141,8 +141,8 @@ static int vt_roundtrip(const TimuiCellBuffer *prev, const TimuiCellBuffer *curr
     TimuiFakeTransport fake;
     TimuiTransport t;
     TimuiRenderer r;
-    VTerm *vt;
-    VTermScreen *s;
+    struct fyvt *vt;
+    struct fyvt_screen *s;
     int ok;
 
     timui_cells_init(&empty, curr->w, curr->h, &al);
@@ -153,21 +153,21 @@ static int vt_roundtrip(const TimuiCellBuffer *prev, const TimuiCellBuffer *curr
     /* frame 1: empty -> prev */
     timui_render_diff(&t, &empty, prev, &r);
 
-    vt = vterm_new(curr->h, curr->w);              /* rows, cols — transposed */
-    vterm_set_utf8(vt, 1);
-    s = vterm_obtain_screen(vt);
-    vterm_screen_reset(s, 1);                       /* known default pen */
-    vterm_input_write(vt, (const char *)fake.out, fake.out_len);
+    vt = fyvt_create(&(struct fyvt_cfg){ .struct_size = sizeof(struct fyvt_cfg), .rows = curr->h, .cols = curr->w });              /* rows, cols — transposed */
+    fyvt_set_utf8(vt, 1);
+    s = fyvt_obtain_screen(vt);
+    fyvt_screen_reset(s, 1);                       /* known default pen */
+    fyvt_input_write(vt, (const char *)fake.out, fake.out_len);
 
     /* frame 2: prev -> curr (the diff under test) */
     timui_fake_clear_output(&fake);
     timui_render_diff(&t, prev, curr, &r);
-    vterm_input_write(vt, (const char *)fake.out, fake.out_len);
-    vterm_screen_flush_damage(s);
+    fyvt_input_write(vt, (const char *)fake.out, fake.out_len);
+    fyvt_screen_flush_damage(s);
 
     ok = grid_matches_vterm(curr, s, msg, msgcap);
 
-    vterm_free(vt);
+    fyvt_destroy(vt);
     timui_fake_destroy(&fake);
     timui_cells_destroy(&empty);
     return ok;

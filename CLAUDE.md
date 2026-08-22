@@ -108,9 +108,9 @@ before trusting a green run.
 **Prefer deterministic predicates over wall-clock ones.** External-poll mode is
 asserted with an input-wait counter, not by timing `fytim_pump`.
 
-### Debugging rendering with libvterm
+### Debugging rendering with libfyvterm
 
-Use libvterm whenever correctness depends on cells rather than byte presence:
+Use libfyvterm whenever correctness depends on cells rather than byte presence:
 background fill, blank styled rows, wrapping, cursor placement, repaint
 damage, or SGR state carried across lines. A grep over captured escape bytes
 cannot prove any of these.
@@ -118,10 +118,10 @@ cannot prove any of these.
 The preferred oracle pattern is in `tests/test_fytim_md_vt.c`:
 
 1. Render the Markdown directly with libfymd4c and feed those bytes into one
-   `VTerm`.
+   terminal instance (`struct fyvt`).
 2. Send the exact same rendered bytes through the public `fytim_*` path, pump
    it through the pipe transport, and feed the captured terminal output into
-   a second `VTerm`.
+   a second one.
 3. Locate the same stable text row in both screens, then compare the relevant
    `VTermScreenCell` fields across the whole row and adjacent blank rows.
    Include cells after the last glyph: erase-to-EOL and background-fill bugs

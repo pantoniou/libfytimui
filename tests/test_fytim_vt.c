@@ -12,7 +12,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "libfytimui.h"
-#include <vterm.h>
+#include <libfyvterm.h>
 
 #include <fcntl.h>
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
@@ -38,8 +38,8 @@ static int failures;
 /* ---- a fytim instance replayed into libvterm ---------------------------- */
 struct vth {
     struct fytim *ft;
-    VTerm *vt;
-    VTermScreen *vs;
+    struct fyvt *vt;
+    struct fyvt_screen *vs;
     int rows, cols;
     int in[2];     /* pipe pair: we write keys into in[1] */
     int out[2];
@@ -55,10 +55,10 @@ static int vth_open(struct vth *h)
     if(pipe(h->in) != 0) return 0;
     if(pipe(h->out) != 0){ close(h->in[0]); close(h->in[1]); return 0; }
     fcntl(h->out[0], F_SETFL, O_NONBLOCK);
-    h->vt = vterm_new(h->rows, h->cols);
-    vterm_set_utf8(h->vt, 1);
-    h->vs = vterm_obtain_screen(h->vt);
-    vterm_screen_reset(h->vs, 1);
+    h->vt = fyvt_create(&(struct fyvt_cfg){ .struct_size = sizeof(struct fyvt_cfg), .rows = h->rows, .cols = h->cols });
+    fyvt_set_utf8(h->vt, 1);
+    h->vs = fyvt_obtain_screen(h->vt);
+    fyvt_screen_reset(h->vs, 1);
     fytim_cfg_default(&cfg);
     cfg.input_fd  = h->in[0];
     cfg.output_fd = h->out[1];
@@ -79,10 +79,10 @@ static int vth_open_pty(struct vth *h, int rows, int cols)
     ws.ws_col = (unsigned short)cols;
     if(openpty(&h->mfd, &h->sfd, NULL, NULL, &ws) != 0) return 0;
     fcntl(h->mfd, F_SETFL, O_NONBLOCK);
-    h->vt = vterm_new(rows, cols);
-    vterm_set_utf8(h->vt, 1);
-    h->vs = vterm_obtain_screen(h->vt);
-    vterm_screen_reset(h->vs, 1);
+    h->vt = fyvt_create(&(struct fyvt_cfg){ .struct_size = sizeof(struct fyvt_cfg), .rows = rows, .cols = cols });
+    fyvt_set_utf8(h->vt, 1);
+    h->vs = fyvt_obtain_screen(h->vt);
+    fyvt_screen_reset(h->vs, 1);
     fytim_cfg_default(&cfg);
     cfg.input_fd  = h->sfd;
     cfg.output_fd = h->sfd;
@@ -93,7 +93,7 @@ static int vth_open_pty(struct vth *h, int rows, int cols)
 static void vth_close(struct vth *h)
 {
     fytim_destroy(h->ft);
-    if(h->vt) vterm_free(h->vt);
+    if(h->vt) fyvt_destroy(h->vt);
     if(h->mfd >= 0) close(h->mfd);
     if(h->sfd >= 0) close(h->sfd);
     if(h->in[0]  > 0) close(h->in[0]);
@@ -110,7 +110,7 @@ static void vth_pump(struct vth *h)
     int fd = h->mfd >= 0 ? h->mfd : h->out[0];
     CHECK(fytim_pump(h->ft) == FYTIM_OK);
     while((n = read(fd, buf, sizeof buf)) > 0)
-        vterm_input_write(h->vt, buf, (size_t)n);
+        fyvt_input_write(h->vt, buf, (size_t)n);
 }
 
 /* Copy screen row y as ASCII text ('?' for non-ASCII, ' ' for blank). */
@@ -119,9 +119,9 @@ static void vth_row(struct vth *h, int y, char *out, size_t cap)
     int x;
     size_t o = 0;
     for(x = 0; x < h->cols && o + 1 < cap; x++){
-        VTermScreenCell cell;
-        VTermPos p = { y, x };
-        vterm_screen_get_cell(h->vs, p, &cell);
+        struct fyvt_screen_cell cell;
+        struct fyvt_pos p = { y, x };
+        fyvt_screen_get_cell(h->vs, p, &cell);
         out[o++] = cell.chars[0] == 0 ? ' '
                  : (cell.chars[0] >= 32 && cell.chars[0] < 127)
                    ? (char)cell.chars[0] : '?';
@@ -146,9 +146,9 @@ static int vth_rule_width(struct vth *h, int y)
 {
     int x, n = 0;
     for(x = 0; x < h->cols; x++){
-        VTermScreenCell cell;
-        VTermPos p = { y, x };
-        vterm_screen_get_cell(h->vs, p, &cell);
+        struct fyvt_screen_cell cell;
+        struct fyvt_pos p = { y, x };
+        fyvt_screen_get_cell(h->vs, p, &cell);
         if(cell.chars[0] == 0x2500) n++;
     }
     return n;
@@ -172,9 +172,9 @@ static void test_prompt_style_fills_card(void)
         int styled = 0;
         CHECK(vth_rule_width(&h, y + dy) == 0);
         for(x = 0; x < h.cols; x++){
-            VTermScreenCell cell;
-            VTermPos p = { y + dy, x };
-            vterm_screen_get_cell(h.vs, p, &cell);
+            struct fyvt_screen_cell cell;
+            struct fyvt_pos p = { y + dy, x };
+            fyvt_screen_get_cell(h.vs, p, &cell);
             styled += !!cell.attrs.reverse;
         }
         if(styled != h.cols)
@@ -219,7 +219,7 @@ static void test_prompt_reflows_after_resize(void)
     ws.ws_col = 10;
     CHECK(ioctl(h.mfd, TIOCSWINSZ, &ws) == 0);
     h.cols = 10;
-    vterm_set_size(h.vt, 16, 10);
+    fyvt_set_size(h.vt, 16, 10);
     vth_pump(&h);
     first = vth_find_row(&h, "> abcdefgh");
     second = vth_find_row(&h, "ijklmnop");
@@ -229,7 +229,7 @@ static void test_prompt_reflows_after_resize(void)
     ws.ws_col = 20;
     CHECK(ioctl(h.mfd, TIOCSWINSZ, &ws) == 0);
     h.cols = 20;
-    vterm_set_size(h.vt, 16, 20);
+    fyvt_set_size(h.vt, 16, 20);
     vth_pump(&h);
     CHECK(vth_find_row(&h, "> abcdefghijklmnop") >= 0);
     vth_close(&h);
@@ -284,8 +284,8 @@ static void test_regression_workband_cap_keeps_chrome(void)
 static int vth_row_is_bold(struct vth *h, const char *needle)
 {
     int y = vth_find_row(h, needle);
-    VTermScreenCell cell;
-    VTermPos p = { y, 0 };
+    struct fyvt_screen_cell cell;
+    struct fyvt_pos p = { y, 0 };
     if(y < 0) return -1;
     /* the needle's own cell, not column 0 (rows may be indented) */
     {
@@ -295,7 +295,7 @@ static int vth_row_is_bold(struct vth *h, const char *needle)
         at = strstr(line, needle);
         p.col = (int)(at - line);
     }
-    vterm_screen_get_cell(h->vs, p, &cell);
+    fyvt_screen_get_cell(h->vs, p, &cell);
     return cell.attrs.bold ? 1 : 0;
 }
 
@@ -426,8 +426,8 @@ static void test_regression_indexed_colors_mapped(void)
     struct vth h;
     struct fytim_workband *wb;
     int y;
-    VTermScreenCell cell;
-    VTermPos p;
+    struct fyvt_screen_cell cell;
+    struct fyvt_pos p;
     if(!vth_open(&h)){ CHECK(0); return; }
     wb = fytim_workband_create(h.ft);
     CHECK(wb != NULL);
@@ -437,12 +437,12 @@ static void test_regression_indexed_colors_mapped(void)
     CHECK(y >= 0);
     /* INDEXED on the wire (30-37): the terminal's own palette applies */
     p.row = y; p.col = 0;
-    vterm_screen_get_cell(h.vs, p, &cell);
-    CHECK(VTERM_COLOR_IS_INDEXED(&cell.fg));
+    fyvt_screen_get_cell(h.vs, p, &cell);
+    CHECK(FYVT_COLOR_IS_INDEXED(&cell.fg));
     CHECK(cell.fg.indexed.idx == 1);                 /* red */
     p.col = 4;                                       /* the GRN run */
-    vterm_screen_get_cell(h.vs, p, &cell);
-    CHECK(VTERM_COLOR_IS_INDEXED(&cell.fg));
+    fyvt_screen_get_cell(h.vs, p, &cell);
+    CHECK(FYVT_COLOR_IS_INDEXED(&cell.fg));
     CHECK(cell.fg.indexed.idx == 2);                 /* green */
     vth_close(&h);
 }
@@ -467,14 +467,14 @@ static void test_regression_marker_sgr(void)
     {   /* the dot occupies the marker cell on the prompt row, and its
          * BACKGROUND matches the input row's fill -- an SGR marker must
          * not punch a default-background hole in the prompt */
-        VTermScreenCell mcell, icell;
-        VTermPos p = { y, 0 };
-        vterm_screen_get_cell(h.vs, p, &mcell);
+        struct fyvt_screen_cell mcell, icell;
+        struct fyvt_pos p = { y, 0 };
+        fyvt_screen_get_cell(h.vs, p, &mcell);
         CHECK(mcell.chars[0] == 0x25CF);
-        CHECK(VTERM_COLOR_IS_INDEXED(&mcell.fg) && mcell.fg.indexed.idx == 3);
+        CHECK(FYVT_COLOR_IS_INDEXED(&mcell.fg) && mcell.fg.indexed.idx == 3);
         CHECK(mcell.attrs.reverse);
         p.col = 3;                       /* inside "typing" */
-        vterm_screen_get_cell(h.vs, p, &icell);
+        fyvt_screen_get_cell(h.vs, p, &icell);
         CHECK(icell.attrs.reverse);
         CHECK(memcmp(&mcell.bg, &icell.bg, sizeof mcell.bg) == 0);
     }
@@ -575,7 +575,7 @@ static void test_regression_resize_repaints_width(void)
     ws.ws_row = 24; ws.ws_col = 100;
     CHECK(ioctl(h.mfd, TIOCSWINSZ, &ws) == 0);
     h.cols = 100;
-    vterm_set_size(h.vt, 24, 100);
+    fyvt_set_size(h.vt, 24, 100);
 
     vth_pump(&h);
     while(fytim_next_event(h.ft, &ev))

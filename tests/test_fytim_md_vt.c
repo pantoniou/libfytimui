@@ -20,7 +20,7 @@
  */
 #include "libfytimui.h"
 #include <libfymd4c.h>
-#include <vterm.h>
+#include <libfyvterm.h>
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -72,8 +72,8 @@ static const char doc[] =
 
 struct vth {
     struct fytim *ft;
-    VTerm *vt;
-    VTermScreen *vs;
+    struct fyvt *vt;
+    struct fyvt_screen *vs;
     int in[2], out[2];
 };
 
@@ -84,10 +84,10 @@ static int vth_open(struct vth *h)
     if(pipe(h->in) != 0) return 0;
     if(pipe(h->out) != 0){ close(h->in[0]); close(h->in[1]); return 0; }
     fcntl(h->out[0], F_SETFL, O_NONBLOCK);
-    h->vt = vterm_new(24, 80);
-    vterm_set_utf8(h->vt, 1);
-    h->vs = vterm_obtain_screen(h->vt);
-    vterm_screen_reset(h->vs, 1);
+    h->vt = fyvt_create(&(struct fyvt_cfg){ .struct_size = sizeof(struct fyvt_cfg), .rows = 24, .cols = 80 });
+    fyvt_set_utf8(h->vt, 1);
+    h->vs = fyvt_obtain_screen(h->vt);
+    fyvt_screen_reset(h->vs, 1);
     fytim_cfg_default(&cfg);
     cfg.input_fd  = h->in[0];
     cfg.output_fd = h->out[1];
@@ -98,7 +98,7 @@ static int vth_open(struct vth *h)
 static void vth_close(struct vth *h)
 {
     fytim_destroy(h->ft);
-    if(h->vt) vterm_free(h->vt);
+    if(h->vt) fyvt_destroy(h->vt);
     close(h->in[0]); close(h->in[1]);
     close(h->out[0]); close(h->out[1]);
 }
@@ -109,7 +109,7 @@ static void vth_pump(struct vth *h)
     ssize_t n;
     CHECK(fytim_pump(h->ft) == FYTIM_OK);
     while((n = read(h->out[0], buf, sizeof buf)) > 0)
-        vterm_input_write(h->vt, buf, (size_t)n);
+        fyvt_input_write(h->vt, buf, (size_t)n);
 }
 
 static int marker_row(struct vth *h)
@@ -119,9 +119,9 @@ static int marker_row(struct vth *h)
         char line[96];
         int o = 0;
         for(c = 0; c < 80 && o < 90; c++){
-            VTermScreenCell cell;
-            VTermPos p = { r, c };
-            vterm_screen_get_cell(h->vs, p, &cell);
+            struct fyvt_screen_cell cell;
+            struct fyvt_pos p = { r, c };
+            fyvt_screen_get_cell(h->vs, p, &cell);
             line[o++] = (cell.chars[0] >= 32 && cell.chars[0] < 127)
                         ? (char)cell.chars[0] : ' ';
         }
@@ -131,7 +131,7 @@ static int marker_row(struct vth *h)
     return -1;
 }
 
-static int screen_find_row(VTermScreen *vs, int rows, int cols,
+static int screen_find_row(struct fyvt_screen *vs, int rows, int cols,
                            const char *needle)
 {
     int r, c;
@@ -139,9 +139,9 @@ static int screen_find_row(VTermScreen *vs, int rows, int cols,
         char line[128];
         int o = 0;
         for(c = 0; c < cols && o < (int)sizeof line - 1; c++){
-            VTermScreenCell cell;
-            VTermPos p = { r, c };
-            vterm_screen_get_cell(vs, p, &cell);
+            struct fyvt_screen_cell cell;
+            struct fyvt_pos p = { r, c };
+            fyvt_screen_get_cell(vs, p, &cell);
             line[o++] = (cell.chars[0] >= 32 && cell.chars[0] < 127)
                         ? (char)cell.chars[0] : ' ';
         }
@@ -162,8 +162,8 @@ static void test_reverse_commit_matches_direct(void)
     struct fymd_renderer_cfg cfg;
     struct fymd_renderer *r;
     struct vth h;
-    VTerm *direct;
-    VTermScreen *ds;
+    struct fyvt *direct;
+    struct fyvt_screen *ds;
     char *out = NULL;
     char *framed = NULL;
     size_t out_len = 0, framed_len, commit_len;
@@ -186,7 +186,7 @@ static void test_reverse_commit_matches_direct(void)
     memcpy(framed + 13, out, out_len);
     memcpy(framed + 13 + out_len, "\x1b[40m\x1b[K\x1b[0m\n", 13);
 
-    direct = vterm_new(24, 80);
+    direct = fyvt_create(&(struct fyvt_cfg){ .struct_size = sizeof(struct fyvt_cfg), .rows = 24, .cols = 80 });
     CHECK(direct != NULL);
     if(!direct){
         free(framed);
@@ -194,16 +194,16 @@ static void test_reverse_commit_matches_direct(void)
         fymd_renderer_destroy(r);
         return;
     }
-    vterm_set_utf8(direct, 1);
-    ds = vterm_obtain_screen(direct);
-    vterm_screen_reset(ds, 1);
-    vterm_input_write(direct, framed, framed_len);
+    fyvt_set_utf8(direct, 1);
+    ds = fyvt_obtain_screen(direct);
+    fyvt_screen_reset(ds, 1);
+    fyvt_input_write(direct, framed, framed_len);
     yd = screen_find_row(ds, 24, 80, "hello");
     CHECK(yd > 0 && yd + 1 < 24);
 
     if(!vth_open(&h)){
         CHECK(0);
-        vterm_free(direct);
+        fyvt_destroy(direct);
         free(framed);
         fymd_free(out);
         fymd_renderer_destroy(r);
@@ -223,14 +223,14 @@ static void test_reverse_commit_matches_direct(void)
         first_dy = first_x = -1;
         for(dy = -1; dy <= 1; dy++){
             for(x = 0; x < 80; x++){
-                VTermScreenCell a, b;
-                VTermPos pa = { yd + dy, x };
-                VTermPos pb = { yc + dy, x };
-                vterm_screen_get_cell(ds, pa, &a);
-                vterm_screen_get_cell(h.vs, pb, &b);
-                vterm_screen_convert_color_to_rgb(ds, &a.bg);
-                vterm_screen_convert_color_to_rgb(h.vs, &b.bg);
-                if(!vterm_color_is_equal(&a.bg, &b.bg)){
+                struct fyvt_screen_cell a, b;
+                struct fyvt_pos pa = { yd + dy, x };
+                struct fyvt_pos pb = { yc + dy, x };
+                fyvt_screen_get_cell(ds, pa, &a);
+                fyvt_screen_get_cell(h.vs, pb, &b);
+                fyvt_screen_convert_color_to_rgb(ds, &a.bg);
+                fyvt_screen_convert_color_to_rgb(h.vs, &b.bg);
+                if(!fyvt_color_is_equal(&a.bg, &b.bg)){
                     if(!mismatches){ first_dy = dy; first_x = x; }
                     mismatches++;
                 }
@@ -242,39 +242,39 @@ static void test_reverse_commit_matches_direct(void)
         CHECK(mismatches == 0);
     }
     vth_close(&h);
-    vterm_free(direct);
+    fyvt_destroy(direct);
     free(framed);
     fymd_free(out);
     fymd_renderer_destroy(r);
 }
 
-static void direct_apply(VTerm *vt, const struct fymd_update *upd)
+static void direct_apply(struct fyvt *vt, const struct fymd_update *upd)
 {
     char ctl[64];
     int n;
     if(upd->backtrack){
         n = snprintf(ctl, sizeof ctl, "\x1b[%zuA\r\x1b[J", upd->backtrack);
-        vterm_input_write(vt, ctl, (size_t)n);
+        fyvt_input_write(vt, ctl, (size_t)n);
     }
     if(upd->content_len)
-        vterm_input_write(vt, upd->content, upd->content_len);
+        fyvt_input_write(vt, upd->content, upd->content_len);
 }
 
-static void screen_row_ascii(VTermScreen *vs, int row, int cols,
+static void screen_row_ascii(struct fyvt_screen *vs, int row, int cols,
                              char *out, size_t cap)
 {
     int c, o = 0;
     for(c = 0; c < cols && o < (int)cap - 1; c++){
-        VTermScreenCell cell;
-        VTermPos p = { row, c };
-        vterm_screen_get_cell(vs, p, &cell);
+        struct fyvt_screen_cell cell;
+        struct fyvt_pos p = { row, c };
+        fyvt_screen_get_cell(vs, p, &cell);
         out[o++] = (cell.chars[0] >= 32 && cell.chars[0] < 127)
                     ? (char)cell.chars[0] : ' ';
     }
     out[o] = '\0';
 }
 
-static int screen_find_number(VTermScreen *vs, int rows, int cols, int number)
+static int screen_find_number(struct fyvt_screen *vs, int rows, int cols, int number)
 {
     char line[128], want[16], *p, *end;
     int r;
@@ -300,18 +300,18 @@ static void test_fenced_stream_matches_direct(void)
     struct fymd_renderer *r;
     struct fymd_update upd;
     struct vth h;
-    VTerm *direct;
-    VTermScreen *ds;
+    struct fyvt *direct;
+    struct fyvt_screen *ds;
     size_t i;
     int n, rd, rc, prev_d = -1, prev_c = -1;
 
     if(!vth_open(&h)){ CHECK(0); return; }
-    direct = vterm_new(24, 80);
+    direct = fyvt_create(&(struct fyvt_cfg){ .struct_size = sizeof(struct fyvt_cfg), .rows = 24, .cols = 80 });
     CHECK(direct != NULL);
     if(!direct){ vth_close(&h); return; }
-    vterm_set_utf8(direct, 1);
-    ds = vterm_obtain_screen(direct);
-    vterm_screen_reset(ds, 1);
+    fyvt_set_utf8(direct, 1);
+    ds = fyvt_obtain_screen(direct);
+    fyvt_screen_reset(ds, 1);
 
     memset(&cfg, 0, sizeof cfg);
     cfg.width = 80;
@@ -319,7 +319,7 @@ static void test_fenced_stream_matches_direct(void)
     cfg.max_active_lines = 12;
     r = fymd_renderer_create(&cfg);
     CHECK(r != NULL);
-    if(!r){ vterm_free(direct); vth_close(&h); return; }
+    if(!r){ fyvt_destroy(direct); vth_close(&h); return; }
 
     for(i = 0; i < sizeof chunks / sizeof chunks[0]; i++){
         CHECK(fymd_render_push(r, chunks[i], strlen(chunks[i]), &upd) == 0);
@@ -340,7 +340,7 @@ static void test_fenced_stream_matches_direct(void)
         prev_c = rc;
     }
     fymd_renderer_destroy(r);
-    vterm_free(direct);
+    fyvt_destroy(direct);
     vth_close(&h);
 }
 
@@ -356,8 +356,8 @@ static void test_emoji_table_matches_direct(void)
     struct fymd_renderer_cfg cfg;
     struct fymd_renderer *r;
     struct vth h;
-    VTerm *direct;
-    VTermScreen *ds;
+    struct fyvt *direct;
+    struct fyvt_screen *ds;
     char *out = NULL;
     size_t out_len = 0, commit_len, i;
     int yd, yc, x;
@@ -371,33 +371,33 @@ static void test_emoji_table_matches_direct(void)
     CHECK(out != NULL && out_len > 0);
     if(!out || !out_len){ fymd_renderer_destroy(r); return; }
 
-    direct = vterm_new(24, 80);
+    direct = fyvt_create(&(struct fyvt_cfg){ .struct_size = sizeof(struct fyvt_cfg), .rows = 24, .cols = 80 });
     CHECK(direct != NULL);
     if(!direct){
         fymd_free(out);
         fymd_renderer_destroy(r);
         return;
     }
-    vterm_set_utf8(direct, 1);
-    ds = vterm_obtain_screen(direct);
-    vterm_screen_reset(ds, 1);
+    fyvt_set_utf8(direct, 1);
+    ds = fyvt_obtain_screen(direct);
+    fyvt_screen_reset(ds, 1);
     {
         const char *p = out, *end = out + out_len, *nl;
         while(p < end){
             nl = memchr(p, '\n', (size_t)(end - p));
             if(!nl){
-                vterm_input_write(direct, p, (size_t)(end - p));
+                fyvt_input_write(direct, p, (size_t)(end - p));
                 break;
             }
-            vterm_input_write(direct, p, (size_t)(nl - p));
-            vterm_input_write(direct, "\r\n", 2);
+            fyvt_input_write(direct, p, (size_t)(nl - p));
+            fyvt_input_write(direct, "\r\n", 2);
             p = nl + 1;
         }
     }
 
     if(!vth_open(&h)){
         CHECK(0);
-        vterm_free(direct);
+        fyvt_destroy(direct);
         fymd_free(out);
         fymd_renderer_destroy(r);
         return;
@@ -415,17 +415,17 @@ static void test_emoji_table_matches_direct(void)
         CHECK(yd >= 0 && yc >= 0);
         if(yd < 0 || yc < 0) continue;
         for(x = 0; x < 40; x++){
-            VTermScreenCell a, b;
-            VTermPos pa = { yd, x };
-            VTermPos pb = { yc, x };
-            vterm_screen_get_cell(ds, pa, &a);
-            vterm_screen_get_cell(h.vs, pb, &b);
+            struct fyvt_screen_cell a, b;
+            struct fyvt_pos pa = { yd, x };
+            struct fyvt_pos pb = { yc, x };
+            fyvt_screen_get_cell(ds, pa, &a);
+            fyvt_screen_get_cell(h.vs, pb, &b);
             CHECK(a.chars[0] == b.chars[0]);
         }
     }
 
     vth_close(&h);
-    vterm_free(direct);
+    fyvt_destroy(direct);
     fymd_free(out);
     fymd_renderer_destroy(r);
 }
@@ -504,9 +504,9 @@ static void run_stream(int chunk)
                 char t[96];
                 int o = 0;
                 for(c = 0; c < 80 && o < 90; c++){
-                    VTermScreenCell cell;
-                    VTermPos p = { rr, c };
-                    vterm_screen_get_cell(h.vs, p, &cell);
+                    struct fyvt_screen_cell cell;
+                    struct fyvt_pos p = { rr, c };
+                    fyvt_screen_get_cell(h.vs, p, &cell);
                     t[o++] = (cell.chars[0] >= 32 && cell.chars[0] < 127)
                              ? (char)cell.chars[0] : ' ';
                 }
