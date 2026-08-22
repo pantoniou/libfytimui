@@ -1,0 +1,199 @@
+name: Build and Test
+
+run-name: >-
+  ${{ github.event_name == 'pull_request' && format('Build and Test · PR #{0}', github.event.pull_request.number) ||
+      github.event_name == 'workflow_dispatch' && 'Build and Test · manual' ||
+      format('Build and Test · {0}', github.ref_name) }}
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: ${{ vars.NUMBER_OF_PROCESSORS || 2 }}
+  CTEST_PARALLEL_LEVEL: ${{ vars.NUMBER_OF_PROCESSORS || 2 }}
+  CTEST_OUTPUT_ON_FAILURE: 1
+
+on:
+  push:
+    branches: [ master, stable, devel ]
+  pull_request:
+    branches: [ master, stable, devel ]
+  workflow_dispatch:
+    inputs:
+      ctest_args:
+        description: "Extra ctest arguments (e.g. -R foo, -E bar, -V)"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  build:
+    name: >-
+      ${{ matrix.os }} · ${{ matrix.compiler }} · ${{ matrix.build_type }}
+      ${{ matrix.shared == 'OFF' && ' · static' || '' }}
+      ${{ matrix.asan == 'ON' && ' · ASAN' || '' }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+            build_type: Debug
+            shared: "ON"
+            asan: "OFF"
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+            build_type: Release
+            shared: "ON"
+            asan: "OFF"
+          - os: ubuntu-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+            build_type: Debug
+            shared: "ON"
+            asan: "ON"
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+            build_type: Release
+            shared: "OFF"
+            asan: "OFF"
+          - os: macos-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+            build_type: Debug
+            shared: "ON"
+            asan: "OFF"
+          - os: macos-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+            build_type: Debug
+            shared: "ON"
+            asan: "ON"
+
+    steps:
+    - name: Git Sane LF
+      run: |
+        git config --global core.autocrlf false
+        git config --global core.eol lf
+
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install CMake/Ninja
+      uses: lukka/get-cmake@latest
+
+    - name: Install dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install --no-install-recommends -y \
+          build-essential \
+          clang \
+          git \
+          libubsan1 \
+          libvterm-dev \
+          ninja-build \
+          pkg-config \
+          python3 \
+          tar \
+          yq \
+          zstd
+
+    - name: Install dependencies
+      if: runner.os == 'macOS'
+      run: |
+        brew install jq libvterm ninja pkg-config zstd
+        python3 -m venv "$RUNNER_TEMP/yq-venv"
+        "$RUNNER_TEMP/yq-venv/bin/pip" install yq
+        echo "$RUNNER_TEMP/yq-venv/bin" >> "$GITHUB_PATH"
+
+    # libvterm and libfymd4c are optional: the vterm visual suite and the
+    # libfymd4c oracle tests only register when they are found. Build them so
+    # CI actually exercises those tiers.
+    - name: Build libfyaml
+      shell: bash
+      run: |
+        git clone --depth 1 https://github.com/pantoniou/libfyaml.git "${RUNNER_TEMP}/libfyaml"
+        cmake -S "${RUNNER_TEMP}/libfyaml" -B "${RUNNER_TEMP}/libfyaml-build" \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_TESTING=OFF \
+          -DENABLE_LIBCLANG=OFF \
+          -DENABLE_REFLECTION=OFF \
+          -DCMAKE_INSTALL_PREFIX="${RUNNER_TEMP}/fytimui-deps"
+        cmake --build "${RUNNER_TEMP}/libfyaml-build"
+        cmake --install "${RUNNER_TEMP}/libfyaml-build"
+
+    - name: Build libfymd4c
+      shell: bash
+      run: |
+        git clone --depth 1 https://github.com/pantoniou/libfymd4c.git "${RUNNER_TEMP}/libfymd4c"
+        cmake -S "${RUNNER_TEMP}/libfymd4c" -B "${RUNNER_TEMP}/libfymd4c-build" \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_TESTING=OFF \
+          -DCMAKE_PREFIX_PATH="${RUNNER_TEMP}/fytimui-deps" \
+          -DTS_GRAMMAR_SOURCE_MODE=archive \
+          -DCMAKE_INSTALL_PREFIX="${RUNNER_TEMP}/fytimui-deps"
+        cmake --build "${RUNNER_TEMP}/libfymd4c-build"
+        cmake --install "${RUNNER_TEMP}/libfymd4c-build"
+
+    - name: Add dependency tools to PATH
+      shell: bash
+      run: echo "${RUNNER_TEMP}/fytimui-deps/bin" >> "${GITHUB_PATH}"
+
+    - name: Configure
+      shell: bash
+      run: |
+        cmake -S . -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+          -DCMAKE_PREFIX_PATH="${RUNNER_TEMP}/fytimui-deps" \
+          -DBUILD_SHARED_LIBS=${{ matrix.shared }} \
+          -DENABLE_ASAN=${{ matrix.asan }}
+
+    - name: Build
+      run: cmake --build build --config ${{ matrix.build_type }}
+
+    # The opaque-API rule: no timui_* symbol may reach the public ABI.
+    - name: Check no timui_ symbol is exported
+      if: runner.os == 'Linux' && matrix.shared == 'ON'
+      shell: bash
+      run: |
+        so=$(ls build/src/libfytimui.so.* | head -n1)
+        echo "checking ${so}"
+        if nm -D --defined-only "${so}" | grep ' timui_'; then
+          echo "::error::timui_ symbols leaked into the public ABI"
+          exit 1
+        fi
+
+    - name: Test
+      shell: bash
+      env:
+        LD_LIBRARY_PATH: ${{ runner.temp }}/fytimui-deps/lib:${{ runner.temp }}/fytimui-deps/lib64
+        DYLD_LIBRARY_PATH: ${{ runner.temp }}/fytimui-deps/lib:${{ runner.temp }}/fytimui-deps/lib64
+      working-directory: build
+      run: ctest -C ${{ matrix.build_type }} ${{ inputs.ctest_args }}
+
+    - name: Upload test logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-logs-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.shared }}-${{ matrix.asan }}-${{ github.run_id }}
+        path: |
+          **/Testing/Temporary/
+          build/**/*.log
