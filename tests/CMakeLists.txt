@@ -33,7 +33,10 @@ if(BUILD_TIMUI_CORE_TESTS)
     # catches renderer bugs that byte-substring checks cannot.
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
-        pkg_check_modules(VTERM QUIET vterm)
+        # IMPORTED_TARGET so the link line carries -L from pkg-config; a bare
+        # ${VTERM_LIBRARIES} is just -lvterm and misses non-default prefixes
+        # (Homebrew on /opt/homebrew, for one).
+        pkg_check_modules(VTERM QUIET IMPORTED_TARGET vterm)
     endif()
     if(VTERM_FOUND)
         list(APPEND TIMUI_CORE_TEST_SRCS test_vt_roundtrip.c)
@@ -48,7 +51,7 @@ if(BUILD_TIMUI_CORE_TESTS)
     if(VTERM_FOUND)
         target_compile_definitions(timui_core_tests PRIVATE TIMUI_WITH_VTERM_TESTS)
         target_include_directories(timui_core_tests PRIVATE ${VTERM_INCLUDE_DIRS})
-        target_link_libraries(timui_core_tests PRIVATE ${VTERM_LIBRARIES})
+        target_link_libraries(timui_core_tests PRIVATE PkgConfig::VTERM)
     endif()
     if(ASAN_C_FLAGS)
         target_compile_options(timui_core_tests PRIVATE ${ASAN_C_FLAGS})
@@ -150,7 +153,7 @@ if(VTERM_FOUND)
             ${CMAKE_SOURCE_DIR}/core/include
             ${VTERM_INCLUDE_DIRS})
         target_link_libraries(test_fytim_md_vt PRIVATE
-            libfymd4c::fymd4c ${VTERM_LIBRARIES} util)
+            libfymd4c::fymd4c PkgConfig::VTERM util)
         if(ASAN_C_FLAGS)
             target_compile_options(test_fytim_md_vt PRIVATE ${ASAN_C_FLAGS})
             target_link_options(test_fytim_md_vt PRIVATE ${ASAN_C_FLAGS})
@@ -178,7 +181,7 @@ if(VTERM_FOUND)
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/core/include
         ${VTERM_INCLUDE_DIRS})
-    target_link_libraries(test_fytim_vt PRIVATE ${VTERM_LIBRARIES} util)
+    target_link_libraries(test_fytim_vt PRIVATE PkgConfig::VTERM util)
     if(ASAN_C_FLAGS)
         target_compile_options(test_fytim_vt PRIVATE ${ASAN_C_FLAGS})
         target_link_options(test_fytim_vt PRIVATE ${ASAN_C_FLAGS})
