@@ -15,7 +15,12 @@
 #include <vterm.h>
 
 #include <fcntl.h>
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+/* openpty() lives in <util.h> on the BSDs; glibc puts it in <pty.h>. */
+#include <util.h>
+#else
 #include <pty.h>
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
