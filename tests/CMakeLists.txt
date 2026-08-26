@@ -170,6 +170,41 @@ foreach(t open_reports_its_size put_row_paints put_row_after_a_frame_paints
     add_test(NAME fytim.surface.${t} COMMAND test_fytim_surface ${t})
 endforeach()
 
+# One region that tiles the screens it holds: the grid, the chrome, and what
+# each tile is told it was given.
+add_executable(test_fytim_workpane test_fytim_workpane.c
+               ${CMAKE_SOURCE_DIR}/src/libfytimui.c
+               ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c
+               ${CMAKE_SOURCE_DIR}/src/fytim_layout.c
+               $<TARGET_OBJECTS:fytimui-core>)
+target_include_directories(test_fytim_workpane PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/core/include)
+if(ASAN_C_FLAGS)
+    target_compile_options(test_fytim_workpane PRIVATE ${ASAN_C_FLAGS})
+    target_link_options(test_fytim_workpane PRIVATE ${ASAN_C_FLAGS})
+endif()
+
+foreach(t two_tiles_share_the_width one_tile_takes_the_width
+          the_grid_wraps a_narrow_region_stacks columns_are_settable
+          zoom_takes_the_pane a_retired_zoom_is_dropped
+          zoom_refuses_a_stranger
+          a_margin_takes_columns_from_the_tile
+          chrome_frames_the_pane_and_the_tiles
+          a_separator_divides_the_columns the_cap_bounds_the_pane
+          closing_tiles_empties_the_pane commit_retires_a_tile
+          a_pane_composes_with_a_band a_tile_keeps_its_own_cap
+          a_resized_tile_is_regranted scroll_extent_is_checked
+          controls_are_off_by_default rejects_bad_geometry null_safety
+          destroy_with_open_tiles
+          controls_need_the_grab controls_take_a_column
+          a_click_asks_to_close a_click_asks_to_zoom
+          the_wheel_belongs_to_the_tile the_wheel_stays_with_the_transcript
+          the_bar_follows_the_extent)
+    add_test(NAME fytim.workpane.${t} COMMAND test_fytim_workpane ${t})
+endforeach()
+
 # Keys handed to a surface: the encoding, and the prompt standing aside.
 add_executable(test_fytim_surface_keys test_fytim_surface_keys.c
                ${CMAKE_SOURCE_DIR}/src/libfytimui.c
@@ -242,6 +277,34 @@ if(VTERM_FOUND)
               short_region_keeps_the_last_rows two_surfaces_stack_in_order)
         add_test(NAME fytim.surface.vt.${t}
                  COMMAND test_fytim_surface_vt ${t})
+    endforeach()
+
+    # The same reading for a tiled pane: two screens on one row, in columns
+    # that do not overlap. Only a terminal can say that.
+    add_executable(test_fytim_workpane_vt test_fytim_workpane_vt.c
+                   ${CMAKE_SOURCE_DIR}/src/libfytimui.c
+                   ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c
+                   ${CMAKE_SOURCE_DIR}/src/fytim_layout.c
+                   $<TARGET_OBJECTS:fytimui-core>)
+    target_include_directories(test_fytim_workpane_vt PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/core/include)
+    target_link_libraries(test_fytim_workpane_vt PRIVATE libfyvterm::libfyvterm)
+    if(ASAN_C_FLAGS)
+        target_compile_options(test_fytim_workpane_vt PRIVATE ${ASAN_C_FLAGS})
+        target_link_options(test_fytim_workpane_vt PRIVATE ${ASAN_C_FLAGS})
+    endif()
+
+    foreach(t two_tiles_stand_side_by_side the_tiles_share_every_row
+              a_wide_screen_is_clipped_to_its_tile
+              the_rule_sits_between_the_tiles
+              a_colour_stops_at_the_tile_edge
+              the_grid_puts_the_third_below a_zoomed_tile_owns_the_rows
+              a_title_stays_over_its_tile
+              a_margin_is_drawn_inside_the_tile)
+        add_test(NAME fytim.workpane.vt.${t}
+                 COMMAND test_fytim_workpane_vt ${t})
     endforeach()
 endif()
 
