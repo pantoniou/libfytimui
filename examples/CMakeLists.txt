@@ -9,6 +9,15 @@ if(ASAN_C_FLAGS)
     target_link_options(agent_inline PRIVATE ${ASAN_C_FLAGS})
 endif()
 
+# The tiled work pane: one region holding many screens, driven by hand.
+add_executable(agent_pane agent_pane.c)
+target_link_libraries(agent_pane PRIVATE fytimui)
+target_include_directories(agent_pane PRIVATE ${PROJECT_SOURCE_DIR}/include)
+if(ASAN_C_FLAGS)
+    target_compile_options(agent_pane PRIVATE ${ASAN_C_FLAGS})
+    target_link_options(agent_pane PRIVATE ${ASAN_C_FLAGS})
+endif()
+
 # The full stack: HOST-side libfymd4c markdown rendering published through
 # the public surface. Only when libfymd4c's CMake package is installed.
 find_package(libfymd4c CONFIG QUIET)
