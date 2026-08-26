@@ -19,9 +19,14 @@ struct fytim_cfg {
     int    input_fd;         /* terminal input; -1 selects stdin */
     int    output_fd;        /* terminal output; -1 selects stdout */
     const char *title;       /* window/terminal title; may be NULL */
-    bool   mouse;            /* reserved for the pane model; the inline band
-                                never grabs the mouse -- selection and copy
-                                stay with the terminal */
+    bool   mouse;            /* grab the mouse. Off by default, and the
+                                default is the right answer for almost every
+                                host: without the grab, selection and copy
+                                stay with the terminal, which is where the
+                                user expects them. A host asks for it only to
+                                give a work pane its controls (scroll bars and
+                                the marks that zoom or close a tile), and the
+                                grab then lasts as long as the UI does. */
     bool   clipboard;        /* OSC 52 copy out of a pane (pane model) */
     int    workband_rows;    /* default max content rows per work-band;
                                 0 selects the default (4) */
@@ -45,6 +50,10 @@ void          fytim_destroy(struct fytim *ft) FYTIM_EXPORT;
  * committed lines arrive hard-wrapped and never soft-wrap. Either out
  * pointer may be NULL. */
 enum fytim_result fytim_size(const struct fytim *ft, int *w, int *h) FYTIM_EXPORT;
+
+/* Whether this instance grabbed the mouse (see fytim_cfg.mouse). A work
+ * pane draws no control the user could not reach. */
+bool fytim_mouse_enabled(const struct fytim *ft) FYTIM_EXPORT;
 
 /* ---- host-owned event loop --------------------------------------------- */
 

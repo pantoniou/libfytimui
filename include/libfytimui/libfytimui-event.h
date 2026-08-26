@@ -28,8 +28,17 @@ enum fytim_event_type {
     FYTIM_EVENT_EDIT,        /* ^G: the user asked for an external editor;
                                 the host runs it between fytim_suspend and
                                 fytim_resume, then fytim_set_input */
-    FYTIM_EVENT_SURFACE_KEYS /* keys for the surface holding them, already
-                                encoded as the bytes a terminal would send */
+    FYTIM_EVENT_SURFACE_KEYS, /* keys for the surface holding them, already
+                                 encoded as the bytes a terminal would send */
+
+    /* A tile of a work pane was operated with the mouse. The library owns
+     * no scrollback and moves nothing itself: it says what was asked for,
+     * and the host publishes the rows it wants seen. Each names the tile in
+     * @surface, and the scroll carries its distance in @delta - positive is
+     * back through the history, negative is toward the live screen. */
+    FYTIM_EVENT_SURFACE_SCROLL,
+    FYTIM_EVENT_SURFACE_ZOOM,   /* the user asked to zoom or unzoom it */
+    FYTIM_EVENT_SURFACE_CLOSE   /* the user asked to be rid of it */
 };
 
 struct fytim_event {
@@ -50,6 +59,10 @@ struct fytim_event {
     /* FYTIM_EVENT_RESIZE: the new terminal geometry, in cells. */
     int width;
     int height;
+
+    /* FYTIM_EVENT_SURFACE_SCROLL: rows asked for, back through the history
+     * when positive and toward the live screen when negative. */
+    int delta;
 };
 
 /* Pop one event. Returns false when the queue is empty. */

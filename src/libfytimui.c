@@ -38,6 +38,8 @@ struct fytim_pane {
     struct fytim_sgr_parser sgr;
 };
 
+struct fytim_workpane;
+
 struct fytim_workband {
     struct fytim_workband *next;
     struct fytim          *owner;
@@ -53,6 +55,8 @@ struct fytim_workband {
     /* Set when this band draws a grid of cells instead of styled text. The
      * band node is what composes; the surface is what it holds. */
     struct fytim_surface *surface;
+    /* Set when this band composes a pane of tiles instead of one screen. */
+    struct fytim_workpane *pane;
 };
 
 /*
@@ -70,6 +74,35 @@ struct fytim_surface {
     int cur_row, cur_col;
     bool cur_visible;
     int granted;                   /* content rows drawn at the last frame */
+    /* A tile of a work pane: the pane composes it, so it holds what the band
+     * node holds for a surface that stands alone - its place in the order,
+     * its chrome and its row cap. @pane is NULL for a surface of its own. */
+    struct fytim_workpane *pane;
+    struct fytim_surface  *next;   /* sibling in the pane, oldest first */
+    char *top, *bottom;
+    int max_rows;
+    int scroll_total, scroll_top;  /* what the HOST's scrollback holds */
+    /* Where the tile was drawn at the last frame, so that a click can be
+     * given to the thing under it. A column of -1 means the control was not
+     * drawn, and a click there is a click on nothing. */
+    int rect_x, rect_y, rect_w, rect_h;
+    int bar_x, zoom_x, close_x, ctl_y;
+};
+
+/*
+ * One region that tiles the screens it holds. It rides on a work-band node
+ * for the same reason a surface does: the order, the row granting and the
+ * shedding are the band rules, and a pane is not a second set of them.
+ */
+struct fytim_workpane {
+    struct fytim_workband *wb;
+    struct fytim          *owner;
+    struct fytim_surface  *tiles;  /* oldest first */
+    struct fytim_surface  *zoom;   /* the tile that takes the pane, or NULL */
+    char *sep;                     /* rule between adjacent columns */
+    int columns;                   /* 0 selects the automatic grid */
+    int min_tile_cols;
+    unsigned int controls;
 };
 
 struct fytim_completions {
@@ -84,6 +117,7 @@ struct fytim {
     struct fytim_pane *transcript;
     bool               closed;
     bool               suspended;  /* terminal released to a child process */
+    bool               mouse;      /* the grab the host asked for */
     int                out_fd;
 
     /* band chrome */
@@ -169,7 +203,7 @@ void fytim_cfg_default(struct fytim_cfg *cfg)
     cfg->struct_size = sizeof *cfg;
     cfg->input_fd  = -1;
     cfg->output_fd = -1;
-    cfg->mouse     = false;   /* the inline band never grabs the mouse */
+    cfg->mouse     = false;   /* selection and copy stay with the terminal */
     cfg->clipboard = false;
     cfg->workband_rows = 0;   /* 0 selects the default */
     cfg->intr_signal   = false;
@@ -226,6 +260,14 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
                   TIMUI_FLAG_HIDE_CURSOR |
                   TIMUI_FLAG_KITTY_KEYBOARD | TIMUI_FLAG_SYNC_OUTPUT;
     if(cfg->intr_signal) tcfg.flags |= TIMUI_FLAG_INTR_SIGNAL;
+    /*
+     * The grab is the host's call and it is not free: with it, selection and
+     * copy stop being the terminal's. A host asks for it to give a work pane
+     * its controls, and it lasts as long as this instance - the terminal
+     * enables the mode at startup and leaves it at teardown.
+     */
+    if(cfg->mouse) tcfg.flags |= TIMUI_FLAG_MOUSE;
+    ft->mouse = cfg->mouse;
 
     ft->wb_default_max = (cfg->workband_rows > 0) ? cfg->workband_rows
                                                   : FYTIM_WORKBAND_DEFAULT;
@@ -270,9 +312,32 @@ static void comp_free_candidates(struct fytim *ft)
     ft->comp_n = ft->comp_cap = 0;
 }
 
+/* Release one surface. The band or the pane that held it has let it go. */
+static void sf_free(struct fytim_surface *sf)
+{
+    if(!sf) return;
+    if(sf->owner->keys == sf) sf->owner->keys = NULL;
+    free(sf->grid);
+    free(sf->margin);
+    free(sf->top);
+    free(sf->bottom);
+    free(sf);
+}
+
 static void wb_free(struct fytim_workband *wb)
 {
     if(!wb) return;
+    if(wb->pane){
+        /* The pane owns its tiles: a host handle can outlive neither. */
+        struct fytim_surface *sf, *snext;
+        for(sf = wb->pane->tiles; sf; sf = snext){
+            snext = sf->next;
+            sf_free(sf);
+        }
+        free(wb->pane->sep);
+        free(wb->pane);
+        wb->pane = NULL;
+    }
     if(wb->surface){
         /* The band owns the surface once it is attached: the UI can outlive
          * the host's handle, and destroying the UI must free both. */
@@ -317,6 +382,11 @@ void fytim_destroy(struct fytim *ft)
         free((char *)ft->evq[(ft->ev_head + i) % FYTIM_EVQ_CAP].text);
     free(ft->ev_last);
     free(ft);
+}
+
+bool fytim_mouse_enabled(const struct fytim *ft)
+{
+    return ft && ft->mouse;
 }
 
 enum fytim_result fytim_size(const struct fytim *ft, int *w, int *h)
@@ -856,15 +926,31 @@ static int rt_add(struct response_text *t, const char *data, size_t n)
     return 0;
 }
 
+/* The tiles one frame draws. A pane past this shows the oldest of
+ * them: a screen cannot usefully hold more anyway. */
+#define FYTIM_PANE_TILES_MAX 64
+
 /* ---- the cell surface -------------------------------------------------- */
 
 /* Rows a surface asks for: its grid, capped by the band's own cap. */
 static int surface_content_rows(const struct fytim_surface *sf)
 {
-    int n = sf->rows;
+    int n = sf->rows, cap = sf->pane ? sf->max_rows : sf->wb->max_rows;
     if(n < 1) n = 1;
-    if(n > sf->wb->max_rows) n = sf->wb->max_rows;
+    if(cap > 0 && n > cap) n = cap;
     return n;
+}
+
+/* Chrome rows of a tile, which the pane draws, or of the band under a
+ * surface of its own, which the band draws. */
+static const char *sf_top(const struct fytim_surface *sf)
+{
+    return sf->pane ? sf->top : sf->wb->top;
+}
+
+static const char *sf_bottom(const struct fytim_surface *sf)
+{
+    return sf->pane ? sf->bottom : sf->wb->bottom;
 }
 
 struct fytim_surface *fytim_surface_open(struct fytim *ft, int rows, int cols)
@@ -899,9 +985,21 @@ struct fytim_surface *fytim_surface_open(struct fytim *ft, int rows, int cols)
 
 void fytim_surface_close(struct fytim_surface *sf)
 {
+    struct fytim_surface **p;
+
     if(!sf) return;
     /* The keys cannot stay with something that is gone. */
     if(sf->owner->keys == sf) sf->owner->keys = NULL;
+    if(sf->pane){
+        /* A tile leaves the pane; the pane stays for the tiles still in it,
+         * and a zoom held by this tile goes with it. */
+        if(sf->pane->zoom == sf) sf->pane->zoom = NULL;
+        for(p = &sf->pane->tiles; *p && *p != sf; p = &(*p)->next)
+            ;
+        if(*p) *p = sf->next;
+        sf_free(sf);
+        return;
+    }
     /* Retiring the band frees the surface with it (see wb_free). */
     wb_retire(sf->wb);
 }
@@ -931,7 +1029,11 @@ enum fytim_result fytim_surface_resize(struct fytim_surface *sf, int rows,
 
     free(sf->grid);
     sf->grid = grid;
-    if(sf->wb->max_rows == sf->rows) sf->wb->max_rows = rows;
+    if(sf->pane){
+        if(sf->max_rows == sf->rows) sf->max_rows = rows;
+    }else if(sf->wb->max_rows == sf->rows){
+        sf->wb->max_rows = rows;
+    }
     sf->rows = rows;
     sf->cols = cols;
     if(sf->cur_row >= rows || sf->cur_col >= cols){
@@ -961,7 +1063,8 @@ enum fytim_result fytim_surface_granted_rows(const struct fytim_surface *sf,
 enum fytim_result fytim_surface_set_max_rows(struct fytim_surface *sf, int rows)
 {
     if(!sf || rows < 0) return FYTIM_ERR_INVALID;
-    sf->wb->max_rows = rows > 0 ? rows : sf->rows;
+    if(sf->pane) sf->max_rows = rows > 0 ? rows : sf->rows;
+    else sf->wb->max_rows = rows > 0 ? rows : sf->rows;
     return FYTIM_OK;
 }
 
@@ -1072,8 +1175,8 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
                 last = row;
     }
     /* The chrome is part of the screen: a title says what the screen was. */
-    if(sf->wb->top && sf->wb->top[0] &&
-       rt_add(&out, sf->wb->top, strlen(sf->wb->top))) goto nomem;
+    if(sf_top(sf) && sf_top(sf)[0] &&
+       rt_add(&out, sf_top(sf), strlen(sf_top(sf)))) goto nomem;
 
     for(row = 0; row <= last; row++){
         if(out.len && rt_add(&out, "\n", 1)) goto nomem;
@@ -1083,9 +1186,9 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
         if(surface_row_text(sf, row, &out)) goto nomem;
     }
 
-    if(sf->wb->bottom && sf->wb->bottom[0]){
+    if(sf_bottom(sf) && sf_bottom(sf)[0]){
         if(out.len && rt_add(&out, "\n", 1)) goto nomem;
-        if(rt_add(&out, sf->wb->bottom, strlen(sf->wb->bottom))) goto nomem;
+        if(rt_add(&out, sf_bottom(sf), strlen(sf_bottom(sf)))) goto nomem;
     }
     if(out.len) commit_norm(sf->owner, out.buf, out.len);
     free(out.buf);
@@ -1095,6 +1198,222 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
 nomem:
     free(out.buf);
     return FYTIM_ERR_NOMEM;
+}
+
+/* ---- the work pane ------------------------------------------------------ */
+
+int fytim_workpane_count(const struct fytim_workpane *wp)
+{
+    const struct fytim_surface *sf;
+    int n = 0;
+
+    if(!wp) return 0;
+    for(sf = wp->tiles; sf; sf = sf->next) n++;
+    return n;
+}
+
+/*
+ * The grid for @n tiles across @w columns: as many columns as fit while every
+ * tile keeps the minimum width, and never more than a square arrangement
+ * needs. A region too narrow for two tiles gives one column, which is the
+ * stack of full-width screens a narrow terminal has to fall back to.
+ */
+static void pane_grid(const struct fytim_workpane *wp, int n, int w,
+                      int *colsp, int *rowsp)
+{
+    int cols, fit, sq;
+
+    if(n < 1){
+        *colsp = *rowsp = 0;
+        return;
+    }
+    if(wp->columns > 0){
+        cols = wp->columns;
+    }else{
+        fit = wp->min_tile_cols > 0 ? w / wp->min_tile_cols : n;
+        if(fit < 1) fit = 1;
+        for(sq = 1; sq * sq < n; sq++)
+            ;
+        cols = fit < sq ? fit : sq;
+    }
+    if(cols < 1) cols = 1;
+    if(cols > n) cols = n;
+    *colsp = cols;
+    *rowsp = (n + cols - 1) / cols;
+}
+
+/* Rows one tile asks for: its screen, and the chrome that says whose it is. */
+static int pane_tile_rows(const struct fytim_surface *sf)
+{
+    return surface_content_rows(sf) + (sf->top ? 1 : 0) +
+           (sf->bottom ? 1 : 0);
+}
+
+/*
+ * Rows the pane asks for. Every tile of a grid row is drawn to the same
+ * height, so the tallest tile sets it; the pane's own chrome is added, and
+ * its cap - the band node's - bounds the result.
+ */
+static int pane_rows(const struct fytim_workpane *wp)
+{
+    const struct fytim_surface *sf;
+    int n, cols, rows, tall = 0, want;
+
+    n = wp->zoom ? 1 : fytim_workpane_count(wp);
+    if(n < 1) return 0;
+    pane_grid(wp, n, wp->owner->term_w, &cols, &rows);
+    if(wp->zoom){
+        tall = pane_tile_rows(wp->zoom);
+    }else{
+        for(sf = wp->tiles; sf; sf = sf->next){
+            int h = pane_tile_rows(sf);
+            if(h > tall) tall = h;
+        }
+    }
+    if(tall < 1) tall = 1;
+    want = rows * tall + (wp->wb->top ? 1 : 0) + (wp->wb->bottom ? 1 : 0);
+    if(wp->wb->max_rows > 0 && want > wp->wb->max_rows)
+        want = wp->wb->max_rows;
+    return want;
+}
+
+struct fytim_workpane *fytim_workpane_create(struct fytim *ft)
+{
+    struct fytim_workpane *wp;
+    struct fytim_workband *wb;
+
+    if(!ft) return NULL;
+    wp = calloc(1, sizeof *wp);
+    if(!wp) return NULL;
+    wb = fytim_workband_create(ft);
+    if(!wb){ free(wp); return NULL; }
+
+    wp->wb = wb;
+    wp->owner = ft;
+    wp->min_tile_cols = FYTIM_TILE_MIN_COLS;
+    /* The tiles are the content: a pane is not capped unless asked. */
+    wb->max_rows = 0;
+    wb->pane = wp;
+    return wp;
+}
+
+void fytim_workpane_destroy(struct fytim_workpane *wp)
+{
+    if(!wp) return;
+    /* Retiring the band frees the pane and its tiles with it (see wb_free). */
+    wb_retire(wp->wb);
+}
+
+enum fytim_result fytim_workpane_set_top(struct fytim_workpane *wp,
+                                         const char *text)
+{
+    if(!wp) return FYTIM_ERR_INVALID;
+    return fytim_workband_set_top(wp->wb, text);
+}
+
+enum fytim_result fytim_workpane_set_bottom(struct fytim_workpane *wp,
+                                            const char *text)
+{
+    if(!wp) return FYTIM_ERR_INVALID;
+    return fytim_workband_set_bottom(wp->wb, text);
+}
+
+enum fytim_result fytim_workpane_set_max_rows(struct fytim_workpane *wp,
+                                              int rows)
+{
+    if(!wp || rows < 0) return FYTIM_ERR_INVALID;
+    wp->wb->max_rows = rows;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_workpane_set_columns(struct fytim_workpane *wp,
+                                             int cols)
+{
+    if(!wp || cols < 0) return FYTIM_ERR_INVALID;
+    wp->columns = cols;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_workpane_set_min_tile_cols(struct fytim_workpane *wp,
+                                                   int cols)
+{
+    if(!wp || cols < 0) return FYTIM_ERR_INVALID;
+    wp->min_tile_cols = cols > 0 ? cols : FYTIM_TILE_MIN_COLS;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_workpane_set_tile_sep(struct fytim_workpane *wp,
+                                              const char *text)
+{
+    if(!wp) return FYTIM_ERR_INVALID;
+    return set_dup_sgr(&wp->sep, text);
+}
+
+enum fytim_result fytim_workpane_set_controls(struct fytim_workpane *wp,
+                                              unsigned int flags)
+{
+    if(!wp) return FYTIM_ERR_INVALID;
+    wp->controls = flags;
+    return FYTIM_OK;
+}
+
+unsigned int fytim_workpane_controls(const struct fytim_workpane *wp)
+{
+    return wp ? wp->controls : 0;
+}
+
+enum fytim_result fytim_workpane_set_zoom(struct fytim_workpane *wp,
+                                          struct fytim_surface *sf)
+{
+    if(!wp) return FYTIM_ERR_INVALID;
+    if(sf && sf->pane != wp) return FYTIM_ERR_INVALID;
+    wp->zoom = sf;
+    return FYTIM_OK;
+}
+
+struct fytim_surface *fytim_workpane_zoomed(const struct fytim_workpane *wp)
+{
+    return wp ? wp->zoom : NULL;
+}
+
+struct fytim_surface *fytim_surface_open_in(struct fytim_workpane *wp,
+                                            int rows, int cols)
+{
+    struct fytim_surface *sf, **tail;
+
+    if(!wp || rows < 1 || cols < 1) return NULL;
+    if((size_t)rows > SIZE_MAX / sizeof(struct fytim_cell) / (size_t)cols)
+        return NULL;
+
+    sf = calloc(1, sizeof *sf);
+    if(!sf) return NULL;
+    sf->grid = calloc((size_t)rows * (size_t)cols, sizeof *sf->grid);
+    if(!sf->grid){ free(sf); return NULL; }
+
+    /* The tile composes on the pane's band node, so everything that reads
+     * sf->wb - the commit path, the row rules - keeps working. */
+    sf->wb = wp->wb;
+    sf->pane = wp;
+    sf->owner = wp->owner;
+    sf->rows = rows;
+    sf->cols = cols;
+    sf->max_rows = rows;
+    sf->cur_row = sf->cur_col = -1;
+    sf->bar_x = sf->zoom_x = sf->close_x = sf->ctl_y = -1;
+
+    tail = &wp->tiles;
+    while(*tail) tail = &(*tail)->next;
+    *tail = sf;
+    return sf;
+}
+
+enum fytim_result fytim_surface_set_scroll_extent(struct fytim_surface *sf,
+                                                  int total_rows, int top_row)
+{
+    if(!sf || total_rows < 0 || top_row < 0) return FYTIM_ERR_INVALID;
+    sf->scroll_total = total_rows;
+    sf->scroll_top = top_row;
+    return FYTIM_OK;
 }
 
 enum fytim_result fytim_surface_set_margin(struct fytim_surface *sf,
@@ -1129,6 +1448,7 @@ enum fytim_result fytim_surface_set_top(struct fytim_surface *sf,
                                         const char *text)
 {
     if(!sf) return FYTIM_ERR_INVALID;
+    if(sf->pane) return set_dup_sgr(&sf->top, text);
     return fytim_workband_set_top(sf->wb, text);
 }
 
@@ -1136,6 +1456,7 @@ enum fytim_result fytim_surface_set_bottom(struct fytim_surface *sf,
                                            const char *text)
 {
     if(!sf) return FYTIM_ERR_INVALID;
+    if(sf->pane) return set_dup_sgr(&sf->bottom, text);
     return fytim_workband_set_bottom(sf->wb, text);
 }
 
@@ -1617,6 +1938,214 @@ static void draw_surface(TimuiFrame *f, TimuiCellBuffer *buf,
     }
 }
 
+/*
+ * The marks a tile carries at the top right, and the bar down its right edge.
+ * They are drawn only when the host grabbed the mouse: a control the user
+ * cannot reach is a column taken from the program for nothing.
+ */
+#define FYTIM_TILE_ZOOM_MARK   "\xe2\xa4\xa2"   /* U+2922 */
+#define FYTIM_TILE_CLOSE_MARK  "\xc3\x97"       /* U+00D7 */
+#define FYTIM_TILE_ARROW_UP    "\xe2\x96\xb4"   /* U+25B4 */
+#define FYTIM_TILE_ARROW_DOWN  "\xe2\x96\xbe"   /* U+25BE */
+#define FYTIM_TILE_BAR_TRACK   "\xe2\x94\x82"   /* U+2502 */
+#define FYTIM_TILE_BAR_THUMB   "\xe2\x96\x88"   /* U+2588 */
+
+static bool pane_controls_live(const struct fytim_workpane *wp)
+{
+    return wp->controls && wp->owner->mouse;
+}
+
+/* Columns the bar takes from the grid of a tile. */
+static int pane_bar_cols(const struct fytim_workpane *wp)
+{
+    return (pane_controls_live(wp) &&
+            (wp->controls & FYTIM_WORKPANE_SCROLLBAR)) ? 1 : 0;
+}
+
+/*
+ * Draw the bar for @sf down the column at @x, @h rows tall. The thumb says
+ * where the host's scrollback is: with nothing behind the screen it fills the
+ * track, which is how a bar says there is nowhere to go.
+ */
+static void draw_tile_bar(TimuiCellBuffer *buf, struct fytim_surface *sf,
+                          unsigned int controls, TimuiStyle st, int x, int y,
+                          int h)
+{
+    int track_y = y, track_h = h, thumb_h, thumb_y, i, total, top;
+    TimuiStr s;
+
+    if(h < 1) return;
+    sf->bar_x = x;
+    if((controls & FYTIM_WORKPANE_ARROWS) && h >= 3){
+        s.ptr = FYTIM_TILE_ARROW_UP; s.len = strlen(s.ptr);
+        timui_draw_text(buf, x, y, s, st);
+        s.ptr = FYTIM_TILE_ARROW_DOWN; s.len = strlen(s.ptr);
+        timui_draw_text(buf, x, y + h - 1, s, st);
+        track_y = y + 1;
+        track_h = h - 2;
+    }
+    total = sf->scroll_total > 0 ? sf->scroll_total : sf->rows;
+    if(total < sf->rows) total = sf->rows;
+    top = sf->scroll_top;
+    if(top > total - sf->rows) top = total - sf->rows;
+    if(top < 0) top = 0;
+
+    thumb_h = (int)(((long)track_h * sf->rows + total - 1) / total);
+    if(thumb_h < 1) thumb_h = 1;
+    if(thumb_h > track_h) thumb_h = track_h;
+    thumb_y = total > sf->rows
+            ? (int)(((long)(track_h - thumb_h) * top) / (total - sf->rows))
+            : 0;
+
+    for(i = 0; i < track_h; i++){
+        bool on = i >= thumb_y && i < thumb_y + thumb_h;
+        s.ptr = on ? FYTIM_TILE_BAR_THUMB : FYTIM_TILE_BAR_TRACK;
+        s.len = strlen(s.ptr);
+        timui_draw_text(buf, x, track_y + i, s, st);
+    }
+}
+
+/*
+ * Draw the zoom and close marks at the right of the tile's first row and
+ * record where they went. They sit on the tile's own chrome row when it has
+ * one, so that they cost the program nothing.
+ */
+static void draw_tile_marks(TimuiCellBuffer *buf, struct fytim_surface *sf,
+                            unsigned int controls, TimuiStyle st, int x,
+                            int y, int w)
+{
+    TimuiStr s;
+    int cx = x + w;
+
+    if(w < 1) return;
+    if(controls & FYTIM_WORKPANE_CLOSE){
+        cx--;
+        if(cx < x) return;
+        s.ptr = FYTIM_TILE_CLOSE_MARK; s.len = strlen(s.ptr);
+        timui_draw_text(buf, cx, y, s, st);
+        sf->close_x = cx;
+    }
+    if(controls & FYTIM_WORKPANE_ZOOM){
+        cx--;
+        if(cx < x) return;
+        s.ptr = FYTIM_TILE_ZOOM_MARK; s.len = strlen(s.ptr);
+        timui_draw_text(buf, cx, y, s, st);
+        sf->zoom_x = cx;
+    }
+    sf->ctl_y = y;
+}
+
+/*
+ * Draw the tiles of @wp into the region at @y, @rows high. Every tile of a
+ * grid row is drawn to the same height and every tile of a column to the same
+ * width, so the screens read as one thing; a short region takes rows from the
+ * grid rows evenly, and the tile sheds its content before its chrome, as a
+ * surface standing alone does.
+ */
+static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
+                      struct fytim_workpane *wp, TimuiStyle chrome,
+                      int x, int y, int w, int rows)
+{
+    struct fytim_surface *arr[FYTIM_PANE_TILES_MAX];
+    int n = 0, cols, grows, sep_w, i, gr, gc;
+    int base_h, extra_h, base_w, extra_w;
+    struct fytim_surface *sf;
+
+    if(wp->zoom){
+        arr[n++] = wp->zoom;
+    }else{
+        for(sf = wp->tiles; sf && n < FYTIM_PANE_TILES_MAX; sf = sf->next)
+            arr[n++] = sf;
+    }
+    if(n < 1 || rows < 1 || w < 1) return;
+
+    pane_grid(wp, n, w, &cols, &grows);
+    sep_w = (wp->sep && wp->sep[0]) ? sgr_disp_width(wp->sep) : 0;
+    /* A separator that leaves no room for the screens is not drawn. */
+    if(cols > 1 && w - (cols - 1) * sep_w < cols) sep_w = 0;
+
+    base_h = rows / grows;
+    extra_h = rows - base_h * grows;
+    base_w = (w - (cols - 1) * sep_w) / cols;
+    extra_w = (w - (cols - 1) * sep_w) - base_w * cols;
+
+    for(i = 0, gr = 0; gr < grows; gr++){
+        /* The spare rows go to the newest grid row, which is the one the
+         * user is most likely watching. */
+        int th = base_h + (gr >= grows - extra_h ? 1 : 0);
+        int tx = x;
+        for(gc = 0; gc < cols; gc++, i++){
+            int tw = base_w + (gc < extra_w ? 1 : 0);
+            int ty = y, top, bottom, content;
+
+            if(gc && sep_w){
+                int sy;
+                for(sy = y; sy < y + th; sy++)
+                    draw_row_styled(f, buf, tx, sy, sep_w, wp->sep, chrome);
+                tx += sep_w;
+            }
+            if(i >= n || tw < 1 || th < 1) continue;
+            sf = arr[i];
+            /* Last frame's placement says nothing about this one. */
+            sf->rect_x = tx; sf->rect_y = y; sf->rect_w = tw; sf->rect_h = th;
+            sf->bar_x = sf->zoom_x = sf->close_x = sf->ctl_y = -1;
+            content = surface_content_rows(sf);
+            top = sf->top ? 1 : 0;
+            bottom = sf->bottom ? 1 : 0;
+            while(top + content + bottom > th){
+                if(content > 1) content--;
+                else if(top) top = 0;
+                else if(bottom) bottom = 0;
+                else content--;
+            }
+            if(top){
+                if(sf->top[0])
+                    draw_row_styled(f, buf, tx, ty, tw, sf->top, chrome);
+                else
+                    timui_draw_hline(buf, tx, ty, tw, chrome);
+                if(pane_controls_live(wp))
+                    draw_tile_marks(buf, sf, wp->controls, chrome, tx, ty, tw);
+                ty++;
+            }else if(pane_controls_live(wp)){
+                /* With no chrome row of its own the tile carries the marks
+                 * on its first row: a cell of the program is a smaller cost
+                 * than a row taken from every tile. */
+                draw_tile_marks(buf, sf, wp->controls, chrome, tx, ty, tw);
+            }
+            {
+                /* The bar is chrome down the right edge: the grid gets what
+                 * is left, which is what the host is told it has. */
+                int bar = pane_bar_cols(wp);
+                if(bar >= tw) bar = 0;
+                if(content > 0)
+                    draw_surface(f, buf, sf, chrome, tx, ty, tw - bar,
+                                 content);
+                if(bar)
+                    draw_tile_bar(buf, sf, wp->controls, chrome,
+                                  tx + tw - bar, ty, content);
+            }
+            sf->granted = content > 0 ? content : 0;
+            ty += content;
+            if(bottom){
+                if(sf->bottom[0])
+                    draw_row_styled(f, buf, tx, ty, tw, sf->bottom, chrome);
+                else
+                    timui_draw_hline(buf, tx, ty, tw, chrome);
+            }
+            tx += tw;
+        }
+        y += th;
+    }
+    /* A tile the grid could not place shows nothing, and must say so: a
+     * host sizing a program to its granted rows would otherwise draw into
+     * rows nobody has. */
+    for(; i < n; i++){
+        arr[i]->granted = 0;
+        arr[i]->rect_w = arr[i]->rect_h = 0;
+        arr[i]->bar_x = arr[i]->zoom_x = arr[i]->close_x = -1;
+    }
+}
+
 /* Rows the tail occupies: its '\n'-terminated rows, plus the trailing
  * partial row only when it holds VISIBLE text. The cursor row after a
  * final '\n' -- empty, or only an SGR carry-over residue -- must not
@@ -1660,8 +2189,14 @@ static int styled_rows(const char *s)
  * an idle band still shows), plus the optional top/bottom chrome rows. */
 static int wb_rows(const struct fytim_workband *wb)
 {
-    int n = wb->surface ? surface_content_rows(wb->surface)
-                        : styled_rows(wb->content);
+    int n;
+
+    /* A pane solves its own geometry, chrome included, and an empty one
+     * takes nothing: a region with no program in it is not a region. */
+    if(wb->pane) return pane_rows(wb->pane);
+
+    n = wb->surface ? surface_content_rows(wb->surface)
+                    : styled_rows(wb->content);
     if(n < 1) n = 1;
     if(n > wb->max_rows) n = wb->max_rows;
     return n + (wb->top ? 1 : 0) + (wb->bottom ? 1 : 0);
@@ -1887,6 +2422,33 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
             for(i = 0; i < nb; i++){
                 int rows = give[i], top, bottom, content, lines, skip;
                 wb = arr[i];
+                if(wb->pane){
+                    /* The pane places its own tiles; the band gives it the
+                     * region and its own frame. */
+                    int ptop = wb->top ? 1 : 0, pbot = wb->bottom ? 1 : 0;
+                    int pcontent = rows - ptop - pbot;
+                    if(pcontent < 1){ ptop = pbot = 0; pcontent = rows; }
+                    if(ptop){
+                        if(wb->top[0])
+                            draw_row_styled(f, buf, r->x, y, r->w, wb->top,
+                                            wb_st);
+                        else
+                            timui_draw_hline(buf, r->x, y, r->w, wb_st);
+                        y++;
+                    }
+                    draw_pane(f, buf, wb->pane, wb_st, r->x, y, r->w,
+                              pcontent);
+                    y += pcontent;
+                    if(pbot){
+                        if(wb->bottom[0])
+                            draw_row_styled(f, buf, r->x, y, r->w, wb->bottom,
+                                            wb_st);
+                        else
+                            timui_draw_hline(buf, r->x, y, r->w, wb_st);
+                        y++;
+                    }
+                    continue;
+                }
                 lines = wb->surface ? surface_content_rows(wb->surface)
                                     : styled_rows(wb->content);
                 /* The band's own cap applies FIRST: past it, content shows
@@ -2134,6 +2696,88 @@ static void surface_keys_collect(struct fytim *ft, TimuiFrame *f)
     }
 }
 
+/* ---- the mouse on a tile ------------------------------------------------ */
+
+static void ev_push_surface(struct fytim *ft, enum fytim_event_type type,
+                            struct fytim_surface *sf, int delta)
+{
+    struct fytim_event *ev;
+
+    ev_push(ft, type, NULL, 0, 0, 0);
+    ev = &ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP];
+    ev->surface = sf;
+    ev->delta = delta;
+}
+
+/* The tile drawn over (@x, @y) at the last frame, or NULL. */
+static struct fytim_surface *tile_at(struct fytim *ft, int x, int y)
+{
+    struct fytim_workband *wb;
+    struct fytim_surface *sf;
+
+    for(wb = ft->wbands; wb; wb = wb->next){
+        if(!wb->pane || !pane_controls_live(wb->pane)) continue;
+        for(sf = wb->pane->tiles; sf; sf = sf->next){
+            if(sf->rect_w < 1 || sf->rect_h < 1) continue;
+            if(x >= sf->rect_x && x < sf->rect_x + sf->rect_w &&
+               y >= sf->rect_y && y < sf->rect_y + sf->rect_h)
+                return sf;
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Give a click or a wheel turn to the tile under it. Returns true when the
+ * wheel was a tile's, so that it does not also reach the transcript: the
+ * user was pointing at one screen and meant that one.
+ */
+static bool pane_mouse(struct fytim *ft, TimuiFrame *f)
+{
+    struct fytim_surface *sf;
+    int x = 0, y = 0, wheel;
+    bool took = false;
+
+    if(!ft->mouse) return false;
+
+    if(timui_mouse_clicked(f, &x, &y)){
+        sf = tile_at(ft, x, y);
+        if(sf){
+            unsigned int ctl = sf->pane->controls;
+            if(y == sf->ctl_y && sf->close_x >= 0 && x == sf->close_x){
+                ev_push_surface(ft, FYTIM_EVENT_SURFACE_CLOSE, sf, 0);
+            }else if(y == sf->ctl_y && sf->zoom_x >= 0 && x == sf->zoom_x){
+                ev_push_surface(ft, FYTIM_EVENT_SURFACE_ZOOM, sf, 0);
+            }else if(sf->bar_x >= 0 && x == sf->bar_x){
+                /* On the bar: the ends step a row when they are arrows, and
+                 * the track pages toward where the user pointed. */
+                int top = sf->rect_y, bot = sf->rect_y + sf->rect_h - 1;
+                int page = sf->granted > 0 ? sf->granted : 1;
+                if((ctl & FYTIM_WORKPANE_ARROWS) && y == top)
+                    ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, 1);
+                else if((ctl & FYTIM_WORKPANE_ARROWS) && y == bot)
+                    ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, -1);
+                else if(y < top + sf->rect_h / 2)
+                    ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, page);
+                else
+                    ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, -page);
+            }
+        }
+    }
+
+    wheel = timui_mouse_wheel(f);
+    if(wheel){
+        int down = 0;
+        timui_mouse_state(f, &x, &y, &down);
+        sf = tile_at(ft, x, y);
+        if(sf){
+            ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, wheel);
+            took = true;
+        }
+    }
+    return took;
+}
+
 /* ---- the pump ----------------------------------------------------------- */
 
 enum fytim_result fytim_pump(struct fytim *ft)
@@ -2227,9 +2871,10 @@ enum fytim_result fytim_pump(struct fytim *ft)
 
     if(timui_key_pressed(f, TIMUI_KEY_ESCAPE))
         ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
-    if(timui_mouse_wheel(f) ||
-       timui_key_pressed(f, TIMUI_KEY_PAGE_UP) ||
-       timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN))
+    if(!pane_mouse(ft, f) &&
+       (timui_mouse_wheel(f) ||
+        timui_key_pressed(f, TIMUI_KEY_PAGE_UP) ||
+        timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN)))
         ev_push(ft, FYTIM_EVENT_SCROLLBACK, NULL, 0, 0, 0);
     {
         int ctrl = timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN, TIMUI_MOD_CTRL);
