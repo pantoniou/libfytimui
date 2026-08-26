@@ -57,6 +57,13 @@ struct fytim_workband {
     struct fytim_surface *surface;
     /* Set when this band composes a pane of tiles instead of one screen. */
     struct fytim_workpane *pane;
+    /* Set when this band IS a tile: the pane that composes it, which is also
+     * the list it has to be unlinked from when it retires. */
+    struct fytim_workpane *in_pane;
+    /* Columns the tile was given at the last frame. A band of its own has
+     * the width of the terminal and does not need telling; a tile has a
+     * share of it, and a host that hard-wraps its rows has to know which. */
+    int granted_cols;
 };
 
 /*
@@ -74,13 +81,6 @@ struct fytim_surface {
     int cur_row, cur_col;
     bool cur_visible;
     int granted;                   /* content rows drawn at the last frame */
-    /* A tile of a work pane: the pane composes it, so it holds what the band
-     * node holds for a surface that stands alone - its place in the order,
-     * its chrome and its row cap. @pane is NULL for a surface of its own. */
-    struct fytim_workpane *pane;
-    struct fytim_surface  *next;   /* sibling in the pane, oldest first */
-    char *top, *bottom;
-    int max_rows;
     int scroll_total, scroll_top;  /* what the HOST's scrollback holds */
     /* Where the tile was drawn at the last frame, so that a click can be
      * given to the thing under it. A column of -1 means the control was not
@@ -97,8 +97,14 @@ struct fytim_surface {
 struct fytim_workpane {
     struct fytim_workband *wb;
     struct fytim          *owner;
-    struct fytim_surface  *tiles;  /* oldest first */
-    struct fytim_surface  *zoom;   /* the tile that takes the pane, or NULL */
+    /*
+     * The tiles are band nodes of their own, off the instance's list. A band
+     * node is already either styled text or a grid of cells, and it already
+     * carries the chrome and the row cap that go with one: a tile needs to be
+     * nothing more than that, wherever it is composed.
+     */
+    struct fytim_workband *tiles;  /* oldest first */
+    struct fytim_workband *zoom;   /* the tile that takes the pane, or NULL */
     char *sep;                     /* rule between adjacent columns */
     int columns;                   /* 0 selects the automatic grid */
     int min_tile_cols;
@@ -319,8 +325,6 @@ static void sf_free(struct fytim_surface *sf)
     if(sf->owner->keys == sf) sf->owner->keys = NULL;
     free(sf->grid);
     free(sf->margin);
-    free(sf->top);
-    free(sf->bottom);
     free(sf);
 }
 
@@ -329,10 +333,11 @@ static void wb_free(struct fytim_workband *wb)
     if(!wb) return;
     if(wb->pane){
         /* The pane owns its tiles: a host handle can outlive neither. */
-        struct fytim_surface *sf, *snext;
-        for(sf = wb->pane->tiles; sf; sf = snext){
-            snext = sf->next;
-            sf_free(sf);
+        struct fytim_workband *t, *tnext;
+        for(t = wb->pane->tiles; t; t = tnext){
+            tnext = t->next;
+            t->in_pane = NULL;      /* the list is going with the pane */
+            wb_free(t);
         }
         free(wb->pane->sep);
         free(wb->pane);
@@ -341,9 +346,7 @@ static void wb_free(struct fytim_workband *wb)
     if(wb->surface){
         /* The band owns the surface once it is attached: the UI can outlive
          * the host's handle, and destroying the UI must free both. */
-        free(wb->surface->grid);
-        free(wb->surface->margin);
-        free(wb->surface);
+        sf_free(wb->surface);
         wb->surface = NULL;
     }
     free(wb->content);
@@ -794,9 +797,14 @@ struct fytim_workband *fytim_workband_create(struct fytim *ft)
 /* Unlink wb from its owner and free it. */
 static void wb_retire(struct fytim_workband *wb)
 {
-    struct fytim_workband **p = &wb->owner->wbands;
+    struct fytim_workband **p;
+
+    /* A tile is on its pane's list; every other band is on the instance's. */
+    p = wb->in_pane ? &wb->in_pane->tiles : &wb->owner->wbands;
+    if(wb->in_pane && wb->in_pane->zoom == wb) wb->in_pane->zoom = NULL;
     while(*p && *p != wb) p = &(*p)->next;
     if(*p) *p = wb->next;
+    wb->in_pane = NULL;
     wb_free(wb);
 }
 
@@ -854,6 +862,15 @@ enum fytim_result fytim_workband_set_bottom(struct fytim_workband *wb,
 {
     if(!wb) return FYTIM_ERR_INVALID;
     return set_dup_sgr(&wb->bottom, text);
+}
+
+enum fytim_result fytim_workband_granted_cols(const struct fytim_workband *wb,
+                                              int *cols)
+{
+    if(!wb || !cols) return FYTIM_ERR_INVALID;
+    /* A band of its own has the whole width; only a tile has a share. */
+    *cols = wb->in_pane ? wb->granted_cols : wb->owner->term_w;
+    return FYTIM_OK;
 }
 
 enum fytim_result fytim_workband_commit(struct fytim_workband *wb)
@@ -935,22 +952,10 @@ static int rt_add(struct response_text *t, const char *data, size_t n)
 /* Rows a surface asks for: its grid, capped by the band's own cap. */
 static int surface_content_rows(const struct fytim_surface *sf)
 {
-    int n = sf->rows, cap = sf->pane ? sf->max_rows : sf->wb->max_rows;
+    int n = sf->rows;
     if(n < 1) n = 1;
-    if(cap > 0 && n > cap) n = cap;
+    if(n > sf->wb->max_rows) n = sf->wb->max_rows;
     return n;
-}
-
-/* Chrome rows of a tile, which the pane draws, or of the band under a
- * surface of its own, which the band draws. */
-static const char *sf_top(const struct fytim_surface *sf)
-{
-    return sf->pane ? sf->top : sf->wb->top;
-}
-
-static const char *sf_bottom(const struct fytim_surface *sf)
-{
-    return sf->pane ? sf->bottom : sf->wb->bottom;
 }
 
 struct fytim_surface *fytim_surface_open(struct fytim *ft, int rows, int cols)
@@ -985,22 +990,11 @@ struct fytim_surface *fytim_surface_open(struct fytim *ft, int rows, int cols)
 
 void fytim_surface_close(struct fytim_surface *sf)
 {
-    struct fytim_surface **p;
-
     if(!sf) return;
     /* The keys cannot stay with something that is gone. */
     if(sf->owner->keys == sf) sf->owner->keys = NULL;
-    if(sf->pane){
-        /* A tile leaves the pane; the pane stays for the tiles still in it,
-         * and a zoom held by this tile goes with it. */
-        if(sf->pane->zoom == sf) sf->pane->zoom = NULL;
-        for(p = &sf->pane->tiles; *p && *p != sf; p = &(*p)->next)
-            ;
-        if(*p) *p = sf->next;
-        sf_free(sf);
-        return;
-    }
-    /* Retiring the band frees the surface with it (see wb_free). */
+    /* Retiring the band frees the surface with it (see wb_free). A tile's
+     * band leaves the pane's list; every other leaves the instance's. */
     wb_retire(sf->wb);
 }
 
@@ -1029,11 +1023,7 @@ enum fytim_result fytim_surface_resize(struct fytim_surface *sf, int rows,
 
     free(sf->grid);
     sf->grid = grid;
-    if(sf->pane){
-        if(sf->max_rows == sf->rows) sf->max_rows = rows;
-    }else if(sf->wb->max_rows == sf->rows){
-        sf->wb->max_rows = rows;
-    }
+    if(sf->wb->max_rows == sf->rows) sf->wb->max_rows = rows;
     sf->rows = rows;
     sf->cols = cols;
     if(sf->cur_row >= rows || sf->cur_col >= cols){
@@ -1063,8 +1053,7 @@ enum fytim_result fytim_surface_granted_rows(const struct fytim_surface *sf,
 enum fytim_result fytim_surface_set_max_rows(struct fytim_surface *sf, int rows)
 {
     if(!sf || rows < 0) return FYTIM_ERR_INVALID;
-    if(sf->pane) sf->max_rows = rows > 0 ? rows : sf->rows;
-    else sf->wb->max_rows = rows > 0 ? rows : sf->rows;
+    sf->wb->max_rows = rows > 0 ? rows : sf->rows;
     return FYTIM_OK;
 }
 
@@ -1175,8 +1164,8 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
                 last = row;
     }
     /* The chrome is part of the screen: a title says what the screen was. */
-    if(sf_top(sf) && sf_top(sf)[0] &&
-       rt_add(&out, sf_top(sf), strlen(sf_top(sf)))) goto nomem;
+    if(sf->wb->top && sf->wb->top[0] &&
+       rt_add(&out, sf->wb->top, strlen(sf->wb->top))) goto nomem;
 
     for(row = 0; row <= last; row++){
         if(out.len && rt_add(&out, "\n", 1)) goto nomem;
@@ -1186,9 +1175,9 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
         if(surface_row_text(sf, row, &out)) goto nomem;
     }
 
-    if(sf_bottom(sf) && sf_bottom(sf)[0]){
+    if(sf->wb->bottom && sf->wb->bottom[0]){
         if(out.len && rt_add(&out, "\n", 1)) goto nomem;
-        if(rt_add(&out, sf_bottom(sf), strlen(sf_bottom(sf)))) goto nomem;
+        if(rt_add(&out, sf->wb->bottom, strlen(sf->wb->bottom))) goto nomem;
     }
     if(out.len) commit_norm(sf->owner, out.buf, out.len);
     free(out.buf);
@@ -1202,13 +1191,18 @@ nomem:
 
 /* ---- the work pane ------------------------------------------------------ */
 
+/* A pane solves its geometry from what its tiles ask for, and a tile is a
+ * band node, so the band's own row rules answer that. */
+static int wb_rows(const struct fytim_workband *wb);
+static int styled_rows(const char *s);
+
 int fytim_workpane_count(const struct fytim_workpane *wp)
 {
-    const struct fytim_surface *sf;
+    const struct fytim_workband *t;
     int n = 0;
 
     if(!wp) return 0;
-    for(sf = wp->tiles; sf; sf = sf->next) n++;
+    for(t = wp->tiles; t; t = t->next) n++;
     return n;
 }
 
@@ -1242,12 +1236,7 @@ static void pane_grid(const struct fytim_workpane *wp, int n, int w,
     *rowsp = (n + cols - 1) / cols;
 }
 
-/* Rows one tile asks for: its screen, and the chrome that says whose it is. */
-static int pane_tile_rows(const struct fytim_surface *sf)
-{
-    return surface_content_rows(sf) + (sf->top ? 1 : 0) +
-           (sf->bottom ? 1 : 0);
-}
+
 
 /*
  * Rows the pane asks for. Every tile of a grid row is drawn to the same
@@ -1256,17 +1245,17 @@ static int pane_tile_rows(const struct fytim_surface *sf)
  */
 static int pane_rows(const struct fytim_workpane *wp)
 {
-    const struct fytim_surface *sf;
+    const struct fytim_workband *t;
     int n, cols, rows, tall = 0, want;
 
     n = wp->zoom ? 1 : fytim_workpane_count(wp);
     if(n < 1) return 0;
     pane_grid(wp, n, wp->owner->term_w, &cols, &rows);
     if(wp->zoom){
-        tall = pane_tile_rows(wp->zoom);
+        tall = wb_rows(wp->zoom);
     }else{
-        for(sf = wp->tiles; sf; sf = sf->next){
-            int h = pane_tile_rows(sf);
+        for(t = wp->tiles; t; t = t->next){
+            int h = wb_rows(t);
             if(h > tall) tall = h;
         }
     }
@@ -1366,20 +1355,38 @@ enum fytim_result fytim_workpane_set_zoom(struct fytim_workpane *wp,
                                           struct fytim_surface *sf)
 {
     if(!wp) return FYTIM_ERR_INVALID;
-    if(sf && sf->pane != wp) return FYTIM_ERR_INVALID;
-    wp->zoom = sf;
+    if(sf && sf->wb->in_pane != wp) return FYTIM_ERR_INVALID;
+    wp->zoom = sf ? sf->wb : NULL;
     return FYTIM_OK;
 }
 
 struct fytim_surface *fytim_workpane_zoomed(const struct fytim_workpane *wp)
 {
-    return wp ? wp->zoom : NULL;
+    return wp && wp->zoom ? wp->zoom->surface : NULL;
+}
+
+/* Append an empty tile to @wp. NULL on failure. */
+struct fytim_workband *fytim_workband_create_in(struct fytim_workpane *wp)
+{
+    struct fytim_workband *t, **tail;
+
+    if(!wp) return NULL;
+    t = calloc(1, sizeof *t);
+    if(!t) return NULL;
+    t->owner = wp->owner;
+    t->in_pane = wp;
+    t->max_rows = wp->owner->wb_default_max;
+    tail = &wp->tiles;
+    while(*tail) tail = &(*tail)->next;
+    *tail = t;
+    return t;
 }
 
 struct fytim_surface *fytim_surface_open_in(struct fytim_workpane *wp,
                                             int rows, int cols)
 {
-    struct fytim_surface *sf, **tail;
+    struct fytim_surface *sf;
+    struct fytim_workband *t;
 
     if(!wp || rows < 1 || cols < 1) return NULL;
     if((size_t)rows > SIZE_MAX / sizeof(struct fytim_cell) / (size_t)cols)
@@ -1390,20 +1397,22 @@ struct fytim_surface *fytim_surface_open_in(struct fytim_workpane *wp,
     sf->grid = calloc((size_t)rows * (size_t)cols, sizeof *sf->grid);
     if(!sf->grid){ free(sf); return NULL; }
 
-    /* The tile composes on the pane's band node, so everything that reads
-     * sf->wb - the commit path, the row rules - keeps working. */
-    sf->wb = wp->wb;
-    sf->pane = wp;
+    /* A tile is a band node of the pane, so everything that reads sf->wb -
+     * the commit path, the chrome, the row rules - keeps working, and the
+     * grid composes beside a tile that is text. */
+    t = fytim_workband_create_in(wp);
+    if(!t){ free(sf->grid); free(sf); return NULL; }
+
+    sf->wb = t;
     sf->owner = wp->owner;
     sf->rows = rows;
     sf->cols = cols;
-    sf->max_rows = rows;
     sf->cur_row = sf->cur_col = -1;
     sf->bar_x = sf->zoom_x = sf->close_x = sf->ctl_y = -1;
-
-    tail = &wp->tiles;
-    while(*tail) tail = &(*tail)->next;
-    *tail = sf;
+    /* The grid is the content: a surface is not capped below its own size
+     * unless the host asks for it. */
+    t->max_rows = rows;
+    t->surface = sf;
     return sf;
 }
 
@@ -1448,7 +1457,6 @@ enum fytim_result fytim_surface_set_top(struct fytim_surface *sf,
                                         const char *text)
 {
     if(!sf) return FYTIM_ERR_INVALID;
-    if(sf->pane) return set_dup_sgr(&sf->top, text);
     return fytim_workband_set_top(sf->wb, text);
 }
 
@@ -1456,7 +1464,6 @@ enum fytim_result fytim_surface_set_bottom(struct fytim_surface *sf,
                                            const char *text)
 {
     if(!sf) return FYTIM_ERR_INVALID;
-    if(sf->pane) return set_dup_sgr(&sf->bottom, text);
     return fytim_workband_set_bottom(sf->wb, text);
 }
 
@@ -1724,7 +1731,12 @@ static void complete_tab(struct fytim *ft)
 /* Draw one SGR-styled string into the frame as cells, clipped to the row. */
 struct draw_run_ctx {
     TimuiCellBuffer *buf;
-    int x, y, max_x;
+    /* @x is where the next glyph goes and @origin_x is where a row starts.
+     * They differ for anything drawn away from the left edge - a tile of a
+     * work pane - and a newline has to return to the region's edge and not
+     * to the terminal's, or every row after the first lands on whatever
+     * stands to the left. */
+    int x, y, max_x, origin_x;
     /* Colors and attributes an SGR run leaves unset inherit the base style,
      * so inline chrome (for example a colored status margin) does not cancel
      * the row's dim/bold/reverse presentation. */
@@ -1813,20 +1825,44 @@ static bool draw_run_(void *user, const char *text, size_t len,
     for(i = 0; i <= len; i++){
         if(i == len || text[i] == '\n'){
             if(ctx->x < ctx->max_x && i > start){
+                /*
+                 * Draw only what fits in the region, measured cluster by
+                 * cluster. A row wider than the region is cut at its edge:
+                 * the columns past it belong to whatever stands there.
+                 */
+                size_t off = 0, fit = 0;
+                bool cut = false;
+                int w = 0;
                 s.ptr = text + start;
                 s.len = i - start;
-                timui_draw_text(ctx->buf, ctx->x, ctx->y, s, st);
-                {   /* advance by the run's display width, cluster-aware */
-                    size_t off = 0;
-                    while(off < s.len){
-                        size_t nx = timui_grapheme_next(s.ptr, s.len, off);
-                        if(nx <= off) break;
-                        ctx->x += timui_grapheme_width(s.ptr + off, nx - off);
-                        off = nx;
-                    }
+                while(off < s.len){
+                    size_t nx = timui_grapheme_next(s.ptr, s.len, off);
+                    int gw;
+                    if(nx <= off) break;
+                    gw = timui_grapheme_width(s.ptr + off, nx - off);
+                    if(ctx->x + w + gw > ctx->max_x){ cut = true; break; }
+                    w += gw;
+                    off = nx;
+                    fit = nx;
+                }
+                if(fit){
+                    s.len = fit;
+                    timui_draw_text(ctx->buf, ctx->x, ctx->y, s, st);
+                    ctx->x += w;
+                }
+                /*
+                 * Say that the row goes on. A row that simply stops at the
+                 * edge of a tile reads as damage; one that ends in an
+                 * ellipsis reads as a row too long for the space.
+                 */
+                if(cut && ctx->max_x > ctx->origin_x){
+                    TimuiStr e = { "\xe2\x80\xa6", 3 };
+                    timui_draw_text(ctx->buf, ctx->max_x - 1, ctx->y, e, st);
+                    ctx->x = ctx->max_x;
                 }
             }
-            if(i < len){ ctx->x = 0; ctx->y++; }   /* '\n' starts a new row */
+            /* A newline starts a new row at the region's left edge. */
+            if(i < len){ ctx->x = ctx->origin_x; ctx->y++; }
             start = i + 1;
         }
     }
@@ -1870,6 +1906,7 @@ static void draw_row_styled(TimuiFrame *f, TimuiCellBuffer *buf,
         struct draw_run_ctx ctx;
         struct fytim_sgr_parser sp;
         ctx.buf = buf; ctx.x = x; ctx.y = y; ctx.max_x = x + w;
+        ctx.origin_x = x;
         ctx.base = plain;
         fytim_sgr_init(&sp);
         fytim_sgr_feed(&sp, text, strlen(text), draw_run_, &ctx);
@@ -2046,16 +2083,17 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
                       struct fytim_workpane *wp, TimuiStyle chrome,
                       int x, int y, int w, int rows)
 {
-    struct fytim_surface *arr[FYTIM_PANE_TILES_MAX];
+    struct fytim_workband *arr[FYTIM_PANE_TILES_MAX];
+    struct fytim_workband *t;
+    struct fytim_surface *sf;
     int n = 0, cols, grows, sep_w, i, gr, gc;
     int base_h, extra_h, base_w, extra_w;
-    struct fytim_surface *sf;
 
     if(wp->zoom){
         arr[n++] = wp->zoom;
     }else{
-        for(sf = wp->tiles; sf && n < FYTIM_PANE_TILES_MAX; sf = sf->next)
-            arr[n++] = sf;
+        for(t = wp->tiles; t && n < FYTIM_PANE_TILES_MAX; t = t->next)
+            arr[n++] = t;
     }
     if(n < 1 || rows < 1 || w < 1) return;
 
@@ -2076,7 +2114,7 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
         int tx = x;
         for(gc = 0; gc < cols; gc++, i++){
             int tw = base_w + (gc < extra_w ? 1 : 0);
-            int ty = y, top, bottom, content;
+            int ty = y, top, bottom, content, lines;
 
             if(gc && sep_w){
                 int sy;
@@ -2085,34 +2123,46 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
                 tx += sep_w;
             }
             if(i >= n || tw < 1 || th < 1) continue;
-            sf = arr[i];
-            /* Last frame's placement says nothing about this one. */
-            sf->rect_x = tx; sf->rect_y = y; sf->rect_w = tw; sf->rect_h = th;
-            sf->bar_x = sf->zoom_x = sf->close_x = sf->ctl_y = -1;
-            content = surface_content_rows(sf);
-            top = sf->top ? 1 : 0;
-            bottom = sf->bottom ? 1 : 0;
+            t = arr[i];
+            sf = t->surface;
+            if(sf){
+                /* Last frame's placement says nothing about this one. */
+                sf->rect_x = tx; sf->rect_y = y;
+                sf->rect_w = tw; sf->rect_h = th;
+                sf->bar_x = sf->zoom_x = sf->close_x = sf->ctl_y = -1;
+            }
+            lines = sf ? surface_content_rows(sf) : styled_rows(t->content);
+            content = lines < 1 ? 1 : lines;
+            if(content > t->max_rows) content = t->max_rows;
+            top = t->top ? 1 : 0;
+            bottom = t->bottom ? 1 : 0;
+            /*
+             * A band sheds its chrome first, because its content is the
+             * report. A surface sheds content first: its chrome is the state
+             * row of a running program, and a screen one row shorter costs
+             * less than losing what the program is doing.
+             */
             while(top + content + bottom > th){
-                if(content > 1) content--;
+                if(sf && content > 1) content--;
                 else if(top) top = 0;
                 else if(bottom) bottom = 0;
                 else content--;
             }
             if(top){
-                if(sf->top[0])
-                    draw_row_styled(f, buf, tx, ty, tw, sf->top, chrome);
+                if(t->top[0])
+                    draw_row_styled(f, buf, tx, ty, tw, t->top, chrome);
                 else
                     timui_draw_hline(buf, tx, ty, tw, chrome);
-                if(pane_controls_live(wp))
+                if(sf && pane_controls_live(wp))
                     draw_tile_marks(buf, sf, wp->controls, chrome, tx, ty, tw);
                 ty++;
-            }else if(pane_controls_live(wp)){
+            }else if(sf && pane_controls_live(wp)){
                 /* With no chrome row of its own the tile carries the marks
                  * on its first row: a cell of the program is a smaller cost
                  * than a row taken from every tile. */
                 draw_tile_marks(buf, sf, wp->controls, chrome, tx, ty, tw);
             }
-            {
+            if(sf){
                 /* The bar is chrome down the right edge: the grid gets what
                  * is left, which is what the host is told it has. */
                 int bar = pane_bar_cols(wp);
@@ -2123,12 +2173,32 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
                 if(bar)
                     draw_tile_bar(buf, sf, wp->controls, chrome,
                                   tx + tw - bar, ty, content);
+                sf->granted = content > 0 ? content : 0;
+            }else{
+                t->granted_cols = tw;
             }
-            sf->granted = content > 0 ? content : 0;
+            if(!sf && content > 0 && t->content){
+                /* A tile of styled text shows its LAST rows, as a band of
+                 * its own does: the end of a report is what is being made. */
+                const char *p = t->content;
+                struct draw_run_ctx ctx;
+                struct fytim_sgr_parser sp;
+                int skip = lines - content;
+                while(skip > 0 && (p = strchr(p, '\n')) != NULL){ p++; skip--; }
+                if(p){
+                    ctx.buf = buf; ctx.x = tx; ctx.y = ty;
+                    ctx.max_x = tx + tw;
+                    ctx.origin_x = ctx.x;
+                    ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT,
+                                                TIMUI_COLOR_DEFAULT, 0);
+                    fytim_sgr_init(&sp);
+                    fytim_sgr_feed(&sp, p, strlen(p), draw_run_, &ctx);
+                }
+            }
             ty += content;
             if(bottom){
-                if(sf->bottom[0])
-                    draw_row_styled(f, buf, tx, ty, tw, sf->bottom, chrome);
+                if(t->bottom[0])
+                    draw_row_styled(f, buf, tx, ty, tw, t->bottom, chrome);
                 else
                     timui_draw_hline(buf, tx, ty, tw, chrome);
             }
@@ -2140,9 +2210,12 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
      * host sizing a program to its granted rows would otherwise draw into
      * rows nobody has. */
     for(; i < n; i++){
-        arr[i]->granted = 0;
-        arr[i]->rect_w = arr[i]->rect_h = 0;
-        arr[i]->bar_x = arr[i]->zoom_x = arr[i]->close_x = -1;
+        arr[i]->granted_cols = 0;
+        sf = arr[i]->surface;
+        if(!sf) continue;
+        sf->granted = 0;
+        sf->rect_w = sf->rect_h = 0;
+        sf->bar_x = sf->zoom_x = sf->close_x = -1;
     }
 }
 
@@ -2412,6 +2485,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                 if(tgive > 0 && p){
                     ctx.buf = buf; ctx.x = r->x; ctx.y = y;
                     ctx.max_x = r->x + r->w;
+                    ctx.origin_x = ctx.x;
                     ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT,
                                                 TIMUI_COLOR_DEFAULT, 0);
                     fytim_sgr_init(&sp);
@@ -2493,6 +2567,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                     if(p){
                         ctx.buf = buf; ctx.x = r->x; ctx.y = y;
                         ctx.max_x = r->x + r->w;
+                    ctx.origin_x = ctx.x;
                         ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT,
                                                     TIMUI_COLOR_DEFAULT, 0);
                         fytim_sgr_init(&sp);
@@ -2712,13 +2787,14 @@ static void ev_push_surface(struct fytim *ft, enum fytim_event_type type,
 /* The tile drawn over (@x, @y) at the last frame, or NULL. */
 static struct fytim_surface *tile_at(struct fytim *ft, int x, int y)
 {
-    struct fytim_workband *wb;
+    struct fytim_workband *wb, *t;
     struct fytim_surface *sf;
 
     for(wb = ft->wbands; wb; wb = wb->next){
         if(!wb->pane || !pane_controls_live(wb->pane)) continue;
-        for(sf = wb->pane->tiles; sf; sf = sf->next){
-            if(sf->rect_w < 1 || sf->rect_h < 1) continue;
+        for(t = wb->pane->tiles; t; t = t->next){
+            sf = t->surface;
+            if(!sf || sf->rect_w < 1 || sf->rect_h < 1) continue;
             if(x >= sf->rect_x && x < sf->rect_x + sf->rect_w &&
                y >= sf->rect_y && y < sf->rect_y + sf->rect_h)
                 return sf;
@@ -2743,7 +2819,7 @@ static bool pane_mouse(struct fytim *ft, TimuiFrame *f)
     if(timui_mouse_clicked(f, &x, &y)){
         sf = tile_at(ft, x, y);
         if(sf){
-            unsigned int ctl = sf->pane->controls;
+            unsigned int ctl = sf->wb->in_pane->controls;
             if(y == sf->ctl_y && sf->close_x >= 0 && x == sf->close_x){
                 ev_push_surface(ft, FYTIM_EVENT_SURFACE_CLOSE, sf, 0);
             }else if(y == sf->ctl_y && sf->zoom_x >= 0 && x == sf->zoom_x){

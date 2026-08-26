@@ -851,6 +851,111 @@ static void test_the_bar_follows_the_extent(void)
     h_close(&h);
 }
 
+/* A pane tiles a work band beside a screen: what a tile holds does not
+ * change where it goes. Parallel work is not all of one kind. */
+static void test_a_band_is_a_tile_too(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_workband *b;
+    char buf[16384];
+    size_t n;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 3, 30);
+    b = fytim_workband_create_in(wp);
+    CHECK(a != NULL && b != NULL);
+    CHECK(fytim_workpane_count(wp) == 2);
+    paint(a, 'A', 6);
+    CHECK(fytim_workband_set(b, "BANDROW", 7) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "AAAAAA"));
+    CHECK(contains(buf, n, "BANDROW"));
+    /* The screen took its half, so the band has the other. */
+    CHECK(granted_cols(a) == 40);
+    h_close(&h);
+}
+
+/* Two bands tile, which is the case a parallel run of shells makes. */
+static void test_two_bands_tile(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_workband *a, *b;
+    char buf[16384];
+    size_t n;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_workband_create_in(wp);
+    b = fytim_workband_create_in(wp);
+    CHECK(fytim_workband_set(a, "AAAAAA", 6) == FYTIM_OK);
+    CHECK(fytim_workband_set(b, "BBBBBB", 6) == FYTIM_OK);
+    CHECK(fytim_workband_set_top(a, "TOPA") == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "AAAAAA"));
+    CHECK(contains(buf, n, "BBBBBB"));
+    CHECK(contains(buf, n, "TOPA"));
+    h_close(&h);
+}
+
+/* A band tile commits into the transcript and leaves the pane, as a band of
+ * its own does. */
+static void test_a_band_tile_commits(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_workband *a, *b;
+    char buf[16384];
+    size_t n;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_workband_create_in(wp);
+    b = fytim_workband_create_in(wp);
+    CHECK(fytim_workband_set(a, "DONEBAND", 8) == FYTIM_OK);
+    CHECK(fytim_workband_set(b, "STAYBAND", 8) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    CHECK(fytim_workband_commit(a) == FYTIM_OK);
+    CHECK(fytim_workpane_count(wp) == 1);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "DONEBAND"));
+    /* Destroying the other leaves nothing behind. */
+    fytim_workband_destroy(b);
+    CHECK(fytim_workpane_count(wp) == 0);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_close(&h);
+}
+
+/* A band tile keeps the band's own cap and shows its last rows. */
+static void test_a_band_tile_keeps_its_cap(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_workband *a;
+    char buf[16384];
+    size_t n;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_workband_create_in(wp);
+    CHECK(fytim_workband_set_max_rows(a, 2) == FYTIM_OK);
+    CHECK(fytim_workband_set(a, "one\ntwo\nthree\nfour", 18) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    /* The end of a report is what is being made. */
+    CHECK(contains(buf, n, "three"));
+    CHECK(contains(buf, n, "four"));
+    CHECK(!contains(buf, n, "one"));
+    h_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_share_the_width",   test_two_tiles_share_the_width },
@@ -878,6 +983,10 @@ static const struct case_ent cases[] = {
     { "rejects_bad_geometry",        test_rejects_bad_geometry },
     { "null_safety",                 test_null_safety },
     { "destroy_with_open_tiles",     test_destroy_with_open_tiles },
+    { "a_band_is_a_tile_too",        test_a_band_is_a_tile_too },
+    { "two_bands_tile",              test_two_bands_tile },
+    { "a_band_tile_commits",         test_a_band_tile_commits },
+    { "a_band_tile_keeps_its_cap",   test_a_band_tile_keeps_its_cap },
     { "controls_need_the_grab",      test_controls_need_the_grab },
     { "controls_take_a_column",      test_controls_take_a_column },
     { "a_click_asks_to_close",       test_a_click_asks_to_close },

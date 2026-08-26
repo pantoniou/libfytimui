@@ -31,6 +31,7 @@
 
 struct fytim;
 struct fytim_surface;
+struct fytim_workband;
 struct fytim_workpane;   /* opaque; owned by the fytim it was created on */
 
 /*
@@ -79,6 +80,15 @@ enum fytim_result fytim_workpane_set_min_tile_cols(struct fytim_workpane *wp,
 /* The rule drawn between adjacent columns. NULL or "" draws none. */
 enum fytim_result fytim_workpane_set_tile_sep(struct fytim_workpane *wp,
                                               const char *text) FYTIM_EXPORT;
+
+/*
+ * Append a work band as a tile of @wp, instead of as a band of its own. It is
+ * the band of libfytimui-band.h in every other way, and it composes beside a
+ * tile that is a screen: what a tile holds - a progressive report, or the
+ * grid of a program - does not change where the pane puts it.
+ */
+struct fytim_workband *fytim_workband_create_in(struct fytim_workpane *wp)
+    FYTIM_EXPORT;
 
 /*
  * Open a surface of @rows by @cols as a tile of @wp. It is the surface of

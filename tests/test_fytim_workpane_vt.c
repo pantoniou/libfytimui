@@ -431,6 +431,77 @@ static void test_a_margin_is_drawn_inside_the_tile(void)
     vth_close(&h);
 }
 
+/* Two tiles of TEXT stand side by side, as two screens do: what a tile holds
+ * does not change where the pane puts it. */
+static void test_two_band_tiles_stand_side_by_side(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_workband *a, *b;
+    struct vth h;
+    int arow, brow, af, al, bf, bl;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_workband_create_in(wp);
+    b = fytim_workband_create_in(wp);
+    CHECK(a != NULL && b != NULL);
+    /* Chrome text that shares no character with the content, so that a
+     * search for the content cannot land on a title row. */
+    CHECK(fytim_workband_set_top(a, "one") == FYTIM_OK);
+    CHECK(fytim_workband_set_top(b, "two") == FYTIM_OK);
+    CHECK(fytim_workband_set(a, "AAAA\nAAAA", 9) == FYTIM_OK);
+    CHECK(fytim_workband_set(b, "BBBB\nBBBB", 9) == FYTIM_OK);
+    vth_pump(&h);
+
+    arow = find_char(&h, 'A', NULL);
+    brow = find_char(&h, 'B', NULL);
+    CHECK(arow >= 0 && brow >= 0);
+    if(arow < 0 || brow < 0){ vth_close(&h); return; }
+    CHECK(arow == brow);
+    run_of(&h, arow, 'A', &af, &al);
+    run_of(&h, arow, 'B', &bf, &bl);
+    CHECK(af == 0);
+    CHECK(bf == 40);
+    /* Neither ran into the other's columns. */
+    CHECK(al < 40);
+    vth_close(&h);
+}
+
+/* A tile's rows are the tile's: text wider than the tile does not run into
+ * the neighbour. */
+static void test_a_wide_row_is_clipped_to_its_tile(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_workband *a, *b;
+    struct vth h;
+    int arow, af, al, bf, bl;
+    char wide[COLS + 1];
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    memset(wide, 'A', COLS);
+    wide[COLS] = '\0';
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_workband_create_in(wp);
+    b = fytim_workband_create_in(wp);
+    /* A row as wide as the whole terminal, in a tile half that. */
+    CHECK(fytim_workband_set(a, wide, strlen(wide)) == FYTIM_OK);
+    CHECK(fytim_workband_set(b, "BBBB", 4) == FYTIM_OK);
+    vth_pump(&h);
+
+    arow = find_char(&h, 'A', NULL);
+    CHECK(arow >= 0);
+    if(arow < 0){ vth_close(&h); return; }
+    run_of(&h, arow, 'A', &af, &al);
+    run_of(&h, arow, 'B', &bf, &bl);
+    CHECK(af == 0);
+    /* Clipped at its tile, and the last cell says the row goes on: a row
+     * that simply stopped there would read as damage. */
+    CHECK(al == 38);
+    CHECK(cell_at(&h, arow, 39).chars[0] == 0x2026);
+    CHECK(bf == 40);
+    vth_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_stand_side_by_side", test_two_tiles_stand_side_by_side },
@@ -446,6 +517,10 @@ static const struct case_ent cases[] = {
     { "a_title_stays_over_its_tile",  test_a_title_stays_over_its_tile },
     { "a_margin_is_drawn_inside_the_tile",
       test_a_margin_is_drawn_inside_the_tile },
+    { "two_band_tiles_stand_side_by_side",
+      test_two_band_tiles_stand_side_by_side },
+    { "a_wide_row_is_clipped_to_its_tile",
+      test_a_wide_row_is_clipped_to_its_tile },
 };
 
 int main(int argc, char **argv)

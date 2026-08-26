@@ -201,7 +201,9 @@ foreach(t two_tiles_share_the_width one_tile_takes_the_width
           controls_need_the_grab controls_take_a_column
           a_click_asks_to_close a_click_asks_to_zoom
           the_wheel_belongs_to_the_tile the_wheel_stays_with_the_transcript
-          the_bar_follows_the_extent)
+          the_bar_follows_the_extent
+          a_band_is_a_tile_too two_bands_tile a_band_tile_commits
+          a_band_tile_keeps_its_cap)
     add_test(NAME fytim.workpane.${t} COMMAND test_fytim_workpane ${t})
 endforeach()
 
@@ -302,7 +304,9 @@ if(VTERM_FOUND)
               a_colour_stops_at_the_tile_edge
               the_grid_puts_the_third_below a_zoomed_tile_owns_the_rows
               a_title_stays_over_its_tile
-              a_margin_is_drawn_inside_the_tile)
+              a_margin_is_drawn_inside_the_tile
+              two_band_tiles_stand_side_by_side
+              a_wide_row_is_clipped_to_its_tile)
         add_test(NAME fytim.workpane.vt.${t}
                  COMMAND test_fytim_workpane_vt ${t})
     endforeach()

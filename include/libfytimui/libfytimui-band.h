@@ -121,6 +121,13 @@ enum fytim_result fytim_workband_set_bottom(struct fytim_workband *wb,
 enum fytim_result fytim_workband_set_commit(struct fytim_workband *wb,
                                             const char *buf, size_t len) FYTIM_EXPORT;
 
+/* The columns the band was given at the last frame. A band of its own has
+ * the width of the terminal; a tile of a work pane has a share of it, and a
+ * host that hard-wraps its rows has to render them to this instead. 0 before
+ * the first frame, and for a tile the grid could not place. */
+enum fytim_result fytim_workband_granted_cols(const struct fytim_workband *wb,
+                                              int *cols) FYTIM_EXPORT;
+
 /* Commit the band's content into the transcript (batched like
  * fytim_commit) and retire the band. The handle is invalid after. While
  * the transcript tail is streaming, the commit is DEFERRED so it cannot
