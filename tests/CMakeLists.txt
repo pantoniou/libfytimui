@@ -245,6 +245,8 @@ target_include_directories(test_fytim_resize PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_CURRENT_SOURCE_DIR})
+find_package(Threads REQUIRED)
+target_link_libraries(test_fytim_resize PRIVATE Threads::Threads)
 if(ASAN_C_FLAGS)
     target_compile_options(test_fytim_resize PRIVATE ${ASAN_C_FLAGS})
     target_link_options(test_fytim_resize PRIVATE ${ASAN_C_FLAGS})

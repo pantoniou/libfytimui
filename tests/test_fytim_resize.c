@@ -14,7 +14,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <sys/ioctl.h>
+#include <poll.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -33,7 +35,29 @@ struct pty_h {
     struct fytim *ft;
     int master;
     int slave;
+    pthread_t drainer;
+    int drainer_live;
+    volatile int stop;
 };
+
+/* A pty's output buffer is small -- 1023 bytes on macOS against ~64K on
+ * Linux -- so a single frame can fill it. The library then blocks in write()
+ * waiting for a reader, inside fytim_pump(), and a test that only drains
+ * after the pump returns deadlocks. Drain continuously instead. */
+static void *drain_thread(void *arg)
+{
+    struct pty_h *h = arg;
+    char buf[4096];
+
+    while(!h->stop){
+        struct pollfd pfd;
+        pfd.fd = h->master; pfd.events = POLLIN; pfd.revents = 0;
+        if(poll(&pfd, 1, 20) <= 0) continue;
+        while(read(h->master, buf, sizeof buf) > 0)
+            ;
+    }
+    return NULL;
+}
 
 static void set_size(int fd, int rows, int cols)
 {
@@ -56,22 +80,21 @@ static int h_open(struct pty_h *h, const char *name)
     cfg.output_fd = h->slave;
     h->ft = fytim_create(&cfg);
     if(!h->ft){ close(h->master); close(h->slave); return 0; }
+    h->drainer_live = pthread_create(&h->drainer, NULL, drain_thread, h) == 0;
+    CHECK(h->drainer_live);
     return 1;
 }
 
 static void h_close(struct pty_h *h)
 {
+    if(h->drainer_live){
+        h->stop = 1;
+        pthread_join(h->drainer, NULL);
+        h->drainer_live = 0;
+    }
     fytim_destroy(h->ft);
     close(h->master);
     close(h->slave);
-}
-
-/* Drop whatever the library painted; the master fills up otherwise. */
-static void h_drain(struct pty_h *h)
-{
-    char buf[65536];
-    while(read(h->master, buf, sizeof buf) > 0)
-        ;
 }
 
 /* The size is sampled on a pump, and the host is told what it became. */
@@ -84,7 +107,6 @@ static void test_resize_is_seen(void)
 
     if(!h_open(&h, "resize_is_seen")) return;
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    h_drain(&h);
     CHECK(fytim_size(h.ft, &w, &ht) == FYTIM_OK);
     CHECK(w == 80);
     CHECK(ht == 24);
@@ -93,7 +115,6 @@ static void test_resize_is_seen(void)
 
     set_size(h.master, 30, 100);
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    h_drain(&h);
     CHECK(fytim_size(h.ft, &w, &ht) == FYTIM_OK);
     CHECK(w == 100);
     CHECK(ht == 30);
@@ -120,11 +141,9 @@ static void test_resize_is_seen_while_a_surface_holds_the_keys(void)
     CHECK(s != NULL);
     CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    h_drain(&h);
 
     set_size(h.master, 30, 100);
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    h_drain(&h);
     CHECK(fytim_size(h.ft, &w, &ht) == FYTIM_OK);
     CHECK(w == 100);
     CHECK(ht == 30);
@@ -144,12 +163,10 @@ static void test_granted_rows_follow_the_window(void)
     s = fytim_surface_open(h.ft, 40, 8);
     CHECK(s != NULL);
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    h_drain(&h);
     CHECK(fytim_surface_granted_rows(s, &small) == FYTIM_OK);
 
     set_size(h.master, 40, 100);
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    h_drain(&h);
     CHECK(fytim_surface_granted_rows(s, &large) == FYTIM_OK);
     CHECK(small > 0);
     CHECK(large > small);
