@@ -105,6 +105,11 @@ static int h_event(const struct h_events *evs, enum fytim_event_type type,
                    struct fytim_event *out)
 {
     int i;
+
+    if (out) {
+	    memset(out, 0, sizeof(*out));
+	    out->type = FYTIM_EVENT_NONE;
+    }
     for(i = 0; i < evs->n; i++){
         if(evs->ev[i].type != type) continue;
         if(out) *out = evs->ev[i];
