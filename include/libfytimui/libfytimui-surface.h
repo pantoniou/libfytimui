@@ -122,7 +122,12 @@ enum fytim_result fytim_surface_set_margin(struct fytim_surface *s,
 enum fytim_result fytim_surface_granted_cols(const struct fytim_surface *s,
                                              int *cols) FYTIM_EXPORT;
 
-/* Chrome rows above and below the grid, as a work band has. NULL removes. */
+/*
+ * Chrome above and below the grid, as a work band has. A slot draws one row
+ * for each of its lines, so a head can say what the call is and then what it
+ * was asked to run. A region too short for the whole head sheds its last row
+ * first. NULL removes the slot.
+ */
 enum fytim_result fytim_surface_set_top(struct fytim_surface *s,
                                         const char *text) FYTIM_EXPORT;
 enum fytim_result fytim_surface_set_bottom(struct fytim_surface *s,

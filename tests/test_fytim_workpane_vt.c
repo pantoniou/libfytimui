@@ -403,6 +403,67 @@ static void test_a_title_stays_over_its_tile(void)
     vth_close(&h);
 }
 
+/*
+ * A head of two rows draws both, and the second stays over its own tile: a
+ * shell says what it is and then what it was asked to run, whether or not it
+ * has a screen of its own.
+ */
+static void test_a_head_of_two_rows_draws_both(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    struct vth h;
+    int trow, tcol = -1, crow, ccol = -1, arow, bf, bl;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 40);
+    b = fytim_surface_open_in(wp, 2, 40);
+    CHECK(fytim_surface_set_top(b, "TITLE\nRUNS") == FYTIM_OK);
+    paint(a, 'A', FYTIM_COLOR_DEFAULT);
+    paint(b, 'B', FYTIM_COLOR_DEFAULT);
+    vth_pump(&h);
+
+    trow = find_char(&h, 'T', &tcol);
+    crow = find_char(&h, 'R', &ccol);
+    CHECK(trow >= 0);
+    CHECK(crow == trow + 1);
+    /* Both rows of the head start at the tile's own left edge. */
+    CHECK(tcol == 40);
+    CHECK(ccol == 40);
+    /* The screen starts under the whole head, not under its first row. */
+    run_of(&h, crow, 'B', &bf, &bl);
+    CHECK(bf < 0);
+    arow = find_char(&h, 'A', NULL);
+    CHECK(arow >= 0);
+    /* The untitled neighbour is not pushed down by a head it does not have. */
+    CHECK(arow == trow);
+    vth_close(&h);
+}
+
+/*
+ * A region too short for the whole head sheds its last row first: the row
+ * that names the call is the one worth keeping.
+ */
+static void test_a_short_tile_sheds_the_last_head_row(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 8, 40);
+    CHECK(fytim_surface_set_top(a, "TITLE\nRUNS") == FYTIM_OK);
+    CHECK(fytim_workpane_set_max_rows(wp, 2) == FYTIM_OK);
+    paint(a, 'A', FYTIM_COLOR_DEFAULT);
+    vth_pump(&h);
+
+    CHECK(find_char(&h, 'T', NULL) >= 0);
+    CHECK(find_char(&h, 'R', NULL) < 0);
+    vth_close(&h);
+}
+
 /* A left margin is drawn inside the tile it belongs to. */
 static void test_a_margin_is_drawn_inside_the_tile(void)
 {
@@ -515,6 +576,10 @@ static const struct case_ent cases[] = {
     { "the_grid_puts_the_third_below", test_the_grid_puts_the_third_below },
     { "a_zoomed_tile_owns_the_rows",  test_a_zoomed_tile_owns_the_rows },
     { "a_title_stays_over_its_tile",  test_a_title_stays_over_its_tile },
+    { "a_head_of_two_rows_draws_both",
+      test_a_head_of_two_rows_draws_both },
+    { "a_short_tile_sheds_the_last_head_row",
+      test_a_short_tile_sheds_the_last_head_row },
     { "a_margin_is_drawn_inside_the_tile",
       test_a_margin_is_drawn_inside_the_tile },
     { "two_band_tiles_stand_side_by_side",

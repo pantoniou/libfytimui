@@ -1195,6 +1195,7 @@ nomem:
  * band node, so the band's own row rules answer that. */
 static int wb_rows(const struct fytim_workband *wb);
 static int styled_rows(const char *s);
+static int chrome_rows(const char *s);
 
 int fytim_workpane_count(const struct fytim_workpane *wp)
 {
@@ -1260,7 +1261,8 @@ static int pane_rows(const struct fytim_workpane *wp)
         }
     }
     if(tall < 1) tall = 1;
-    want = rows * tall + (wp->wb->top ? 1 : 0) + (wp->wb->bottom ? 1 : 0);
+    want = rows * tall + chrome_rows(wp->wb->top) +
+           chrome_rows(wp->wb->bottom);
     if(wp->wb->max_rows > 0 && want > wp->wb->max_rows)
         want = wp->wb->max_rows;
     return want;
@@ -1916,6 +1918,50 @@ static void draw_row_styled(TimuiFrame *f, TimuiCellBuffer *buf,
 }
 
 /*
+ * Rows a chrome slot draws. A slot holds a head, and a head can be more than
+ * one row: a shell says what it is and then what it was asked to run. NULL
+ * draws none.
+ */
+static int chrome_rows(const char *s)
+{
+    int n = 1;
+
+    if(!s) return 0;
+    for(; *s; s++) if(*s == '\n') n++;
+    return n;
+}
+
+/*
+ * Draw a chrome slot at @y, one row for each of its lines, at most @max of
+ * them. An empty slot draws a rule. Returns the rows drawn.
+ */
+static int draw_chrome(TimuiFrame *f, TimuiCellBuffer *buf, int x, int y,
+                       int w, const char *s, TimuiStyle st, int max)
+{
+    const char *nl;
+    char *line;
+    size_t len;
+    int n = 0;
+
+    if(!s || max < 1) return 0;
+    if(!s[0]){ timui_draw_hline(buf, x, y, w, st); return 1; }
+    while(*s && n < max){
+        nl = strchr(s, '\n');
+        len = nl ? (size_t)(nl - s) : strlen(s);
+        line = malloc(len + 1);
+        if(!line) break;
+        memcpy(line, s, len);
+        line[len] = '\0';
+        draw_row_styled(f, buf, x, y + n, w, line, st);
+        free(line);
+        n++;
+        if(!nl) break;
+        s = nl + 1;
+    }
+    return n;
+}
+
+/*
  * Draw @rows rows of the grid at @y, the LAST rows of it when the region is
  * short: the bottom of a screen is where a program is working, so that is
  * what a shortened surface keeps.
@@ -2134,28 +2180,25 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
             lines = sf ? surface_content_rows(sf) : styled_rows(t->content);
             content = lines < 1 ? 1 : lines;
             if(content > t->max_rows) content = t->max_rows;
-            top = t->top ? 1 : 0;
-            bottom = t->bottom ? 1 : 0;
+            top = chrome_rows(t->top);
+            bottom = chrome_rows(t->bottom);
             /*
              * A band sheds its chrome first, because its content is the
              * report. A surface sheds content first: its chrome is the state
              * row of a running program, and a screen one row shorter costs
-             * less than losing what the program is doing.
+             * less than losing what the program is doing. A head of several
+             * rows sheds its last row first: the first row names the call.
              */
             while(top + content + bottom > th){
                 if(sf && content > 1) content--;
-                else if(top) top = 0;
+                else if(top) top--;
                 else if(bottom) bottom = 0;
                 else content--;
             }
             if(top){
-                if(t->top[0])
-                    draw_row_styled(f, buf, tx, ty, tw, t->top, chrome);
-                else
-                    timui_draw_hline(buf, tx, ty, tw, chrome);
                 if(sf && pane_controls_live(wp))
                     draw_tile_marks(buf, sf, wp->controls, chrome, tx, ty, tw);
-                ty++;
+                ty += draw_chrome(f, buf, tx, ty, tw, t->top, chrome, top);
             }else if(sf && pane_controls_live(wp)){
                 /* With no chrome row of its own the tile carries the marks
                  * on its first row: a cell of the program is a smaller cost
@@ -2272,7 +2315,7 @@ static int wb_rows(const struct fytim_workband *wb)
                     : styled_rows(wb->content);
     if(n < 1) n = 1;
     if(n > wb->max_rows) n = wb->max_rows;
-    return n + (wb->top ? 1 : 0) + (wb->bottom ? 1 : 0);
+    return n + chrome_rows(wb->top) + chrome_rows(wb->bottom);
 }
 
 /* Rows above the chrome: the transcript's live tail, then the work-bands;
@@ -2499,28 +2542,19 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                 if(wb->pane){
                     /* The pane places its own tiles; the band gives it the
                      * region and its own frame. */
-                    int ptop = wb->top ? 1 : 0, pbot = wb->bottom ? 1 : 0;
+                    int ptop = chrome_rows(wb->top);
+                    int pbot = chrome_rows(wb->bottom);
                     int pcontent = rows - ptop - pbot;
                     if(pcontent < 1){ ptop = pbot = 0; pcontent = rows; }
-                    if(ptop){
-                        if(wb->top[0])
-                            draw_row_styled(f, buf, r->x, y, r->w, wb->top,
-                                            wb_st);
-                        else
-                            timui_draw_hline(buf, r->x, y, r->w, wb_st);
-                        y++;
-                    }
+                    if(ptop)
+                        y += draw_chrome(f, buf, r->x, y, r->w, wb->top,
+                                         wb_st, ptop);
                     draw_pane(f, buf, wb->pane, wb_st, r->x, y, r->w,
                               pcontent);
                     y += pcontent;
-                    if(pbot){
-                        if(wb->bottom[0])
-                            draw_row_styled(f, buf, r->x, y, r->w, wb->bottom,
-                                            wb_st);
-                        else
-                            timui_draw_hline(buf, r->x, y, r->w, wb_st);
-                        y++;
-                    }
+                    if(pbot)
+                        y += draw_chrome(f, buf, r->x, y, r->w, wb->bottom,
+                                         wb_st, pbot);
                     continue;
                 }
                 lines = wb->surface ? surface_content_rows(wb->surface)
@@ -2532,8 +2566,8 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                  * chrome: top rule first, bottom status next, content last. */
                 content = lines < 1 ? 1 : lines;
                 if(content > wb->max_rows) content = wb->max_rows;
-                top = wb->top ? 1 : 0;
-                bottom = wb->bottom ? 1 : 0;
+                top = chrome_rows(wb->top);
+                bottom = chrome_rows(wb->bottom);
                 /*
                  * A band sheds its chrome first, because its content is the
                  * report. A surface sheds content first: its chrome is the
@@ -2542,17 +2576,13 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                  */
                 while(top + content + bottom > rows){
                     if(wb->surface && content > 1) content--;
-                    else if(top) top = 0;
+                    else if(top) top--;
                     else if(bottom) bottom = 0;
                     else content--;
                 }
-                if(top){
-                    if(wb->top[0])
-                        draw_row_styled(f, buf, r->x, y, r->w, wb->top, wb_st);
-                    else
-                        timui_draw_hline(buf, r->x, y, r->w, wb_st);
-                    y++;
-                }
+                if(top)
+                    y += draw_chrome(f, buf, r->x, y, r->w, wb->top, wb_st,
+                                     top);
                 if(wb->surface){
                     if(content > 0)
                         draw_surface(f, buf, wb->surface, wb_st, r->x, y,
