@@ -163,6 +163,18 @@ erase-to-EOL used to fill reverse-card rows. Cursor movement, parameterized
 erase, and screen-mode controls are rejected — positioning belongs exclusively
 to the compositor.
 
+### A screen the host writes again
+
+Committed lines are hard-wrapped by the host before they are given to the
+library, so a window that changes width leaves them made for the old one. The
+library holds no source and cannot rewrap them.
+
+`fytim_clear_screen()` clears the screen and anchors the band at the top of it,
+for a host that is about to commit those rows again from the source it keeps.
+The scrollback of the terminal is left alone. `FYTIM_EVENT_REDRAW` reports the
+Ctrl-L the library already acts on for its own band, so a host can make its
+rows again beside it.
+
 ## Commits
 
 Follows the `~/work/fyai` convention.
