@@ -102,9 +102,11 @@ enum fytim_result fytim_workband_set(struct fytim_workband *wb,
 enum fytim_result fytim_workband_set_max_rows(struct fytim_workband *wb,
                                               int rows) FYTIM_EXPORT;
 
-/* Optional chrome framing the band's content; plain text draws dim, and the
- * text may carry SGR styling (rendered markdown) under the same contract as
- * fytim_workband_set. A slot draws one row for each of its lines, and a
+/* Optional chrome framing the band's content; plain text draws dim, which is
+ * right for a rule or a caption. Text that carries SGR styling of its own
+ * (rendered markdown, under the same contract as fytim_workband_set) was
+ * styled by whoever set it and is drawn on a plain base, so it keeps the
+ * emphasis it was given. A slot draws one row for each of its lines, and a
  * region too short for the whole of it sheds its last row first. An empty
  * string draws a full-width separator rule; NULL removes the slot. These
  * frame the LIVE band only -- they are not committed. */

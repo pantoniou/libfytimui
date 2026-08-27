@@ -489,6 +489,39 @@ static void test_a_head_with_no_content_takes_no_row(void)
     vth_close(&h);
 }
 
+/*
+ * A head that carries its own styling keeps it. Chrome draws dim, which is
+ * right for a rule: chrome that frames the work is not the work. A head
+ * naming the call was styled by whoever set it, and dimming it a second time
+ * takes the emphasis it was given.
+ */
+static void test_a_styled_head_is_not_dimmed(void)
+{
+    struct fytim_workband *a, *b;
+    struct vth h;
+    int brow, prow, pcol = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    a = fytim_workband_create(h.ft);
+    b = fytim_workband_create(h.ft);
+    /* One head styled by its author, one left to the library. */
+    CHECK(fytim_workband_set_top(a, "\x1b[31mBRIGHT\x1b[0m") == FYTIM_OK);
+    CHECK(fytim_workband_set_top(b, "PLAIN") == FYTIM_OK);
+    CHECK(fytim_workband_set(b, "x", 1) == FYTIM_OK);
+    vth_pump(&h);
+
+    brow = find_char(&h, 'B', NULL);
+    CHECK(brow >= 0);
+    if(brow < 0){ vth_close(&h); return; }
+    CHECK(cell_at(&h, brow, 0).attrs.dim == 0);
+    /* Chrome the library styles itself still draws dim. */
+    prow = find_char(&h, 'P', &pcol);
+    CHECK(prow >= 0);
+    if(prow >= 0)
+        CHECK(cell_at(&h, prow, pcol).attrs.dim == 1);
+    vth_close(&h);
+}
+
 /* A left margin is drawn inside the tile it belongs to. */
 static void test_a_margin_is_drawn_inside_the_tile(void)
 {
@@ -607,6 +640,7 @@ static const struct case_ent cases[] = {
       test_a_short_tile_sheds_the_last_head_row },
     { "a_head_with_no_content_takes_no_row",
       test_a_head_with_no_content_takes_no_row },
+    { "a_styled_head_is_not_dimmed", test_a_styled_head_is_not_dimmed },
     { "a_margin_is_drawn_inside_the_tile",
       test_a_margin_is_drawn_inside_the_tile },
     { "two_band_tiles_stand_side_by_side",

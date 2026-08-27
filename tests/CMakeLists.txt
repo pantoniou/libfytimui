@@ -307,6 +307,7 @@ if(VTERM_FOUND)
               a_head_of_two_rows_draws_both
               a_short_tile_sheds_the_last_head_row
               a_head_with_no_content_takes_no_row
+              a_styled_head_is_not_dimmed
               a_margin_is_drawn_inside_the_tile
               two_band_tiles_stand_side_by_side
               a_wide_row_is_clipped_to_its_tile)

@@ -1945,6 +1945,15 @@ static int draw_chrome(TimuiFrame *f, TimuiCellBuffer *buf, int x, int y,
 
     if(!s || max < 1) return 0;
     if(!s[0]){ timui_draw_hline(buf, x, y, w, st); return 1; }
+    /*
+     * @st dims chrome, which is right for a rule or a caption: chrome that
+     * frames the work is not the work. A slot that carries its own styling
+     * was styled by whoever set it - a rendered head naming the call - and
+     * dimming it a second time takes the emphasis it was given. Such a slot
+     * is drawn on a plain base and keeps what it asked for.
+     */
+    if(strchr(s, '\x1b'))
+        st = timui_style_make(TIMUI_COLOR_DEFAULT, TIMUI_COLOR_DEFAULT, 0);
     while(*s && n < max){
         nl = strchr(s, '\n');
         len = nl ? (size_t)(nl - s) : strlen(s);
