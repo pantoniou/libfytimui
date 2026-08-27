@@ -464,6 +464,31 @@ static void test_a_short_tile_sheds_the_last_head_row(void)
     vth_close(&h);
 }
 
+/*
+ * A band with a head and nothing under it yet takes only its head: the row
+ * kept so an idle band still shows is not needed when its chrome already
+ * says what it is, and an empty row there reads as a gap.
+ */
+static void test_a_head_with_no_content_takes_no_row(void)
+{
+    struct fytim_workband *a, *b;
+    struct vth h;
+    int hrow, mrow;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    a = fytim_workband_create(h.ft);
+    b = fytim_workband_create(h.ft);
+    CHECK(fytim_workband_set_top(a, "HEAD") == FYTIM_OK);
+    CHECK(fytim_workband_set(b, "MARK", 4) == FYTIM_OK);
+    vth_pump(&h);
+
+    hrow = find_char(&h, 'H', NULL);
+    mrow = find_char(&h, 'M', NULL);
+    CHECK(hrow >= 0);
+    CHECK(mrow == hrow + 1);
+    vth_close(&h);
+}
+
 /* A left margin is drawn inside the tile it belongs to. */
 static void test_a_margin_is_drawn_inside_the_tile(void)
 {
@@ -580,6 +605,8 @@ static const struct case_ent cases[] = {
       test_a_head_of_two_rows_draws_both },
     { "a_short_tile_sheds_the_last_head_row",
       test_a_short_tile_sheds_the_last_head_row },
+    { "a_head_with_no_content_takes_no_row",
+      test_a_head_with_no_content_takes_no_row },
     { "a_margin_is_drawn_inside_the_tile",
       test_a_margin_is_drawn_inside_the_tile },
     { "two_band_tiles_stand_side_by_side",

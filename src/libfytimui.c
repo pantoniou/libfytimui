@@ -2178,7 +2178,9 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
                 sf->bar_x = sf->zoom_x = sf->close_x = sf->ctl_y = -1;
             }
             lines = sf ? surface_content_rows(sf) : styled_rows(t->content);
-            content = lines < 1 ? 1 : lines;
+            content = lines;
+            if(content < 1)
+                content = (sf || !(t->top || t->bottom)) ? 1 : 0;
             if(content > t->max_rows) content = t->max_rows;
             top = chrome_rows(t->top);
             bottom = chrome_rows(t->bottom);
@@ -2313,7 +2315,9 @@ static int wb_rows(const struct fytim_workband *wb)
 
     n = wb->surface ? surface_content_rows(wb->surface)
                     : styled_rows(wb->content);
-    if(n < 1) n = 1;
+    /* An idle band still shows: one row for it, unless it has chrome that
+     * already says what it is. A screen always keeps a row of its own. */
+    if(n < 1) n = (wb->surface || !(wb->top || wb->bottom)) ? 1 : 0;
     if(n > wb->max_rows) n = wb->max_rows;
     return n + chrome_rows(wb->top) + chrome_rows(wb->bottom);
 }
@@ -2564,7 +2568,10 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                  * and status row are what keep adjacent bands readable.
                  * Only a genuine row shortage (give < wb_rows) then sheds
                  * chrome: top rule first, bottom status next, content last. */
-                content = lines < 1 ? 1 : lines;
+                content = lines;
+                if(content < 1)
+                    content = (wb->surface || !(wb->top || wb->bottom)) ?
+                              1 : 0;
                 if(content > wb->max_rows) content = wb->max_rows;
                 top = chrome_rows(wb->top);
                 bottom = chrome_rows(wb->bottom);
