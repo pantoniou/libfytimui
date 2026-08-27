@@ -1101,6 +1101,25 @@ TIMUI_API TimuiResult timui_resume(Timui *ui){
     return TIMUI_OK;
 }
 
+/* Clear the whole screen and put the band back at the top of it.
+ * The scrollback of the terminal is left alone: only what is on the screen
+ * goes, which is what a host asks for when it is about to write those rows
+ * again. A parked cursor returns to the anchor first, as every other path
+ * that moves by rows does. */
+TIMUI_API void timui_inline_clear_screen(Timui *ui){
+    if(!ui || !ui->have_transport) return;
+    if(ui->inline_parked_row > 0){
+        inline_rel_move_(&ui->transport, ui->inline_parked_row, 'A');
+        ui->inline_parked_row = 0;
+    }
+    if(ui->transport.write)
+        (void)ui->transport.write(&ui->transport, "\x1b[0m\x1b[H\x1b[2J", 11);
+    if(ui->transport.flush) ui->transport.flush(&ui->transport);
+    ui->inline_prev_rows = 0;
+    ui->inline_cursor_shown = 0;
+    timui_full_redraw(ui);   /* the screen is blank: nothing of ours is on it */
+}
+
 TIMUI_API void timui_full_redraw(Timui *ui){
     size_t i, n;
     if(!ui) return;

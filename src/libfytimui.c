@@ -655,6 +655,14 @@ static void commit_norm(struct fytim *ft, const char *buf, size_t len)
     free(norm);
 }
 
+enum fytim_result fytim_clear_screen(struct fytim *ft)
+{
+    if(!ft || !ft->ui) return FYTIM_ERR_INVALID;
+    if(ft->closed) return FYTIM_ERR_CLOSED;
+    timui_inline_clear_screen(ft->ui);
+    return FYTIM_OK;
+}
+
 enum fytim_result fytim_commit(struct fytim *ft, const char *buf, size_t len)
 {
     if(!ft || (!buf && len)) return FYTIM_ERR_INVALID;
@@ -3005,8 +3013,10 @@ enum fytim_result fytim_pump(struct fytim *ft)
             ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
         if(ctrl && cp == 'd' && !ft->input[0])
             ev_push(ft, FYTIM_EVENT_QUIT, NULL, 0, 0, 0);
-        if(ctrl && cp == 'l')
+        if(ctrl && cp == 'l'){
             timui_full_redraw(ft->ui);
+            ev_push(ft, FYTIM_EVENT_REDRAW, NULL, 0, 0, 0);
+        }
         if(ctrl && cp == 'g')
             ev_push(ft, FYTIM_EVENT_EDIT, NULL, 0, 0, 0);
         if(timui_key_pressed(f, TIMUI_KEY_TAB))

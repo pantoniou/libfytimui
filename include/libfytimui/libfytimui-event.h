@@ -30,6 +30,10 @@ enum fytim_event_type {
                                 fytim_resume, then fytim_set_input */
     FYTIM_EVENT_SURFACE_KEYS, /* keys for the surface holding them, already
                                  encoded as the bytes a terminal would send */
+    FYTIM_EVENT_REDRAW,      /* ^L: the user asked for a clean screen. The
+                                library repaints its own band; a host that
+                                keeps the source of what it committed can
+                                make those rows again too */
 
     /* A tile of a work pane was operated with the mouse. The library owns
      * no scrollback and moves nothing itself: it says what was asked for,

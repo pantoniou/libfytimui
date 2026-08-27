@@ -44,6 +44,15 @@ struct fytim;
  * next fytim_pump as one update with the band repaint. */
 enum fytim_result fytim_commit(struct fytim *ft, const char *buf, size_t len) FYTIM_EXPORT;
 
+/*
+ * Clear the screen and put the band back at the top of it. What the terminal
+ * holds in its scrollback stays there. A host calls this when it is about to
+ * commit the rows the screen was showing again, made at a new width: rows
+ * committed earlier keep the width they were made at, and only the host has
+ * the source to make them again.
+ */
+enum fytim_result fytim_clear_screen(struct fytim *ft) FYTIM_EXPORT;
+
 /* The transcript's live tail: the agent's standard output while it is
  * still being produced. It flows straight into the transcript -- frozen
  * lines go through fytim_commit as they stabilize and the tail is replaced

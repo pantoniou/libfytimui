@@ -259,6 +259,9 @@ TIMUI_API void             timui_invalidate(Timui *ui);
  * terminal reset, suspend/resume, or any external write that may have changed
  * screen contents behind timui's diff renderer. */
 TIMUI_API void             timui_full_redraw(Timui *ui);
+/* Inline mode: clear the screen and anchor the band at the top of it. The
+ * scrollback of the terminal is untouched. */
+TIMUI_API void             timui_inline_clear_screen(Timui *ui);
 /* Advanced raw-event polling. timui_begin consumes key/text/mouse/paste into
  * frame aggregators (timui_text_input, key flags, mouse helpers). Events left
  * after begin are for out-of-band cases such as focus changes. */
