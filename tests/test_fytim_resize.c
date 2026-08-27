@@ -18,6 +18,7 @@
 #include <sys/ioctl.h>
 #include <poll.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "test_pty.h"
@@ -97,6 +98,33 @@ static void h_close(struct pty_h *h)
     close(h->slave);
 }
 
+/* Stop the drainer so the test can read what is written next itself. What
+ * the drainer already took is gone, which is what these cases want: the
+ * reading starts at the action under test. */
+static void h_drain_stop(struct pty_h *h)
+{
+    if(!h->drainer_live) return;
+    h->stop = 1;
+    pthread_join(h->drainer, NULL);
+    h->drainer_live = 0;
+}
+
+/* Read what is on the master, up to @cap - 1 bytes, NUL terminated. */
+static size_t h_read(struct pty_h *h, char *buf, size_t cap)
+{
+    struct pollfd pfd;
+    size_t used = 0;
+
+    pfd.fd = h->master; pfd.events = POLLIN; pfd.revents = 0;
+    while(used + 1 < cap && poll(&pfd, 1, 100) > 0){
+        ssize_t n = read(h->master, buf + used, cap - 1 - used);
+        if(n <= 0) break;
+        used += (size_t)n;
+    }
+    buf[used] = 0;
+    return used;
+}
+
 /* The size is sampled on a pump, and the host is told what it became. */
 static void test_resize_is_seen(void)
 {
@@ -174,12 +202,70 @@ static void test_granted_rows_follow_the_window(void)
     h_close(&h);
 }
 
+/*
+ * A host that keeps the source of what it committed can write those rows
+ * again after a width change. It asks for a clear screen first, and the band
+ * is anchored at the top of it.
+ */
+static void test_clear_screen_erases_the_screen(void)
+{
+    struct pty_h h;
+    char buf[4096];
+
+    if(!h_open(&h, "clear_screen")) return;
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain_stop(&h);
+    (void)h_read(&h, buf, sizeof buf);      /* the frame just painted */
+
+    CHECK(fytim_clear_screen(h.ft) == FYTIM_OK);
+    CHECK(h_read(&h, buf, sizeof buf) > 0);
+    CHECK(strstr(buf, "\x1b[H\x1b[2J") != NULL);
+
+    /* The screen is blank, so the next frame claims it with an erase of its
+     * own instead of overwriting rows it no longer has. */
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(h_read(&h, buf, sizeof buf) > 0);
+    CHECK(strstr(buf, "\x1b[J") != NULL);
+    h_close(&h);
+}
+
+/* Ctrl-L repaints the band of the library. A host with rows of its own on the
+ * screen is told, so that it can write them again beside it. */
+static void test_ctrl_l_is_reported(void)
+{
+    struct fytim_event ev;
+    struct pty_h h;
+    int redraw = 0;
+    int i;
+
+    if(!h_open(&h, "ctrl_l_reported")) return;
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    while(fytim_next_event(h.ft, &ev))
+        ;
+    CHECK(write(h.master, "\x0c", 1) == 1);
+    /* The key has to arrive before the pump that reads it. */
+    for(i = 0; i < 20 && !redraw; i++){
+        CHECK(fytim_pump(h.ft) == FYTIM_OK);
+        while(fytim_next_event(h.ft, &ev))
+            if(ev.type == FYTIM_EVENT_REDRAW)
+                redraw = 1;
+        if(!redraw){
+            struct timespec ts = { 0, 20 * 1000 * 1000 };
+            nanosleep(&ts, NULL);
+        }
+    }
+    CHECK(redraw);
+    h_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "resize_is_seen",              test_resize_is_seen },
     { "resize_is_seen_with_keys",
       test_resize_is_seen_while_a_surface_holds_the_keys },
     { "granted_rows_follow_the_window", test_granted_rows_follow_the_window },
+    { "clear_screen_erases_the_screen", test_clear_screen_erases_the_screen },
+    { "ctrl_l_is_reported",            test_ctrl_l_is_reported },
 };
 
 int main(int argc, char **argv)

@@ -253,7 +253,8 @@ if(ASAN_C_FLAGS)
 endif()
 
 foreach(t resize_is_seen resize_is_seen_with_keys
-          granted_rows_follow_the_window)
+          granted_rows_follow_the_window
+          clear_screen_erases_the_screen ctrl_l_is_reported)
     add_test(NAME fytim.resize.${t} COMMAND test_fytim_resize ${t})
 endforeach()
 
