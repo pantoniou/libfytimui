@@ -64,6 +64,12 @@ enum fytim_result fytim_surface_size(const struct fytim_surface *s, int *rows,
 enum fytim_result fytim_surface_granted_rows(const struct fytim_surface *s,
                                              int *rows) FYTIM_EXPORT;
 
+/* Ask layout for @rows independently of the retained grid's current size.
+ * This is useful while a PTY asynchronously catches up with a window resize.
+ * Zero restores the default in which the grid height is the request. */
+enum fytim_result fytim_surface_request_rows(struct fytim_surface *s, int rows)
+    FYTIM_EXPORT;
+
 /* Never grant more than @rows, whatever the terminal has. 0 lifts the cap. */
 enum fytim_result fytim_surface_set_max_rows(struct fytim_surface *s, int rows)
     FYTIM_EXPORT;

@@ -12,6 +12,7 @@
 #include "fytim_sgr.h"
 #include "timui.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,6 +78,7 @@ struct fytim_surface {
     struct fytim_cell     *grid;   /* rows * cols, row-major */
     char *margin;                  /* chrome at the left of every row */
     int rows, cols;
+    int requested_rows;            /* layout request; 0 follows grid rows */
     int granted_cols;              /* columns the grid was given last frame */
     int cur_row, cur_col;
     bool cur_visible;
@@ -960,7 +962,7 @@ static int rt_add(struct response_text *t, const char *data, size_t n)
 /* Rows a surface asks for: its grid, capped by the band's own cap. */
 static int surface_content_rows(const struct fytim_surface *sf)
 {
-    int n = sf->rows;
+    int n = sf->requested_rows > 0 ? sf->requested_rows : sf->rows;
     if(n < 1) n = 1;
     if(n > sf->wb->max_rows) n = sf->wb->max_rows;
     return n;
@@ -1061,7 +1063,15 @@ enum fytim_result fytim_surface_granted_rows(const struct fytim_surface *sf,
 enum fytim_result fytim_surface_set_max_rows(struct fytim_surface *sf, int rows)
 {
     if(!sf || rows < 0) return FYTIM_ERR_INVALID;
-    sf->wb->max_rows = rows > 0 ? rows : sf->rows;
+    sf->wb->max_rows = rows > 0 ? rows : INT_MAX;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_request_rows(struct fytim_surface *sf,
+                                             int rows)
+{
+    if(!sf || rows < 0) return FYTIM_ERR_INVALID;
+    sf->requested_rows = rows;
     return FYTIM_OK;
 }
 
@@ -2174,10 +2184,26 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
         /* The spare rows go to the newest grid row, which is the one the
          * user is most likely watching. */
         int th = base_h + (gr >= grows - extra_h ? 1 : 0);
+        int shared_top = 0, shared_bottom = 0;
+        int first = i, last = i + cols;
         int tx = x;
+
+        if(last > n) last = n;
+        /* Surface chrome is a grid-row reservation.  Otherwise a command
+         * that wraps in only one tile makes only that tile's PTY shorter;
+         * a width remainder can then make the short PTY jump between tiles. */
+        for(; first < last; first++){
+            t = arr[first];
+            if(!t->surface) continue;
+            if(chrome_rows(t->top) > shared_top)
+                shared_top = chrome_rows(t->top);
+            if(chrome_rows(t->bottom) > shared_bottom)
+                shared_bottom = chrome_rows(t->bottom);
+        }
         for(gc = 0; gc < cols; gc++, i++){
             int tw = base_w + (gc < extra_w ? 1 : 0);
             int ty = y, top, bottom, content, lines;
+            int reserve_top = shared_top, reserve_bottom = shared_bottom;
 
             if(gc && sep_w){
                 int sy;
@@ -2201,18 +2227,20 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
             if(content > t->max_rows) content = t->max_rows;
             top = chrome_rows(t->top);
             bottom = chrome_rows(t->bottom);
-            /*
-             * A band sheds its chrome first, because its content is the
-             * report. A surface sheds content first: its chrome is the state
-             * row of a running program, and a screen one row shorter costs
-             * less than losing what the program is doing. A head of several
-             * rows sheds its last row first: the first row names the call.
-             */
-            while(top + content + bottom > th){
+            /* A surface reserves the tallest chrome in its grid row, so all
+             * equal-sized screens receive the same content height. */
+            while((sf ? reserve_top + content + reserve_bottom
+                      : top + content + bottom) > th){
                 if(sf && content > 1) content--;
+                else if(sf && reserve_top > 0) reserve_top--;
+                else if(sf && reserve_bottom > 0) reserve_bottom--;
                 else if(top) top--;
                 else if(bottom) bottom = 0;
                 else content--;
+            }
+            if(sf){
+                if(top > reserve_top) top = reserve_top;
+                if(bottom > reserve_bottom) bottom = reserve_bottom;
             }
             if(top){
                 if(sf && pane_controls_live(wp))
@@ -2915,6 +2943,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
     TimuiFrame *f = NULL;
     struct fytim_layout lay;
     bool submitted = false;
+    bool resized = false;
     TimuiResult tr;
 
     if(!ft || !ft->ui) return FYTIM_ERR_INVALID;
@@ -2935,10 +2964,8 @@ enum fytim_result fytim_pump(struct fytim *ft)
            nw > 0 && nh > 0 && (nw != ft->term_w || nh != ft->term_h)){
             ft->term_w = nw;
             ft->term_h = nh;
+            resized = true;
             ev_push(ft, FYTIM_EVENT_RESIZE, NULL, 0, nw, nh);
-            /* the terminal rewrapped/scrolled under the band: whatever is
-             * on screen is stale regardless of our own geometry */
-            timui_full_redraw(ft->ui);
         }
         /*
          * With no prompt the separators that frame it go too, so the band
@@ -2968,6 +2995,10 @@ enum fytim_result fytim_pump(struct fytim *ft)
             if(timui_ui_resize(ft->ui, ft->term_w, want) == TIMUI_OK){
                 ft->band_rows = want;
                 ft->band_w = ft->term_w;
+                /* Resize replaces both retained frame buffers. Invalidate
+                 * the replacement, not the buffer that was just discarded:
+                 * the terminal may have rewrapped any cell, blanks included. */
+                timui_full_redraw(ft->ui);
             }
         }
     }
@@ -2996,6 +3027,10 @@ enum fytim_result fytim_pump(struct fytim *ft)
             draw_band(ft, f, &lay, &submitted);
         }
         timui_end(f);
+        /* The host applies FYTIM_EVENT_RESIZE after this pump. The frame just
+         * drawn still used its old surfaces, and can itself have wrapped on
+         * the new physical width. Force the host-updated next frame too. */
+        if(resized) timui_full_redraw(ft->ui);
         return FYTIM_OK;
     }
 
@@ -3048,5 +3083,6 @@ enum fytim_result fytim_pump(struct fytim *ft)
     }
 
     timui_end(f);
+    if(resized) timui_full_redraw(ft->ui);
     return FYTIM_OK;
 }
