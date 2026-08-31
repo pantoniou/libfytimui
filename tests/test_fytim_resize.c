@@ -202,6 +202,28 @@ static void test_granted_rows_follow_the_window(void)
     h_close(&h);
 }
 
+/* Resizing replaces the retained frame buffers. The replacement must still
+ * be invalidated: the real terminal may have reflowed nonblank cells into
+ * positions where the new frame contains blanks. */
+static void test_resize_repaints_blank_cells(void)
+{
+    struct pty_h h;
+    char buf[16384];
+
+    if(!h_open(&h, "resize_repaints_blanks")) return;
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain_stop(&h);
+    (void)h_read(&h, buf, sizeof buf);
+
+    set_size(h.master, 24, 52);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_read(&h, buf, sizeof buf); /* frame made before host sees event */
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(h_read(&h, buf, sizeof buf) > 0);
+    CHECK(strstr(buf, "\x1b[J") != NULL);
+    h_close(&h);
+}
+
 /*
  * A host that keeps the source of what it committed can write those rows
  * again after a width change. It asks for a clear screen first, and the band
@@ -264,6 +286,7 @@ static const struct case_ent cases[] = {
     { "resize_is_seen_with_keys",
       test_resize_is_seen_while_a_surface_holds_the_keys },
     { "granted_rows_follow_the_window", test_granted_rows_follow_the_window },
+    { "resize_repaints_blank_cells", test_resize_repaints_blank_cells },
     { "clear_screen_erases_the_screen", test_clear_screen_erases_the_screen },
     { "ctrl_l_is_reported",            test_ctrl_l_is_reported },
 };

@@ -195,7 +195,9 @@ foreach(t two_tiles_share_the_width one_tile_takes_the_width
           a_separator_divides_the_columns the_cap_bounds_the_pane
           closing_tiles_empties_the_pane commit_retires_a_tile
           a_pane_composes_with_a_band a_tile_keeps_its_own_cap
-          a_resized_tile_is_regranted scroll_extent_is_checked
+          a_resized_tile_is_regranted requested_rows_survive_grid_resize
+          wrapped_heads_keep_equal_screens
+          scroll_extent_is_checked
           controls_are_off_by_default rejects_bad_geometry null_safety
           destroy_with_open_tiles
           controls_need_the_grab controls_take_a_column

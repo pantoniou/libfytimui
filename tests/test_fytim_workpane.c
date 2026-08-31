@@ -590,6 +590,53 @@ static void test_a_resized_tile_is_regranted(void)
     h_close(&h);
 }
 
+/* An asynchronous PTY acknowledgement changes the backing grid, not the
+ * current window-height request that the next pane solve must use. */
+static void test_requested_rows_survive_grid_resize(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 3, 30);
+    CHECK(fytim_surface_set_max_rows(a, 0) == FYTIM_OK);
+    CHECK(fytim_surface_request_rows(a, 7) == FYTIM_OK);
+    CHECK(fytim_surface_resize(a, 2, 30) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(granted_rows(a) == 7);
+    CHECK(fytim_surface_request_rows(a, 0) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(granted_rows(a) == 2);
+    h_close(&h);
+}
+
+/* A wrapped command head must not make that tile's PTY shorter than its
+ * neighbour.  Width remainders can change which head wraps during a resize,
+ * so charging those rows to the screen makes the short PTY appear to jump. */
+static void test_wrapped_heads_keep_equal_screens(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_max_rows(wp, 7) == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 6, 30);
+    b = fytim_surface_open_in(wp, 6, 30);
+    CHECK(fytim_surface_set_top(a, "shell A") == FYTIM_OK);
+    CHECK(fytim_surface_set_top(b, "shell B\nlong command\ncontinued") ==
+          FYTIM_OK);
+    paint(a, 'A', 4);
+    paint(b, 'B', 4);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(granted_rows(a) == 4);
+    CHECK(granted_rows(b) == 4);
+    h_close(&h);
+}
+
 /* The scroll extent is the host's to report and is refused when impossible. */
 static void test_scroll_extent_is_checked(void)
 {
@@ -983,6 +1030,10 @@ static const struct case_ent cases[] = {
     { "a_pane_composes_with_a_band", test_a_pane_composes_with_a_band },
     { "a_tile_keeps_its_own_cap",    test_a_tile_keeps_its_own_cap },
     { "a_resized_tile_is_regranted", test_a_resized_tile_is_regranted },
+    { "requested_rows_survive_grid_resize",
+      test_requested_rows_survive_grid_resize },
+    { "wrapped_heads_keep_equal_screens",
+      test_wrapped_heads_keep_equal_screens },
     { "scroll_extent_is_checked",    test_scroll_extent_is_checked },
     { "controls_are_off_by_default", test_controls_are_off_by_default },
     { "rejects_bad_geometry",        test_rejects_bad_geometry },
