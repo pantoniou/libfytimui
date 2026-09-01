@@ -112,6 +112,10 @@ struct Timui {
     int               enter_count;
     char              pending_in[256];
     int               pending_in_len;
+    /* Bytes a host gave back because the key before them changed where they
+     * belong. They are decoded ahead of the terminal by the next frame. */
+    char              push_in[512];
+    int               push_in_len;
     int               pending_enter_at[32];
     uint32_t          pending_enter_mods[32];
     int               pending_enter_count;

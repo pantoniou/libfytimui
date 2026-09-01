@@ -1115,6 +1115,18 @@ typedef struct {
     uint32_t mods;        /* TIMUI_MOD_* */
 } TimuiInputRecord;
 
+/*
+ * Put bytes back in front of the input stream. The next frame decodes them
+ * before it reads the terminal, exactly as if the terminal had sent them
+ * then, so they reach whatever holds the input at that time.
+ *
+ * A host that keeps a key of its own uses it for the input that followed the
+ * key: the key can change where the rest belongs, and the rest was read
+ * before the change. Returns TIMUI_ERR_INVALID_ARGUMENT when the pushback
+ * buffer cannot hold @len more bytes.
+ */
+TIMUI_API TimuiResult timui_input_push(Timui *ui, const void *data, size_t len);
+
 TIMUI_API int timui_input_log_count(const TimuiFrame *f);
 /* Copy record @i; returns 0 when @i is outside the log. */
 TIMUI_API int timui_input_log_at(const TimuiFrame *f, int i,

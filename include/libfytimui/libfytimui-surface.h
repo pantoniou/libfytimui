@@ -106,6 +106,20 @@ enum fytim_result fytim_surface_set_keys(struct fytim_surface *s, bool take)
 bool fytim_surface_has_keys(const struct fytim_surface *s) FYTIM_EXPORT;
 
 /*
+ * Give back the part of a FYTIM_EVENT_SURFACE_KEYS chunk the host did not
+ * consume. One chunk is one frame of input, so the key a host reserves for
+ * itself can arrive with the input that follows it, and that input belongs to
+ * whatever holds the keys after the host acts on the key - another surface,
+ * or the prompt.
+ *
+ * The bytes are decoded again by the next pump, ahead of anything the
+ * terminal has sent since, and are routed then. A host that drops them
+ * instead loses what the user typed.
+ */
+enum fytim_result fytim_keys_return(struct fytim *ft, const char *buf,
+                                    size_t len) FYTIM_EXPORT;
+
+/*
  * The program is done: keep its last screen. The grid is written into the
  * transcript as styled rows, exactly as a work band commits its content, and
  * the surface is retired - the handle is invalid afterwards, as it is after

@@ -1473,6 +1473,21 @@ bool fytim_surface_has_keys(const struct fytim_surface *sf)
     return sf && sf->owner->keys == sf;
 }
 
+/*
+ * The tail of a key chunk the host did not consume. It is put back in front
+ * of the input stream, so the next pump decodes it as the terminal's own
+ * bytes and gives it to whoever holds the keys then.
+ */
+enum fytim_result fytim_keys_return(struct fytim *ft, const char *buf,
+                                    size_t len)
+{
+    if(!ft || (!buf && len)) return FYTIM_ERR_INVALID;
+    if(!len) return FYTIM_OK;
+    if(timui_input_push(ft->ui, buf, len) != TIMUI_OK)
+        return FYTIM_ERR_INVALID;
+    return FYTIM_OK;
+}
+
 enum fytim_result fytim_surface_set_top(struct fytim_surface *sf,
                                         const char *text)
 {

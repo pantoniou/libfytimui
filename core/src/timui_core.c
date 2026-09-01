@@ -662,12 +662,32 @@ static void timui_input_log_add_paste_(Timui *ui, const char *ptr, size_t len){
         off += (size_t)adv;
     }
 }
+TIMUI_API TimuiResult timui_input_push(Timui *ui, const void *data, size_t len){
+    if(!ui || (!data && len)) return TIMUI_ERR_INVALID_ARGUMENT;
+    if(!len) return TIMUI_OK;
+    if(len > sizeof ui->push_in - (size_t)ui->push_in_len)
+        return TIMUI_ERR_INVALID_ARGUMENT;
+    memcpy(ui->push_in + ui->push_in_len, data, len);
+    ui->push_in_len += (int)len;
+    return TIMUI_OK;
+}
+
 TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
     if(out_frame) *out_frame = NULL;
     if(!ui || !out_frame) return TIMUI_ERR_INVALID_ARGUMENT;
     if(ui->should_quit) return TIMUI_ERR_CLOSED;
     /* Suspended: the terminal belongs to a child; the input fd is back in
      * its original (possibly blocking) mode, so reading here could hang. */
+    /* Bytes given back by the host belong to this frame, before anything the
+     * terminal has sent since: the host read them already and returned the
+     * part that was not its own. */
+    if(ui->push_in_len > 0){
+        int pushed = ui->push_in_len;
+        ui->push_in_len = 0;
+        timui_input_set_now(&ui->input, timui_now_ms());
+        timui_input_feed(&ui->input, ui->push_in, (size_t)pushed,
+                         ui_event_cb, ui);
+    }
     if(ui->have_transport && !ui->suspended){
         char buf[256];
         int n;
