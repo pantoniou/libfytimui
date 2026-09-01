@@ -388,10 +388,93 @@ static void test_content_paints_while_holding_keys(void)
     h_close(&h);
 }
 
+/*
+ * One chunk is one frame of input, so the key a host keeps for itself arrives
+ * with what was typed after it. That tail belongs to the prompt once the host
+ * releases the keys, and the host gives it back rather than drop it.
+ */
+static void test_returned_tail_reaches_the_prompt(void)
+{
+    struct fytim_event ev;
+    struct harness h;
+    struct fytim_surface *s;
+    const char *line = NULL;
+    char chunk[64];
+    size_t n = 0;
+    size_t i;
+    if(!h_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 2, 8);
+    CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+
+    /* ^] is this host's key: everything after it was typed at the prompt. */
+    h_keys(&h, "x\x1d" "abc\r", 6);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+    while(fytim_next_event(h.ft, &ev)){
+        if(ev.type != FYTIM_EVENT_SURFACE_KEYS) continue;
+        if(n + ev.text_len <= sizeof chunk){
+            memcpy(chunk + n, ev.text, ev.text_len);
+            n += ev.text_len;
+        }
+    }
+    CHECK(n == 6);
+    for(i = 0; i < n; i++)
+        if(chunk[i] == '\x1d') break;
+    CHECK(i < n);
+    CHECK(fytim_surface_set_keys(s, false) == FYTIM_OK);
+    CHECK(fytim_keys_return(h.ft, chunk + i + 1, n - i - 1) == FYTIM_OK);
+
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+    while(fytim_next_event(h.ft, &ev))
+        if(ev.type == FYTIM_EVENT_LINE) line = ev.text;
+    CHECK(line != NULL);
+    CHECK(line && strcmp(line, "abc") == 0);
+    fytim_surface_close(s);
+    h_close(&h);
+}
+
+/* The tail can belong to another surface: the host moved the keys on. */
+static void test_returned_tail_reaches_a_surface(void)
+{
+    struct harness h;
+    struct fytim_surface *a, *b;
+    char got[64];
+    struct fytim_event ev;
+    size_t n = 0;
+    if(!h_open(&h)){ CHECK(0); return; }
+    a = fytim_surface_open(h.ft, 2, 8);
+    b = fytim_surface_open(h.ft, 2, 8);
+    CHECK(fytim_surface_set_keys(a, true) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+    CHECK(fytim_surface_set_keys(b, true) == FYTIM_OK);
+    CHECK(fytim_keys_return(h.ft, "hi", 2) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+    got[0] = '\0';
+    while(fytim_next_event(h.ft, &ev)){
+        if(ev.type != FYTIM_EVENT_SURFACE_KEYS) continue;
+        CHECK(ev.surface == b);
+        if(n + ev.text_len < sizeof got){
+            memcpy(got + n, ev.text, ev.text_len);
+            n += ev.text_len;
+        }
+    }
+    got[n] = '\0';
+    CHECK(strcmp(got, "hi") == 0);
+    fytim_surface_close(a);
+    fytim_surface_close(b);
+    h_close(&h);
+}
+
 static void test_null_safety(void)
 {
     CHECK(fytim_surface_set_keys(NULL, true) == FYTIM_ERR_INVALID);
     CHECK(!fytim_surface_has_keys(NULL));
+    CHECK(fytim_keys_return(NULL, "a", 1) == FYTIM_ERR_INVALID);
 }
 
 struct case_ent { const char *name; void (*fn)(void); };
@@ -409,6 +492,8 @@ static const struct case_ent cases[] = {
     { "close_returns_the_keys",          test_close_returns_the_keys },
     { "only_one_surface_holds_the_keys", test_only_one_surface_holds_the_keys },
     { "content_paints_while_holding_keys", test_content_paints_while_holding_keys },
+    { "returned_tail_reaches_the_prompt", test_returned_tail_reaches_the_prompt },
+    { "returned_tail_reaches_a_surface", test_returned_tail_reaches_a_surface },
     { "null_safety",                     test_null_safety },
 };
 
