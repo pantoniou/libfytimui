@@ -105,6 +105,10 @@ enum fytim_result fytim_surface_set_keys(struct fytim_surface *s, bool take)
     FYTIM_EXPORT;
 bool fytim_surface_has_keys(const struct fytim_surface *s) FYTIM_EXPORT;
 
+/* Return bytes that follow a host-reserved key to the new surface owner. */
+enum fytim_result fytim_keys_return(struct fytim *ft, const char *buf,
+                                    size_t len) FYTIM_EXPORT;
+
 /*
  * Give back the part of a FYTIM_EVENT_SURFACE_KEYS chunk the host did not
  * consume. One chunk is one frame of input, so the key a host reserves for

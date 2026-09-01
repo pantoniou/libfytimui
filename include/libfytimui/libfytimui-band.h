@@ -18,7 +18,7 @@
  * cycling are owned by the library.
  *
  * The prompt is a full readline-style editor: in-place cursor, mid-string
- * insertion, Left/Right/Home/End, Ctrl-A/E/B/F/D/K/U/W, Alt-b/f/d, Ctrl-T,
+ * insertion, Left/Right/Home/End, Ctrl-A/E/B/F/D/K/U/W, Alt-b/f/d,
  * multiline via Shift+Enter (kitty keyboard protocol; degrades to submit),
  * history over Up/Ctrl-P and Down/Ctrl-N with the live draft preserved, and
  * Tab completion driven by the host callback below. ^L repaints the band.

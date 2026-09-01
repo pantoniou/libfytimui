@@ -3059,6 +3059,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
     {
         int ctrl = timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN, TIMUI_MOD_CTRL);
         uint32_t cp = timui_key_codepoint(f);
+        bool focus_next = ctrl && cp == 't';
         if(ctrl && cp == 'c')
             ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
         if(ctrl && cp == 'd' && !ft->input[0])
@@ -3069,10 +3070,12 @@ enum fytim_result fytim_pump(struct fytim *ft)
         }
         if(ctrl && cp == 'g')
             ev_push(ft, FYTIM_EVENT_EDIT, NULL, 0, 0, 0);
+        if(focus_next)
+            ev_push(ft, FYTIM_EVENT_FOCUS_NEXT, NULL, 0, 0, 0);
         if(timui_key_pressed(f, TIMUI_KEY_TAB))
             complete_tab(ft);
-        else if(timui_text_input(f).len > 0 ||
-                timui_key_pressed(f, TIMUI_KEY_ENTER))
+        else if(!focus_next && (timui_text_input(f).len > 0 ||
+                timui_key_pressed(f, TIMUI_KEY_ENTER)))
             complete_leave(ft);          /* typing accepts and exits */
         if((ctrl && cp == 'p') ||
            (timui_key_pressed(f, TIMUI_KEY_UP) && cursor_on_first_line(ft)))
