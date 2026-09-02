@@ -1168,6 +1168,60 @@ static void test_rejects_a_bad_cell(void)
     h_close(&h);
 }
 
+/*
+ * Two unsized rows of different heights. A track with no size of its own
+ * takes what its tiles need, not an equal share of the pane: a one-row
+ * report beside an eight-row screen is not half the region.
+ */
+static void test_unsized_rows_take_what_they_need(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_grid(wp, 2, 1) == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 8, 40);
+    b = fytim_surface_open_in(wp, 2, 40);
+    paint(a, 'A', 4);
+    paint(b, 'B', 4);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(granted_rows(a) == 8);
+    CHECK(granted_rows(b) == 2);
+    h_close(&h);
+}
+
+/*
+ * The same two rows in a pane too short for both. Every track keeps a share
+ * of what there is, and the taller one keeps the larger share.
+ */
+static void test_unsized_rows_shrink_together(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    int ra, rb;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_grid(wp, 2, 1) == FYTIM_OK);
+    /* Six rows for the ten the tiles want. */
+    CHECK(fytim_workpane_set_max_rows(wp, 6) == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 8, 40);
+    b = fytim_surface_open_in(wp, 2, 40);
+    paint(a, 'A', 4);
+    paint(b, 'B', 4);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    ra = granted_rows(a);
+    rb = granted_rows(b);
+    CHECK(ra >= 1 && rb >= 1);
+    CHECK(ra + rb <= 6);
+    /* The eight-row screen keeps more of the pane than the two-row one. */
+    CHECK(ra > rb);
+    h_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_share_the_width",   test_two_tiles_share_the_width },
@@ -1217,6 +1271,9 @@ static const struct case_ent cases[] = {
     { "a_fixed_row_track_holds",     test_a_fixed_row_track_holds },
     { "the_grid_is_cleared",         test_the_grid_is_cleared },
     { "rejects_a_bad_cell",          test_rejects_a_bad_cell },
+    { "unsized_rows_take_what_they_need",
+      test_unsized_rows_take_what_they_need },
+    { "unsized_rows_shrink_together", test_unsized_rows_shrink_together },
 };
 
 int main(int argc, char **argv)

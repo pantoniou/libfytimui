@@ -1268,36 +1268,86 @@ static void pane_grid(const struct fytim_workpane *wp, int n, int w,
 
 /*
  * Divide @total cells over @n tracks. A track with a size of its own keeps
- * it; the rest share what is left, and the leftmost of them take the spare
- * cell. A sized track is cut back when the region cannot hold every track:
- * a track nobody can see is not a track.
+ * it. The rest take what @natural says their tiles need, sharing any surplus
+ * and giving up any shortfall in proportion, so that a one-row report beside
+ * an eight-row screen is not half the region. A NULL @natural asks for an
+ * equal share instead, which is what a column of tiles wants: a tile states
+ * a height and never a width.
+ *
+ * Every track keeps at least one cell, sized or not: a track nobody can see
+ * is not a track.
  */
-static void tracks_solve(const int *size, int n, int total, int *out)
+static void tracks_solve(const int *size, const int *natural, int n, int total,
+                         int *out)
 {
-    int i, fixed = 0, flex = 0, base, extra;
+    int i, fixed = 0, flex = 0, want = 0, left, base, extra;
 
     for(i = 0; i < n; i++){
         if(size[i] > 0){
             out[i] = size[i];
             fixed += size[i];
         }else{
-            out[i] = 0;
+            out[i] = natural && natural[i] > 0 ? natural[i] : 1;
+            want += out[i];
             flex++;
         }
     }
     /* Sized tracks that overrun the region are cut back in place, newest
      * first, so that what is left still holds one cell per track. */
     for(i = n - 1; i >= 0 && fixed + flex > total; i--)
-        while(out[i] > 1 && fixed + flex > total){ out[i]--; fixed--; }
+        while(out[i] > 1 && fixed + flex > total){
+            if(size[i] > 0){ out[i]--; fixed--; }
+            else break;
+        }
     if(flex < 1) return;
-    base = (total - fixed) / flex;
-    if(base < 1) base = 1;
-    extra = (total - fixed) - base * flex;
-    if(extra < 0) extra = 0;
+    left = total - fixed;
+    if(left < flex) left = flex;
+
+    if(!natural){
+        /* No natural size to honour: an equal share, spare to the left. */
+        base = left / flex;
+        if(base < 1) base = 1;
+        extra = left - base * flex;
+        if(extra < 0) extra = 0;
+        for(i = 0; i < n; i++){
+            if(size[i] > 0) continue;
+            out[i] = base + (extra > 0 ? 1 : 0);
+            if(extra > 0) extra--;
+        }
+        return;
+    }
+    if(want == left) return;
+
+    /* Scale what the tracks want to what there is, keeping a cell each. */
     for(i = 0; i < n; i++){
         if(size[i] > 0) continue;
-        out[i] = base + (extra > 0 ? 1 : 0);
-        if(extra > 0) extra--;
+        out[i] = want > 0 ? (int)(((long)out[i] * left) / want) : 1;
+        if(out[i] < 1) out[i] = 1;
+    }
+    /* Rounding leaves a remainder either way; settle it on the tallest
+     * track, which is the one a cell matters least to. */
+    for(;;){
+        int sum = 0, big = -1;
+
+        for(i = 0; i < n; i++)
+            if(size[i] < 1){
+                sum += out[i];
+                if(big < 0 || out[i] > out[big]) big = i;
+            }
+        if(big < 0 || sum == left) break;
+        if(sum < left){
+            out[big]++;
+        }else{
+            /* Take from the tallest that can still give a cell. */
+            int give = -1;
+
+            for(i = 0; i < n; i++)
+                if(size[i] < 1 && out[i] > 1 &&
+                   (give < 0 || out[i] > out[give]))
+                    give = i;
+            if(give < 0) break;
+            out[give]--;
+        }
     }
 }
 
@@ -2503,8 +2553,13 @@ static void draw_pane_grid(TimuiFrame *f, TimuiCellBuffer *buf,
     sep_w = (wp->sep && wp->sep[0]) ? sgr_disp_width(wp->sep) : 0;
     if(nc > 1 && w - (nc - 1) * sep_w < nc) sep_w = 0;
 
-    tracks_solve(wp->col_size, nc, w - (nc - 1) * sep_w, cw);
-    tracks_solve(wp->row_size, nr, rows, rh);
+    {
+        int nat[FYTIM_GRID_MAX];
+
+        for(i = 0; i < nr; i++) nat[i] = grid_row_rows(wp, i);
+        tracks_solve(wp->col_size, NULL, nc, w - (nc - 1) * sep_w, cw);
+        tracks_solve(wp->row_size, nat, nr, rows, rh);
+    }
     for(i = 0, j = x; i < nc; i++){ cx[i] = j; j += cw[i] + sep_w; }
     for(i = 0, j = y; i < nr; i++){ cy[i] = j; j += rh[i]; }
 
