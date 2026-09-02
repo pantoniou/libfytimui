@@ -77,6 +77,32 @@ enum fytim_result fytim_workpane_set_min_tile_cols(struct fytim_workpane *wp,
                                                    int cols) FYTIM_EXPORT;
 #define FYTIM_TILE_MIN_COLS 40
 
+/*
+ * An explicit grid. A host that wants a particular arrangement - a wide tile
+ * over two narrow ones, a fixed-width column beside the work - declares the
+ * tracks here and places its tiles in them with fytim_surface_set_cell().
+ * The automatic grid above solves a square arrangement of equal cells and
+ * cannot express one; this is how a host says what it wants instead.
+ *
+ * @rows or @cols of 0 restores the automatic grid. Neither may exceed
+ * FYTIM_GRID_MAX. Setting a grid does not move the tiles already in the pane:
+ * a tile with no cell of its own takes the next free one in reading order.
+ */
+#define FYTIM_GRID_MAX 16
+enum fytim_result fytim_workpane_set_grid(struct fytim_workpane *wp, int rows,
+                                          int cols) FYTIM_EXPORT;
+
+/*
+ * The size of one track of the explicit grid, in cells. A track of 0 takes an
+ * equal share of what the sized tracks leave, which is the default. A sized
+ * track keeps its size whatever its tiles ask for, so a host can hold a
+ * status column at twenty columns beside a screen that grows.
+ */
+enum fytim_result fytim_workpane_set_row_size(struct fytim_workpane *wp,
+                                              int row, int cells) FYTIM_EXPORT;
+enum fytim_result fytim_workpane_set_col_size(struct fytim_workpane *wp,
+                                              int col, int cells) FYTIM_EXPORT;
+
 /* The rule drawn between adjacent columns. NULL or "" draws none. */
 enum fytim_result fytim_workpane_set_tile_sep(struct fytim_workpane *wp,
                                               const char *text) FYTIM_EXPORT;
@@ -119,6 +145,21 @@ struct fytim_surface *fytim_workpane_zoomed(const struct fytim_workpane *wp)
 #define FYTIM_WORKPANE_ARROWS     (1u << 1)
 #define FYTIM_WORKPANE_ZOOM       (1u << 2)
 #define FYTIM_WORKPANE_CLOSE      (1u << 3)
+/*
+ * Place a tile in the explicit grid. It occupies @row_span by @col_span cells
+ * from (@row, @col), which must lie inside the grid. A span greater than one
+ * is what makes a tile wider or taller than its neighbours.
+ *
+ * The placement is checked against the grid in force when it is set, so
+ * declare the grid first.
+ */
+enum fytim_result fytim_surface_set_cell(struct fytim_surface *s, int row,
+                                         int col, int row_span,
+                                         int col_span) FYTIM_EXPORT;
+enum fytim_result fytim_workband_set_cell(struct fytim_workband *wb, int row,
+                                          int col, int row_span,
+                                          int col_span) FYTIM_EXPORT;
+
 enum fytim_result fytim_workpane_set_controls(struct fytim_workpane *wp,
                                               unsigned int flags) FYTIM_EXPORT;
 unsigned int fytim_workpane_controls(const struct fytim_workpane *wp)

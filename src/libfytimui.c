@@ -65,6 +65,9 @@ struct fytim_workband {
      * the width of the terminal and does not need telling; a tile has a
      * share of it, and a host that hard-wraps its rows has to know which. */
     int granted_cols;
+    /* Where the tile sits in an explicit grid. A row of -1 means the host
+     * placed nothing and the pane gives it the next free cell. */
+    int cell_row, cell_col, cell_row_span, cell_col_span;
 };
 
 /*
@@ -111,6 +114,10 @@ struct fytim_workpane {
     int columns;                   /* 0 selects the automatic grid */
     int min_tile_cols;
     unsigned int controls;
+    /* The explicit grid, or 0 x 0 for the arrangement the pane solves. */
+    int grid_rows, grid_cols;
+    int row_size[FYTIM_GRID_MAX];  /* cells, or 0 for an equal share */
+    int col_size[FYTIM_GRID_MAX];
 };
 
 struct fytim_completions {
@@ -798,6 +805,8 @@ struct fytim_workband *fytim_workband_create(struct fytim *ft)
     if(!wb) return NULL;
     wb->owner = ft;
     wb->max_rows = ft->wb_default_max;
+    /* Unplaced: an explicit grid gives it the next free cell. */
+    wb->cell_row = -1;
     tail = &ft->wbands;
     while(*tail) tail = &(*tail)->next;
     *tail = wb;
@@ -1258,6 +1267,74 @@ static void pane_grid(const struct fytim_workpane *wp, int n, int w,
 
 
 /*
+ * Divide @total cells over @n tracks. A track with a size of its own keeps
+ * it; the rest share what is left, and the leftmost of them take the spare
+ * cell. A sized track is cut back when the region cannot hold every track:
+ * a track nobody can see is not a track.
+ */
+static void tracks_solve(const int *size, int n, int total, int *out)
+{
+    int i, fixed = 0, flex = 0, base, extra;
+
+    for(i = 0; i < n; i++){
+        if(size[i] > 0){
+            out[i] = size[i];
+            fixed += size[i];
+        }else{
+            out[i] = 0;
+            flex++;
+        }
+    }
+    /* Sized tracks that overrun the region are cut back in place, newest
+     * first, so that what is left still holds one cell per track. */
+    for(i = n - 1; i >= 0 && fixed + flex > total; i--)
+        while(out[i] > 1 && fixed + flex > total){ out[i]--; fixed--; }
+    if(flex < 1) return;
+    base = (total - fixed) / flex;
+    if(base < 1) base = 1;
+    extra = (total - fixed) - base * flex;
+    if(extra < 0) extra = 0;
+    for(i = 0; i < n; i++){
+        if(size[i] > 0) continue;
+        out[i] = base + (extra > 0 ? 1 : 0);
+        if(extra > 0) extra--;
+    }
+}
+
+/* Which grid row @t occupies, and over how many. @idxp counts the tiles the
+ * host did not place, which fill the cells in reading order. */
+static void tile_grid_row(const struct fytim_workpane *wp,
+                          const struct fytim_workband *t, int *idxp,
+                          int *rowp, int *spanp)
+{
+    if(t->cell_row >= 0){
+        *rowp = t->cell_row;
+        *spanp = t->cell_row_span;
+        return;
+    }
+    *rowp = wp->grid_cols > 0 ? *idxp / wp->grid_cols : 0;
+    *spanp = 1;
+    (*idxp)++;
+}
+
+/* The natural height of one explicit grid row: its tallest tile. */
+static int grid_row_rows(const struct fytim_workpane *wp, int row)
+{
+    const struct fytim_workband *t;
+    int idx = 0, tall = 0, r, rs, h;
+
+    for(t = wp->tiles; t; t = t->next){
+        tile_grid_row(wp, t, &idx, &r, &rs);
+        if(row < r || row >= r + rs) continue;
+        h = wb_rows(t);
+        /* A tile spanning rows asks each of them for its share. */
+        if(rs > 1) h = (h + rs - 1) / rs;
+        if(h > tall) tall = h;
+    }
+    return tall > 0 ? tall : 1;
+}
+
+/*
  * Rows the pane asks for. Every tile of a grid row is drawn to the same
  * height, so the tallest tile sets it; the pane's own chrome is added, and
  * its cap - the band node's - bounds the result.
@@ -1269,6 +1346,19 @@ static int pane_rows(const struct fytim_workpane *wp)
 
     n = wp->zoom ? 1 : fytim_workpane_count(wp);
     if(n < 1) return 0;
+    /* An explicit grid asks for the sum of its rows: a sized track for its
+     * size, and any other for what its tallest tile needs. */
+    if(!wp->zoom && wp->grid_rows > 0){
+        int gr, want_rows = 0;
+
+        for(gr = 0; gr < wp->grid_rows; gr++)
+            want_rows += wp->row_size[gr] > 0 ? wp->row_size[gr]
+                                              : grid_row_rows(wp, gr);
+        want_rows += chrome_rows(wp->wb->top) + chrome_rows(wp->wb->bottom);
+        if(wp->wb->max_rows > 0 && want_rows > wp->wb->max_rows)
+            want_rows = wp->wb->max_rows;
+        return want_rows;
+    }
     pane_grid(wp, n, wp->owner->term_w, &cols, &rows);
     if(wp->zoom){
         tall = wb_rows(wp->zoom);
@@ -1335,6 +1425,70 @@ enum fytim_result fytim_workpane_set_max_rows(struct fytim_workpane *wp,
     return FYTIM_OK;
 }
 
+enum fytim_result fytim_workpane_set_grid(struct fytim_workpane *wp, int rows,
+                                          int cols)
+{
+    if(!wp || rows < 0 || cols < 0) return FYTIM_ERR_INVALID;
+    if(rows > FYTIM_GRID_MAX || cols > FYTIM_GRID_MAX)
+        return FYTIM_ERR_INVALID;
+    /* Either dimension absent means no explicit grid at all. */
+    if(rows < 1 || cols < 1) rows = cols = 0;
+    wp->grid_rows = rows;
+    wp->grid_cols = cols;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_workpane_set_row_size(struct fytim_workpane *wp,
+                                              int row, int cells)
+{
+    if(!wp || cells < 0 || row < 0 || row >= FYTIM_GRID_MAX)
+        return FYTIM_ERR_INVALID;
+    wp->row_size[row] = cells;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_workpane_set_col_size(struct fytim_workpane *wp,
+                                              int col, int cells)
+{
+    if(!wp || cells < 0 || col < 0 || col >= FYTIM_GRID_MAX)
+        return FYTIM_ERR_INVALID;
+    wp->col_size[col] = cells;
+    return FYTIM_OK;
+}
+
+/* Place @wb, which must be a tile, in the explicit grid of its pane. */
+static enum fytim_result wb_set_cell(struct fytim_workband *wb, int row,
+                                     int col, int row_span, int col_span)
+{
+    const struct fytim_workpane *wp;
+
+    if(!wb || !wb->in_pane) return FYTIM_ERR_INVALID;
+    wp = wb->in_pane;
+    if(row < 0 || col < 0 || row_span < 1 || col_span < 1)
+        return FYTIM_ERR_INVALID;
+    if(wp->grid_rows < 1 || wp->grid_cols < 1) return FYTIM_ERR_INVALID;
+    if(row + row_span > wp->grid_rows || col + col_span > wp->grid_cols)
+        return FYTIM_ERR_INVALID;
+    wb->cell_row = row;
+    wb->cell_col = col;
+    wb->cell_row_span = row_span;
+    wb->cell_col_span = col_span;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_set_cell(struct fytim_surface *s, int row,
+                                         int col, int row_span, int col_span)
+{
+    if(!s) return FYTIM_ERR_INVALID;
+    return wb_set_cell(s->wb, row, col, row_span, col_span);
+}
+
+enum fytim_result fytim_workband_set_cell(struct fytim_workband *wb, int row,
+                                          int col, int row_span, int col_span)
+{
+    return wb_set_cell(wb, row, col, row_span, col_span);
+}
+
 enum fytim_result fytim_workpane_set_columns(struct fytim_workpane *wp,
                                              int cols)
 {
@@ -1396,6 +1550,8 @@ struct fytim_workband *fytim_workband_create_in(struct fytim_workpane *wp)
     t->owner = wp->owner;
     t->in_pane = wp;
     t->max_rows = wp->owner->wb_default_max;
+    /* Unplaced: an explicit grid gives it the next free cell. */
+    t->cell_row = -1;
     tail = &wp->tiles;
     while(*tail) tail = &(*tail)->next;
     *tail = t;
@@ -2183,67 +2339,23 @@ static void draw_tile_marks(TimuiCellBuffer *buf, struct fytim_surface *sf,
  * grid rows evenly, and the tile sheds its content before its chrome, as a
  * surface standing alone does.
  */
-static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
-                      struct fytim_workpane *wp, TimuiStyle chrome,
-                      int x, int y, int w, int rows)
+/*
+ * Draw one tile into the cell it holds. @shared_top and @shared_bottom are
+ * the chrome its neighbours reserve, so that every screen beside it is given
+ * the same content height.
+ */
+static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
+                      struct fytim_workpane *wp, struct fytim_workband *t,
+                      TimuiStyle chrome, int tx, int y, int tw, int th,
+                      int shared_top, int shared_bottom)
 {
-    struct fytim_workband *arr[FYTIM_PANE_TILES_MAX];
-    struct fytim_workband *t;
     struct fytim_surface *sf;
-    int n = 0, cols, grows, sep_w, i, gr, gc;
-    int base_h, extra_h, base_w, extra_w;
+    int ty = y, top, bottom, content, lines;
+    int reserve_top = shared_top, reserve_bottom = shared_bottom;
 
-    if(wp->zoom){
-        arr[n++] = wp->zoom;
-    }else{
-        for(t = wp->tiles; t && n < FYTIM_PANE_TILES_MAX; t = t->next)
-            arr[n++] = t;
-    }
-    if(n < 1 || rows < 1 || w < 1) return;
-
-    pane_grid(wp, n, w, &cols, &grows);
-    sep_w = (wp->sep && wp->sep[0]) ? sgr_disp_width(wp->sep) : 0;
-    /* A separator that leaves no room for the screens is not drawn. */
-    if(cols > 1 && w - (cols - 1) * sep_w < cols) sep_w = 0;
-
-    base_h = rows / grows;
-    extra_h = rows - base_h * grows;
-    base_w = (w - (cols - 1) * sep_w) / cols;
-    extra_w = (w - (cols - 1) * sep_w) - base_w * cols;
-
-    for(i = 0, gr = 0; gr < grows; gr++){
-        /* The spare rows go to the newest grid row, which is the one the
-         * user is most likely watching. */
-        int th = base_h + (gr >= grows - extra_h ? 1 : 0);
-        int shared_top = 0, shared_bottom = 0;
-        int first = i, last = i + cols;
-        int tx = x;
-
-        if(last > n) last = n;
-        /* Surface chrome is a grid-row reservation.  Otherwise a command
-         * that wraps in only one tile makes only that tile's PTY shorter;
-         * a width remainder can then make the short PTY jump between tiles. */
-        for(; first < last; first++){
-            t = arr[first];
-            if(!t->surface) continue;
-            if(chrome_rows(t->top) > shared_top)
-                shared_top = chrome_rows(t->top);
-            if(chrome_rows(t->bottom) > shared_bottom)
-                shared_bottom = chrome_rows(t->bottom);
-        }
-        for(gc = 0; gc < cols; gc++, i++){
-            int tw = base_w + (gc < extra_w ? 1 : 0);
-            int ty = y, top, bottom, content, lines;
-            int reserve_top = shared_top, reserve_bottom = shared_bottom;
-
-            if(gc && sep_w){
-                int sy;
-                for(sy = y; sy < y + th; sy++)
-                    draw_row_styled(f, buf, tx, sy, sep_w, wp->sep, chrome);
-                tx += sep_w;
-            }
-            if(i >= n || tw < 1 || th < 1) continue;
-            t = arr[i];
+    {
+        {
+            if(tw < 1 || th < 1) return;
             sf = t->surface;
             if(sf){
                 /* Last frame's placement says nothing about this one. */
@@ -2331,21 +2443,210 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
                 else
                     timui_draw_hline(buf, tx, ty, tw, chrome);
             }
+        }
+    }
+}
+
+/* The chrome the tiles of one grid row reserve between them. */
+static void row_chrome(struct fytim_workband **arr, int first, int last,
+                       int *topp, int *bottomp)
+{
+    int i;
+
+    *topp = *bottomp = 0;
+    for(i = first; i < last; i++){
+        if(!arr[i]->surface) continue;
+        if(chrome_rows(arr[i]->top) > *topp)
+            *topp = chrome_rows(arr[i]->top);
+        if(chrome_rows(arr[i]->bottom) > *bottomp)
+            *bottomp = chrome_rows(arr[i]->bottom);
+    }
+}
+
+/* A tile no arrangement could place shows nothing, and must say so: a host
+ * sizing a program to its granted rows would otherwise draw into rows
+ * nobody has. */
+static void tile_unplaced(struct fytim_workband *t)
+{
+    struct fytim_surface *sf = t->surface;
+
+    t->granted_cols = 0;
+    if(!sf) return;
+    sf->granted = 0;
+    sf->rect_w = sf->rect_h = 0;
+    sf->bar_x = sf->zoom_x = sf->close_x = -1;
+}
+
+/*
+ * Place the tiles of an explicit grid and draw each in the cell it holds.
+ * The tracks are solved once, so a tile that spans cells takes their sizes
+ * and the rules between them.
+ */
+static void draw_pane_grid(TimuiFrame *f, TimuiCellBuffer *buf,
+                           struct fytim_workpane *wp, TimuiStyle chrome,
+                           int x, int y, int w, int rows)
+{
+    /* Where each tile of a grid row was placed, resolved before anything is
+     * drawn: the chrome a tile reserves is what its whole row reserves. */
+    struct placed { struct fytim_workband *t; int col, row_span, col_span; };
+    struct placed row_tiles[FYTIM_GRID_MAX][FYTIM_GRID_MAX];
+    int cw[FYTIM_GRID_MAX], rh[FYTIM_GRID_MAX];
+    int cx[FYTIM_GRID_MAX], cy[FYTIM_GRID_MAX];
+    int row_n[FYTIM_GRID_MAX];
+    bool taken[FYTIM_GRID_MAX][FYTIM_GRID_MAX];
+    struct fytim_workband *t;
+    int nr = wp->grid_rows, nc = wp->grid_cols;
+    int sep_w, i, j, next = 0;
+
+    memset(taken, 0, sizeof taken);
+    memset(row_n, 0, sizeof row_n);
+    sep_w = (wp->sep && wp->sep[0]) ? sgr_disp_width(wp->sep) : 0;
+    if(nc > 1 && w - (nc - 1) * sep_w < nc) sep_w = 0;
+
+    tracks_solve(wp->col_size, nc, w - (nc - 1) * sep_w, cw);
+    tracks_solve(wp->row_size, nr, rows, rh);
+    for(i = 0, j = x; i < nc; i++){ cx[i] = j; j += cw[i] + sep_w; }
+    for(i = 0, j = y; i < nr; i++){ cy[i] = j; j += rh[i]; }
+
+    /* Claim the placed cells first: an unplaced tile takes what is left. */
+    for(t = wp->tiles; t; t = t->next){
+        if(t->cell_row < 0) continue;
+        for(i = t->cell_row; i < t->cell_row + t->cell_row_span; i++)
+            for(j = t->cell_col; j < t->cell_col + t->cell_col_span; j++)
+                if(i < nr && j < nc) taken[i][j] = true;
+    }
+
+    /* The rule between adjacent columns runs the height of the pane. */
+    if(sep_w)
+        for(i = 1; i < nc; i++){
+            int sy;
+            for(sy = y; sy < y + rows; sy++)
+                draw_row_styled(f, buf, cx[i] - sep_w, sy, sep_w, wp->sep,
+                                chrome);
+        }
+
+    /* Resolve every placement first: the chrome a tile reserves is what its
+     * whole grid row reserves, so the row has to be known before it draws. */
+    for(t = wp->tiles; t; t = t->next){
+        int r, c, rs, cs;
+
+        if(t->cell_row >= 0){
+            r = t->cell_row; c = t->cell_col;
+            rs = t->cell_row_span; cs = t->cell_col_span;
+        }else{
+            while(next < nr * nc && taken[next / nc][next % nc]) next++;
+            if(next >= nr * nc){ tile_unplaced(t); continue; }
+            r = next / nc; c = next % nc;
+            rs = cs = 1;
+            taken[r][c] = true;
+            next++;
+        }
+        if(r >= nr || c >= nc || row_n[r] >= FYTIM_GRID_MAX){
+            tile_unplaced(t);
+            continue;
+        }
+        if(r + rs > nr) rs = nr - r;
+        if(c + cs > nc) cs = nc - c;
+        row_tiles[r][row_n[r]].t = t;
+        row_tiles[r][row_n[r]].col = c;
+        row_tiles[r][row_n[r]].row_span = rs;
+        row_tiles[r][row_n[r]].col_span = cs;
+        row_n[r]++;
+    }
+
+    for(i = 0; i < nr; i++){
+        int shared_top = 0, shared_bottom = 0;
+
+        for(j = 0; j < row_n[i]; j++){
+            struct fytim_workband *rt = row_tiles[i][j].t;
+
+            if(!rt->surface) continue;
+            if(chrome_rows(rt->top) > shared_top)
+                shared_top = chrome_rows(rt->top);
+            if(chrome_rows(rt->bottom) > shared_bottom)
+                shared_bottom = chrome_rows(rt->bottom);
+        }
+        for(j = 0; j < row_n[i]; j++){
+            int c = row_tiles[i][j].col;
+            int rs = row_tiles[i][j].row_span;
+            int cs = row_tiles[i][j].col_span;
+            int tw = 0, th = 0, k;
+
+            for(k = 0; k < cs; k++) tw += cw[c + k];
+            /* A span swallows the rules it crosses. */
+            tw += (cs - 1) * sep_w;
+            for(k = 0; k < rs; k++) th += rh[i + k];
+            draw_tile(f, buf, wp, row_tiles[i][j].t, chrome, cx[c], cy[i],
+                      tw, th, shared_top, shared_bottom);
+        }
+    }
+}
+
+static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
+                      struct fytim_workpane *wp, TimuiStyle chrome,
+                      int x, int y, int w, int rows)
+{
+    struct fytim_workband *arr[FYTIM_PANE_TILES_MAX];
+    struct fytim_workband *t;
+    int n = 0, cols, grows, sep_w, i, gr, gc;
+    int base_h, extra_h, base_w, extra_w;
+
+    if(wp->zoom){
+        arr[n++] = wp->zoom;
+    }else{
+        for(t = wp->tiles; t && n < FYTIM_PANE_TILES_MAX; t = t->next)
+            arr[n++] = t;
+    }
+    if(n < 1 || rows < 1 || w < 1) return;
+
+    /* A host that declared an arrangement gets it; a zoomed tile is one
+     * screen and needs none. */
+    if(!wp->zoom && wp->grid_rows > 0){
+        draw_pane_grid(f, buf, wp, chrome, x, y, w, rows);
+        return;
+    }
+
+    pane_grid(wp, n, w, &cols, &grows);
+    sep_w = (wp->sep && wp->sep[0]) ? sgr_disp_width(wp->sep) : 0;
+    /* A separator that leaves no room for the screens is not drawn. */
+    if(cols > 1 && w - (cols - 1) * sep_w < cols) sep_w = 0;
+
+    base_h = rows / grows;
+    extra_h = rows - base_h * grows;
+    base_w = (w - (cols - 1) * sep_w) / cols;
+    extra_w = (w - (cols - 1) * sep_w) - base_w * cols;
+
+    for(i = 0, gr = 0; gr < grows; gr++){
+        /* The spare rows go to the newest grid row, which is the one the
+         * user is most likely watching. */
+        int th = base_h + (gr >= grows - extra_h ? 1 : 0);
+        int shared_top = 0, shared_bottom = 0;
+        int last = i + cols;
+        int tx = x;
+
+        if(last > n) last = n;
+        /* Surface chrome is a grid-row reservation.  Otherwise a command
+         * that wraps in only one tile makes only that tile's PTY shorter;
+         * a width remainder can then make the short PTY jump between tiles. */
+        row_chrome(arr, i, last, &shared_top, &shared_bottom);
+        for(gc = 0; gc < cols; gc++, i++){
+            int tw = base_w + (gc < extra_w ? 1 : 0);
+
+            if(gc && sep_w){
+                int sy;
+                for(sy = y; sy < y + th; sy++)
+                    draw_row_styled(f, buf, tx, sy, sep_w, wp->sep, chrome);
+                tx += sep_w;
+            }
+            if(i < n)
+                draw_tile(f, buf, wp, arr[i], chrome, tx, y, tw, th,
+                          shared_top, shared_bottom);
             tx += tw;
         }
         y += th;
     }
-    /* A tile the grid could not place shows nothing, and must say so: a
-     * host sizing a program to its granted rows would otherwise draw into
-     * rows nobody has. */
-    for(; i < n; i++){
-        arr[i]->granted_cols = 0;
-        sf = arr[i]->surface;
-        if(!sf) continue;
-        sf->granted = 0;
-        sf->rect_w = sf->rect_h = 0;
-        sf->bar_x = sf->zoom_x = sf->close_x = -1;
-    }
+    for(; i < n; i++)
+        tile_unplaced(arr[i]);
 }
 
 /* Rows the tail occupies: its '\n'-terminated rows, plus the trailing

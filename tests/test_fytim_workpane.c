@@ -1008,6 +1008,166 @@ static void test_a_band_tile_keeps_its_cap(void)
     h_close(&h);
 }
 
+
+/*
+ * An explicit grid: the host names the tracks and the pane places tiles in
+ * them, instead of solving a square arrangement of its own.
+ */
+static void test_an_explicit_grid_places_tiles(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *sf[4];
+    int i;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_grid(wp, 2, 2) == FYTIM_OK);
+    for(i = 0; i < 4; i++){
+        sf[i] = fytim_surface_open_in(wp, 2, 20);
+        CHECK(sf[i] != NULL);
+        paint(sf[i], (uint32_t)('A' + i), 4);
+    }
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    /* Two columns of an eighty-column terminal, and the tiles filled the
+     * cells in reading order. */
+    for(i = 0; i < 4; i++){
+        CHECK(granted_cols(sf[i]) == 40);
+        CHECK(granted_rows(sf[i]) == 2);
+    }
+    h_close(&h);
+}
+
+/*
+ * A tile that spans the top row with two beneath it: the arrangement a
+ * uniform grid cannot express, because it has no cell wider than the rest.
+ */
+static void test_a_tile_spans_columns(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b, *c;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_grid(wp, 2, 2) == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 2, 20);
+    b = fytim_surface_open_in(wp, 2, 20);
+    c = fytim_surface_open_in(wp, 2, 20);
+    CHECK(a != NULL && b != NULL && c != NULL);
+    paint(a, 'A', 4);
+    paint(b, 'B', 4);
+    paint(c, 'C', 4);
+    /* A takes the whole first row; B and C share the second. */
+    CHECK(fytim_surface_set_cell(a, 0, 0, 1, 2) == FYTIM_OK);
+    CHECK(fytim_surface_set_cell(b, 1, 0, 1, 1) == FYTIM_OK);
+    CHECK(fytim_surface_set_cell(c, 1, 1, 1, 1) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(granted_cols(a) == 80);
+    CHECK(granted_cols(b) == 40);
+    CHECK(granted_cols(c) == 40);
+    h_close(&h);
+}
+
+/* A track given a size in cells keeps it; the rest share what is left. */
+static void test_a_fixed_track_keeps_its_size(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_grid(wp, 1, 2) == FYTIM_OK);
+    CHECK(fytim_workpane_set_col_size(wp, 0, 20) == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 2, 20);
+    b = fytim_surface_open_in(wp, 2, 20);
+    paint(a, 'A', 4);
+    paint(b, 'B', 4);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(granted_cols(a) == 20);
+    CHECK(granted_cols(b) == 60);
+    h_close(&h);
+}
+
+/* A fixed row track holds its height against a taller neighbour. */
+static void test_a_fixed_row_track_holds(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_grid(wp, 2, 1) == FYTIM_OK);
+    CHECK(fytim_workpane_set_row_size(wp, 0, 2) == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 8, 40);
+    b = fytim_surface_open_in(wp, 5, 40);
+    paint(a, 'A', 4);
+    paint(b, 'B', 4);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    /* One column, so both have the width; the first track keeps two rows
+     * although its tile asked for eight. */
+    CHECK(granted_cols(a) == 80);
+    CHECK(granted_rows(a) == 2);
+    CHECK(granted_rows(b) == 5);
+    h_close(&h);
+}
+
+/* Clearing the grid returns the pane to the arrangement it solves itself. */
+static void test_the_grid_is_cleared(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_grid(wp, 2, 1) == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 2, 20);
+    b = fytim_surface_open_in(wp, 2, 20);
+    paint(a, 'A', 4);
+    paint(b, 'B', 4);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    /* One column: the tiles are stacked. */
+    CHECK(granted_cols(a) == 80);
+    CHECK(fytim_workpane_set_grid(wp, 0, 0) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    /* And side by side again once the pane solves its own. */
+    CHECK(granted_cols(a) == 40);
+    CHECK(granted_cols(b) == 40);
+    h_close(&h);
+}
+
+/* A cell outside the grid, or a span that leaves it, is refused. */
+static void test_rejects_a_bad_cell(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_grid(wp, 2, 2) == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 2, 20);
+    CHECK(fytim_surface_set_cell(a, 2, 0, 1, 1) != FYTIM_OK);
+    CHECK(fytim_surface_set_cell(a, 0, 2, 1, 1) != FYTIM_OK);
+    CHECK(fytim_surface_set_cell(a, 0, 1, 1, 2) != FYTIM_OK);
+    CHECK(fytim_surface_set_cell(a, -1, 0, 1, 1) != FYTIM_OK);
+    CHECK(fytim_surface_set_cell(a, 0, 0, 0, 1) != FYTIM_OK);
+    CHECK(fytim_surface_set_cell(NULL, 0, 0, 1, 1) != FYTIM_OK);
+    CHECK(fytim_workpane_set_grid(NULL, 1, 1) != FYTIM_OK);
+    CHECK(fytim_workpane_set_grid(wp, -1, 1) != FYTIM_OK);
+    /* A track may be sized before the grid is declared, so the bound is the
+     * greatest grid there can be and not the one in force. */
+    CHECK(fytim_workpane_set_col_size(wp, 5, 10) == FYTIM_OK);
+    CHECK(fytim_workpane_set_col_size(wp, FYTIM_GRID_MAX, 10) != FYTIM_OK);
+    CHECK(fytim_workpane_set_row_size(wp, -1, 10) != FYTIM_OK);
+    CHECK(fytim_workpane_set_row_size(wp, 0, -1) != FYTIM_OK);
+    CHECK(fytim_workpane_set_grid(wp, FYTIM_GRID_MAX + 1, 1) != FYTIM_OK);
+    h_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_share_the_width",   test_two_tiles_share_the_width },
@@ -1051,6 +1211,12 @@ static const struct case_ent cases[] = {
     { "the_wheel_stays_with_the_transcript",
       test_the_wheel_stays_with_the_transcript },
     { "the_bar_follows_the_extent",  test_the_bar_follows_the_extent },
+    { "an_explicit_grid_places_tiles", test_an_explicit_grid_places_tiles },
+    { "a_tile_spans_columns",        test_a_tile_spans_columns },
+    { "a_fixed_track_keeps_its_size", test_a_fixed_track_keeps_its_size },
+    { "a_fixed_row_track_holds",     test_a_fixed_row_track_holds },
+    { "the_grid_is_cleared",         test_the_grid_is_cleared },
+    { "rejects_a_bad_cell",          test_rejects_a_bad_cell },
 };
 
 int main(int argc, char **argv)

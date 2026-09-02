@@ -207,7 +207,10 @@ foreach(t two_tiles_share_the_width one_tile_takes_the_width
           the_wheel_belongs_to_the_tile the_wheel_stays_with_the_transcript
           the_bar_follows_the_extent
           a_band_is_a_tile_too two_bands_tile a_band_tile_commits
-          a_band_tile_keeps_its_cap)
+          a_band_tile_keeps_its_cap
+          an_explicit_grid_places_tiles a_tile_spans_columns
+          a_fixed_track_keeps_its_size a_fixed_row_track_holds
+          the_grid_is_cleared rejects_a_bad_cell)
     add_test(NAME fytim.workpane.${t} COMMAND test_fytim_workpane ${t})
 endforeach()
 
