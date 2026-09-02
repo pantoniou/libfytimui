@@ -2063,6 +2063,22 @@ static void draw_surface(TimuiFrame *f, TimuiCellBuffer *buf,
     }
 }
 
+/* Draw surface chrome beside the same margin as the program grid. */
+static int draw_surface_chrome(TimuiFrame *f, TimuiCellBuffer *buf,
+                               struct fytim_surface *sf, int x, int y, int w,
+                               const char *text, TimuiStyle chrome, int max)
+{
+    int margin_w, n, row;
+
+    margin_w = sf->margin ? sgr_disp_width(sf->margin) : 0;
+    if(margin_w > w) margin_w = w;
+    n = draw_chrome(f, buf, x + margin_w, y, w - margin_w, text, chrome,
+                    max);
+    for(row = 0; margin_w > 0 && row < n; row++)
+        draw_row_styled(f, buf, x, y + row, margin_w, sf->margin, chrome);
+    return n;
+}
+
 /*
  * The marks a tile carries at the top right, and the bar down its right edge.
  * They are drawn only when the host grabbed the mouse: a control the user
@@ -2260,7 +2276,12 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
             if(top){
                 if(sf && pane_controls_live(wp))
                     draw_tile_marks(buf, sf, wp->controls, chrome, tx, ty, tw);
-                ty += draw_chrome(f, buf, tx, ty, tw, t->top, chrome, top);
+                if(sf)
+                    ty += draw_surface_chrome(f, buf, sf, tx, ty, tw,
+                                              t->top, chrome, top);
+                else
+                    ty += draw_chrome(f, buf, tx, ty, tw, t->top, chrome,
+                                      top);
             }else if(sf && pane_controls_live(wp)){
                 /* With no chrome row of its own the tile carries the marks
                  * on its first row: a cell of the program is a smaller cost
@@ -2302,7 +2323,10 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
             }
             ty += content;
             if(bottom){
-                if(t->bottom[0])
+                if(t->bottom[0] && sf)
+                    (void)draw_surface_chrome(f, buf, sf, tx, ty, tw,
+                                              t->bottom, chrome, 1);
+                else if(t->bottom[0])
                     draw_row_styled(f, buf, tx, ty, tw, t->bottom, chrome);
                 else
                     timui_draw_hline(buf, tx, ty, tw, chrome);

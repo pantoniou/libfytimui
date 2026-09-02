@@ -132,9 +132,10 @@ enum fytim_result fytim_keys_return(struct fytim *ft, const char *buf,
 enum fytim_result fytim_surface_commit(struct fytim_surface *s) FYTIM_EXPORT;
 
 /*
- * A margin drawn at the left of every row of the grid, so that the screen of a
- * program reads as one thing and as something that belongs to whatever opened
- * it. The margin is chrome: it takes columns from the grid, and
+ * A margin drawn at the left of every row of the surface, including its top
+ * and bottom chrome, so that the screen of a program reads as one thing and
+ * as something that belongs to whatever opened it. The margin takes columns
+ * from the grid and chrome, and
  * fytim_surface_granted_cols() reports what is left, which is what the host
  * should size its program to. NULL removes it.
  */
