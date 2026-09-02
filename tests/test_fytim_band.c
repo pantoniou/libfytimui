@@ -856,6 +856,21 @@ static void test_ctrl_tab_focus_next(void)
     h_close(&h);
 }
 
+static void test_ctrl_shift_t_cycles_zoom_rows(void)
+{
+    struct harness h;
+    struct fytim_event ev;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_keys(&h, "\x1b[116;6u");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev));
+    CHECK(ev.type == FYTIM_EVENT_ZOOM_ROWS_NEXT);
+    CHECK(!fytim_next_event(h.ft, &ev));
+    h_close(&h);
+}
+
 /* Every entry point survives NULL/degenerate arguments. */
 static void test_null_safety(void)
 {
@@ -942,6 +957,8 @@ int main(int argc, char **argv)
         { "ctrl_g_edit_and_suspend", test_ctrl_g_edit_and_suspend },
         { "ctrl_t_focus_next", test_ctrl_t_focus_next },
         { "ctrl_tab_focus_next", test_ctrl_tab_focus_next },
+        { "ctrl_shift_t_cycles_zoom_rows",
+          test_ctrl_shift_t_cycles_zoom_rows },
         { "regression_idle_band_keeps_status",
           test_regression_idle_band_keeps_status },
         { "size_accessor", test_size_accessor },

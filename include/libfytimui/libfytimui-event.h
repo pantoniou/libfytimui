@@ -29,6 +29,7 @@ enum fytim_event_type {
                                 the host runs it between fytim_suspend and
                                 fytim_resume, then fytim_set_input */
     FYTIM_EVENT_FOCUS_NEXT,  /* ^T or Kitty Ctrl-Tab: move keyboard focus */
+    FYTIM_EVENT_ZOOM_ROWS_NEXT, /* Kitty Ctrl-Shift-T: cycle pane height */
     FYTIM_EVENT_SURFACE_KEYS, /* keys for the surface holding them, already
                                  encoded as the bytes a terminal would send */
     FYTIM_EVENT_REDRAW,      /* ^L: the user asked for a clean screen. The
