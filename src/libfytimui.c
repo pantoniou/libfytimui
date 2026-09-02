@@ -1283,7 +1283,11 @@ static void tracks_solve(const int *size, const int *natural, int n, int total,
     int i, fixed = 0, flex = 0, want = 0, left, base, extra;
 
     for(i = 0; i < n; i++){
-        if(size[i] > 0){
+        if(size[i] == FYTIM_TRACK_FIT && natural){
+            /* Sized from its content, and taken before the rest share. */
+            out[i] = natural[i] > 0 ? natural[i] : 1;
+            fixed += out[i];
+        }else if(size[i] > 0){
             out[i] = size[i];
             fixed += size[i];
         }else{
@@ -1296,7 +1300,7 @@ static void tracks_solve(const int *size, const int *natural, int n, int total,
      * first, so that what is left still holds one cell per track. */
     for(i = n - 1; i >= 0 && fixed + flex > total; i--)
         while(out[i] > 1 && fixed + flex > total){
-            if(size[i] > 0){ out[i]--; fixed--; }
+            if(size[i] != 0){ out[i]--; fixed--; }
             else break;
         }
     if(flex < 1) return;
@@ -1310,7 +1314,7 @@ static void tracks_solve(const int *size, const int *natural, int n, int total,
         extra = left - base * flex;
         if(extra < 0) extra = 0;
         for(i = 0; i < n; i++){
-            if(size[i] > 0) continue;
+            if(size[i] != 0) continue;
             out[i] = base + (extra > 0 ? 1 : 0);
             if(extra > 0) extra--;
         }
@@ -1320,7 +1324,7 @@ static void tracks_solve(const int *size, const int *natural, int n, int total,
 
     /* Scale what the tracks want to what there is, keeping a cell each. */
     for(i = 0; i < n; i++){
-        if(size[i] > 0) continue;
+        if(size[i] != 0) continue;
         out[i] = want > 0 ? (int)(((long)out[i] * left) / want) : 1;
         if(out[i] < 1) out[i] = 1;
     }
@@ -1330,7 +1334,7 @@ static void tracks_solve(const int *size, const int *natural, int n, int total,
         int sum = 0, big = -1;
 
         for(i = 0; i < n; i++)
-            if(size[i] < 1){
+            if(size[i] == 0){
                 sum += out[i];
                 if(big < 0 || out[i] > out[big]) big = i;
             }
@@ -1342,7 +1346,7 @@ static void tracks_solve(const int *size, const int *natural, int n, int total,
             int give = -1;
 
             for(i = 0; i < n; i++)
-                if(size[i] < 1 && out[i] > 1 &&
+                if(size[i] == 0 && out[i] > 1 &&
                    (give < 0 || out[i] > out[give]))
                     give = i;
             if(give < 0) break;
@@ -1401,9 +1405,12 @@ static int pane_rows(const struct fytim_workpane *wp)
     if(!wp->zoom && wp->grid_rows > 0){
         int gr, want_rows = 0;
 
-        for(gr = 0; gr < wp->grid_rows; gr++)
+        for(gr = 0; gr < wp->grid_rows; gr++){
+            /* A fitted row asks for what its tiles need, as a sharing one
+             * does; only a row given a size of its own overrides them. */
             want_rows += wp->row_size[gr] > 0 ? wp->row_size[gr]
                                               : grid_row_rows(wp, gr);
+        }
         want_rows += chrome_rows(wp->wb->top) + chrome_rows(wp->wb->bottom);
         if(wp->wb->max_rows > 0 && want_rows > wp->wb->max_rows)
             want_rows = wp->wb->max_rows;
@@ -1491,7 +1498,7 @@ enum fytim_result fytim_workpane_set_grid(struct fytim_workpane *wp, int rows,
 enum fytim_result fytim_workpane_set_row_size(struct fytim_workpane *wp,
                                               int row, int cells)
 {
-    if(!wp || cells < 0 || row < 0 || row >= FYTIM_GRID_MAX)
+    if(!wp || cells < FYTIM_TRACK_FIT || row < 0 || row >= FYTIM_GRID_MAX)
         return FYTIM_ERR_INVALID;
     wp->row_size[row] = cells;
     return FYTIM_OK;
@@ -1500,7 +1507,7 @@ enum fytim_result fytim_workpane_set_row_size(struct fytim_workpane *wp,
 enum fytim_result fytim_workpane_set_col_size(struct fytim_workpane *wp,
                                               int col, int cells)
 {
-    if(!wp || cells < 0 || col < 0 || col >= FYTIM_GRID_MAX)
+    if(!wp || cells < FYTIM_TRACK_FIT || col < 0 || col >= FYTIM_GRID_MAX)
         return FYTIM_ERR_INVALID;
     wp->col_size[col] = cells;
     return FYTIM_OK;

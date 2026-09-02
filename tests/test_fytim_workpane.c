@@ -1163,7 +1163,10 @@ static void test_rejects_a_bad_cell(void)
     CHECK(fytim_workpane_set_col_size(wp, 5, 10) == FYTIM_OK);
     CHECK(fytim_workpane_set_col_size(wp, FYTIM_GRID_MAX, 10) != FYTIM_OK);
     CHECK(fytim_workpane_set_row_size(wp, -1, 10) != FYTIM_OK);
-    CHECK(fytim_workpane_set_row_size(wp, 0, -1) != FYTIM_OK);
+    /* -1 is FYTIM_TRACK_FIT and is a size; anything below it is not. */
+    CHECK(fytim_workpane_set_row_size(wp, 0, FYTIM_TRACK_FIT) == FYTIM_OK);
+    CHECK(fytim_workpane_set_row_size(wp, 0, -2) != FYTIM_OK);
+    CHECK(fytim_workpane_set_row_size(wp, 0, 0) == FYTIM_OK);
     CHECK(fytim_workpane_set_grid(wp, FYTIM_GRID_MAX + 1, 1) != FYTIM_OK);
     h_close(&h);
 }
@@ -1222,6 +1225,41 @@ static void test_unsized_rows_shrink_together(void)
     h_close(&h);
 }
 
+/*
+ * A track that fits its content takes what its tiles need before the tracks
+ * that share do: a short report keeps its heading, and the screen above it
+ * gives up the rows instead.
+ */
+static void test_a_fitted_track_keeps_its_content(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_workband *b;
+    int cols = -1;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_grid(wp, 2, 1) == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 20, 80);
+    b = fytim_workband_create_in(wp);
+    CHECK(a != NULL && b != NULL);
+    CHECK(fytim_surface_set_cell(a, 0, 0, 1, 1) == FYTIM_OK);
+    CHECK(fytim_workband_set_cell(b, 1, 0, 1, 1) == FYTIM_OK);
+    CHECK(fytim_workband_set_top(b, "status") == FYTIM_OK);
+    CHECK(fytim_workband_set(b, "one\ntwo\n", 8) == FYTIM_OK);
+    paint(a, 'A', 6);
+    /* Ten rows for a screen that wants twenty and a report that wants three. */
+    CHECK(fytim_workpane_set_max_rows(wp, 10) == FYTIM_OK);
+    CHECK(fytim_workpane_set_row_size(wp, 1, FYTIM_TRACK_FIT) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    /* The report kept its heading and both its rows; the screen gave way. */
+    CHECK(fytim_workband_granted_cols(b, &cols) == FYTIM_OK);
+    CHECK(cols == 80);
+    CHECK(granted_rows(a) == 7);
+    h_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_share_the_width",   test_two_tiles_share_the_width },
@@ -1274,6 +1312,8 @@ static const struct case_ent cases[] = {
     { "unsized_rows_take_what_they_need",
       test_unsized_rows_take_what_they_need },
     { "unsized_rows_shrink_together", test_unsized_rows_shrink_together },
+    { "a_fitted_track_keeps_its_content",
+      test_a_fitted_track_keeps_its_content },
 };
 
 int main(int argc, char **argv)

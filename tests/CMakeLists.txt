@@ -211,7 +211,8 @@ foreach(t two_tiles_share_the_width one_tile_takes_the_width
           an_explicit_grid_places_tiles a_tile_spans_columns
           a_fixed_track_keeps_its_size a_fixed_row_track_holds
           the_grid_is_cleared rejects_a_bad_cell
-          unsized_rows_take_what_they_need unsized_rows_shrink_together)
+          unsized_rows_take_what_they_need unsized_rows_shrink_together
+          a_fitted_track_keeps_its_content)
     add_test(NAME fytim.workpane.${t} COMMAND test_fytim_workpane ${t})
 endforeach()
 

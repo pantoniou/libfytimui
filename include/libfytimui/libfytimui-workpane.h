@@ -97,7 +97,14 @@ enum fytim_result fytim_workpane_set_grid(struct fytim_workpane *wp, int rows,
  * equal share of what the sized tracks leave, which is the default. A sized
  * track keeps its size whatever its tiles ask for, so a host can hold a
  * status column at twenty columns beside a screen that grows.
+ *
+ * FYTIM_TRACK_FIT sizes a row to what its tiles need, and takes those rows
+ * before the sharing tracks divide the rest: a short report keeps its heading
+ * and the screen above it gives up the rows. A column has no size to fit to,
+ * because a tile states a height and never a width, so a fitted column shares
+ * like any other.
  */
+#define FYTIM_TRACK_FIT (-1)
 enum fytim_result fytim_workpane_set_row_size(struct fytim_workpane *wp,
                                               int row, int cells) FYTIM_EXPORT;
 enum fytim_result fytim_workpane_set_col_size(struct fytim_workpane *wp,
