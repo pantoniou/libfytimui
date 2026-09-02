@@ -314,6 +314,7 @@ if(VTERM_FOUND)
               a_head_with_no_content_takes_no_row
               a_styled_head_is_not_dimmed
               a_margin_is_drawn_inside_the_tile
+              regression_margin_spans_surface_chrome
               two_band_tiles_stand_side_by_side
               a_wide_row_is_clipped_to_its_tile)
         add_test(NAME fytim.workpane.vt.${t}

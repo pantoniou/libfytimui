@@ -550,6 +550,45 @@ static void test_a_margin_is_drawn_inside_the_tile(void)
     vth_close(&h);
 }
 
+/* A surface margin spans its title, grid, and status chrome. */
+static void test_regression_margin_spans_surface_chrome(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *sf;
+    struct vth h;
+    int trow, grow, srow, mcol = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    sf = fytim_surface_open_in(wp, 2, 40);
+    CHECK(fytim_surface_set_margin(sf, "\x1b[7m> \x1b[27m") == FYTIM_OK);
+    CHECK(fytim_surface_set_top(sf, "TITLE\nCOMMAND") == FYTIM_OK);
+    CHECK(fytim_surface_set_bottom(sf, "STATUS") == FYTIM_OK);
+    paint(sf, 'A', FYTIM_COLOR_DEFAULT);
+    vth_pump(&h);
+
+    trow = find_char(&h, 'T', NULL);
+    grow = find_char(&h, 'A', NULL);
+    srow = find_char(&h, 'S', NULL);
+    CHECK(find_char(&h, '>', &mcol) >= 0);
+    CHECK(trow >= 0 && grow >= 0 && srow >= 0 && mcol >= 0);
+    if(trow >= 0){
+        CHECK(cell_at(&h, trow, mcol).chars[0] == '>');
+        CHECK(cell_at(&h, trow, mcol).attrs.reverse == 1);
+        CHECK(cell_at(&h, trow + 1, mcol).chars[0] == '>');
+        CHECK(cell_at(&h, trow + 1, mcol).attrs.reverse == 1);
+    }
+    if(grow >= 0){
+        CHECK(cell_at(&h, grow, mcol).chars[0] == '>');
+        CHECK(cell_at(&h, grow, mcol).attrs.reverse == 1);
+    }
+    if(srow >= 0){
+        CHECK(cell_at(&h, srow, mcol).chars[0] == '>');
+        CHECK(cell_at(&h, srow, mcol).attrs.reverse == 1);
+    }
+    vth_close(&h);
+}
+
 /* Two tiles of TEXT stand side by side, as two screens do: what a tile holds
  * does not change where the pane puts it. */
 static void test_two_band_tiles_stand_side_by_side(void)
@@ -643,6 +682,8 @@ static const struct case_ent cases[] = {
     { "a_styled_head_is_not_dimmed", test_a_styled_head_is_not_dimmed },
     { "a_margin_is_drawn_inside_the_tile",
       test_a_margin_is_drawn_inside_the_tile },
+    { "regression_margin_spans_surface_chrome",
+      test_regression_margin_spans_surface_chrome },
     { "two_band_tiles_stand_side_by_side",
       test_two_band_tiles_stand_side_by_side },
     { "a_wide_row_is_clipped_to_its_tile",
