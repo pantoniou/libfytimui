@@ -839,6 +839,23 @@ static void test_ctrl_t_focus_next(void)
     h_close(&h);
 }
 
+/* Kitty keyboard preserves Ctrl on Tab, so it can cycle focus too. */
+static void test_ctrl_tab_focus_next(void)
+{
+    struct harness h;
+    struct fytim_event ev;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_keys(&h, "\x1b[9;5u");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev));
+    CHECK(ev.type == FYTIM_EVENT_FOCUS_NEXT);
+    CHECK(!fytim_next_event(h.ft, &ev));
+    CHECK(!strcmp(fytim_input(h.ft), ""));
+    h_close(&h);
+}
+
 /* Every entry point survives NULL/degenerate arguments. */
 static void test_null_safety(void)
 {
@@ -924,6 +941,7 @@ int main(int argc, char **argv)
         { "workband_shed_oldest", test_workband_shed_oldest },
         { "ctrl_g_edit_and_suspend", test_ctrl_g_edit_and_suspend },
         { "ctrl_t_focus_next", test_ctrl_t_focus_next },
+        { "ctrl_tab_focus_next", test_ctrl_tab_focus_next },
         { "regression_idle_band_keeps_status",
           test_regression_idle_band_keeps_status },
         { "size_accessor", test_size_accessor },

@@ -2833,6 +2833,20 @@ static char key_control_byte(uint32_t cp)
     return 0;
 }
 
+static void surface_keys_emit(struct fytim *ft, struct key_out *k)
+{
+    char *dup;
+
+    if(!k->len) return;
+    dup = malloc(k->len + 1);
+    if(!dup){ k->len = 0; return; }
+    memcpy(dup, k->buf, k->len);
+    dup[k->len] = '\0';
+    ev_push(ft, FYTIM_EVENT_SURFACE_KEYS, dup, k->len, 0, 0);
+    ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP].surface = ft->keys;
+    k->len = 0;
+}
+
 /*
  * Encode the input of one frame for the surface holding the keys, in the order
  * it was typed. Order is the whole point: a host reserves a key for itself and
@@ -2852,6 +2866,12 @@ static void surface_keys_collect(struct fytim *ft, TimuiFrame *f)
     n = timui_input_log_count(f);
     for(i = 0; i < n; i++){
         if(!timui_input_log_at(f, i, &rec)) break;
+        if(!rec.is_text && rec.key == TIMUI_KEY_TAB &&
+           (rec.mods & TIMUI_MOD_CTRL)){
+            surface_keys_emit(ft, &k);
+            ev_push(ft, FYTIM_EVENT_FOCUS_NEXT, NULL, 0, 0, 0);
+            continue;
+        }
         if(rec.is_text){
             key_put(&k, utf8, fytim_utf8_put_(utf8, rec.codepoint));
             continue;
@@ -2880,16 +2900,7 @@ static void surface_keys_collect(struct fytim *ft, TimuiFrame *f)
             key_put(&k, utf8, fytim_utf8_put_(utf8, rec.codepoint));
     }
 
-    if(!k.len) return;
-    {
-        char *dup = malloc(k.len + 1);
-        if(!dup) return;
-        memcpy(dup, k.buf, k.len);
-        dup[k.len] = '\0';
-        ev_push(ft, FYTIM_EVENT_SURFACE_KEYS, dup, k.len, 0, 0);
-        ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP].surface =
-            ft->keys;
-    }
+    surface_keys_emit(ft, &k);
 }
 
 /* ---- the mouse on a tile ------------------------------------------------ */
@@ -3083,7 +3094,8 @@ enum fytim_result fytim_pump(struct fytim *ft)
     {
         int ctrl = timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN, TIMUI_MOD_CTRL);
         uint32_t cp = timui_key_codepoint(f);
-        bool focus_next = ctrl && cp == 't';
+        bool focus_next = (ctrl && cp == 't') ||
+            timui_key_pressed_mods(f, TIMUI_KEY_TAB, TIMUI_MOD_CTRL);
         if(ctrl && cp == 'c')
             ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
         if(ctrl && cp == 'd' && !ft->input[0])
@@ -3096,7 +3108,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
             ev_push(ft, FYTIM_EVENT_EDIT, NULL, 0, 0, 0);
         if(focus_next)
             ev_push(ft, FYTIM_EVENT_FOCUS_NEXT, NULL, 0, 0, 0);
-        if(timui_key_pressed(f, TIMUI_KEY_TAB))
+        if(!focus_next && timui_key_pressed(f, TIMUI_KEY_TAB))
             complete_tab(ft);
         else if(!focus_next && (timui_text_input(f).len > 0 ||
                 timui_key_pressed(f, TIMUI_KEY_ENTER)))

@@ -153,3 +153,11 @@ Covered by `fytim.surface.keys.keys_keep_their_order` and
 `fytim.surface.keys.repeated_keys_all_arrive`, which type into a surface
 through the public interface. Worth upstreaming: any host embedding timui and
 forwarding input - a terminal pane, a remote session - has the same need.
+
+## Returned input is decoded by the next owner
+
+**Files:** `core/include/timui.h`, `core/src/timui_int.h`, `core/src/timui_core.c`
+
+A host-reserved key can change the owner of bytes later in the same terminal
+read. `timui_input_push()` queues that suffix ahead of newly read input for the
+next frame, so the new owner receives it in order.
