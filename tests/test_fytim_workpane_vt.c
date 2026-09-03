@@ -43,6 +43,11 @@ struct vth {
 static int vth_open(struct vth *h)
 {
     struct fytim_cfg cfg;
+
+    /* This harness feeds 24-bit colours to a virtual terminal.  Make the
+     * matching capability deterministic: CI has no COLORTERM, while an
+     * interactive developer shell commonly does. */
+    setenv("COLORTERM", "truecolor", 1);
     memset(h, 0, sizeof *h);
     if(pipe(h->in) != 0) return 0;
     if(pipe(h->out) != 0){ close(h->in[0]); close(h->in[1]); return 0; }
