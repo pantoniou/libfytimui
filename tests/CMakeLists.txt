@@ -330,7 +330,7 @@ if(VTERM_FOUND)
               a_wash_grounds_the_tile a_program_colour_is_mixed
               a_zero_mix_keeps_the_colour a_full_mix_replaces_the_colour
               an_indexed_colour_is_left_alone the_cursor_stays_visible
-              a_reversed_cell_is_washed
+              a_reversed_cell_is_washed a_head_takes_the_ground
               a_wash_is_removed)
         add_test(NAME fytim.workpane.vt.${t}
                  COMMAND test_fytim_workpane_vt ${t})

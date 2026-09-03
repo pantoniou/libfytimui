@@ -998,6 +998,36 @@ static void test_a_wash_is_removed(void)
     vth_close(&h);
 }
 
+/*
+ * A head is chrome of the tile, not output of the program: the renderer that
+ * draws it paints the theme's own ground, and that ground is not information
+ * the tile has to keep. A washed tile owns every row of itself.
+ */
+static void test_a_head_takes_the_ground(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 20);
+    /* a head drawn on a background of its own, as a theme draws one */
+    CHECK(fytim_surface_set_top(a, "\x1b[38;2;255;255;255m\x1b[48;2;0;0;0m"
+                                   "HEAD\x1b[0m") == FYTIM_OK);
+    CHECK(fytim_surface_set_bg(a, WASH, 50) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'H', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        CHECK(shown_is(&h, row, col, WASH));
+        /* what the head says is kept: only its ground is the tile's */
+        CHECK(rgb_equal(&h, cell_at(&h, row, col).fg, 0xffffffu));
+    }
+    vth_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_stand_side_by_side", test_two_tiles_stand_side_by_side },
@@ -1037,6 +1067,7 @@ static const struct case_ent cases[] = {
       test_an_indexed_colour_is_left_alone },
     { "the_cursor_stays_visible", test_the_cursor_stays_visible },
     { "a_reversed_cell_is_washed", test_a_reversed_cell_is_washed },
+    { "a_head_takes_the_ground", test_a_head_takes_the_ground },
     { "a_wash_is_removed", test_a_wash_is_removed },
     { "a_wide_row_is_clipped_to_its_tile",
       test_a_wide_row_is_clipped_to_its_tile },

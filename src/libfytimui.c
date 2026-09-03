@@ -2016,6 +2016,11 @@ struct draw_run_ctx {
      * so inline chrome (for example a colored status margin) does not cancel
      * the row's dim/bold/reverse presentation. */
     TimuiStyle base;
+    /* The ground of a washed tile. A run of chrome is a row of the tile and
+     * not output of a program, so it does not keep a background of its own:
+     * the renderer that drew it painted the theme's ground, which is exactly
+     * what the wash replaces. FYTIM_COLOR_DEFAULT leaves every run alone. */
+    uint32_t wash;
 };
 /* Indexed (16/256-palette) colors pass through AS INDEXED: the core
  * emits the classic 30-37/90-97 codes, so the terminal's own theme
@@ -2131,6 +2136,11 @@ static bool draw_run_(void *user, const char *text, size_t len,
     if(style->attrs & FYTIM_ATTR_UNDERLINE) st.attrs |= TIMUI_ATTR_UNDERLINE;
     if(style->attrs & FYTIM_ATTR_REVERSE)   st.attrs |= TIMUI_ATTR_REVERSE;
     if(style->attrs & FYTIM_ATTR_STRIKE)    st.attrs |= TIMUI_ATTR_STRIKE;
+    /* A reversed run shows its foreground as its background. */
+    if(ctx->wash != FYTIM_COLOR_DEFAULT){
+        if(st.attrs & TIMUI_ATTR_REVERSE) st.fg = sgr_color_(ctx->wash);
+        else                              st.bg = sgr_color_(ctx->wash);
+    }
     for(i = 0; i <= len; i++){
         if(i == len || text[i] == '\n'){
             if(ctx->x < ctx->max_x && i > start){
@@ -2207,9 +2217,10 @@ static int sgr_disp_width(const char *s)
     return w;
 }
 
-static void draw_row_styled(TimuiFrame *f, TimuiCellBuffer *buf,
-                            int x, int y, int w,
-                            const char *text, TimuiStyle plain)
+static void draw_row_styled_bg(TimuiFrame *f, TimuiCellBuffer *buf,
+                               int x, int y, int w,
+                               const char *text, TimuiStyle plain,
+                               uint32_t wash)
 {
     if(strchr(text, '\x1b')){
         struct draw_run_ctx ctx;
@@ -2217,11 +2228,19 @@ static void draw_row_styled(TimuiFrame *f, TimuiCellBuffer *buf,
         ctx.buf = buf; ctx.x = x; ctx.y = y; ctx.max_x = x + w;
         ctx.origin_x = x;
         ctx.base = plain;
+        ctx.wash = wash;
         fytim_sgr_init(&sp);
         fytim_sgr_feed(&sp, text, strlen(text), draw_run_, &ctx);
     }else{
         timui_label(f, x, y, (TimuiStr){ text, strlen(text) }, plain);
     }
+}
+
+static void draw_row_styled(TimuiFrame *f, TimuiCellBuffer *buf,
+                            int x, int y, int w,
+                            const char *text, TimuiStyle plain)
+{
+    draw_row_styled_bg(f, buf, x, y, w, text, plain, FYTIM_COLOR_DEFAULT);
 }
 
 /*
@@ -2242,8 +2261,9 @@ static int chrome_rows(const char *s)
  * Draw a chrome slot at @y, one row for each of its lines, at most @max of
  * them. An empty slot draws a rule. Returns the rows drawn.
  */
-static int draw_chrome(TimuiFrame *f, TimuiCellBuffer *buf, int x, int y,
-                       int w, const char *s, TimuiStyle st, int max)
+static int draw_chrome_bg(TimuiFrame *f, TimuiCellBuffer *buf, int x, int y,
+                          int w, const char *s, TimuiStyle st, int max,
+                          uint32_t wash)
 {
     const char *nl;
     char *line;
@@ -2268,13 +2288,19 @@ static int draw_chrome(TimuiFrame *f, TimuiCellBuffer *buf, int x, int y,
         if(!line) break;
         memcpy(line, s, len);
         line[len] = '\0';
-        draw_row_styled(f, buf, x, y + n, w, line, st);
+        draw_row_styled_bg(f, buf, x, y + n, w, line, st, wash);
         free(line);
         n++;
         if(!nl) break;
         s = nl + 1;
     }
     return n;
+}
+
+static int draw_chrome(TimuiFrame *f, TimuiCellBuffer *buf, int x, int y,
+                       int w, const char *s, TimuiStyle st, int max)
+{
+    return draw_chrome_bg(f, buf, x, y, w, s, st, max, FYTIM_COLOR_DEFAULT);
 }
 
 /*
@@ -2316,8 +2342,8 @@ static void draw_surface(TimuiFrame *f, TimuiCellBuffer *buf,
 
     for(row = first; row < sf->rows; row++, y++){
         if(margin_w)
-            draw_row_styled(f, buf, x, y, margin_w, sf->margin,
-                            wash_style_(sf, chrome));
+            draw_row_styled_bg(f, buf, x, y, margin_w, sf->margin,
+                               wash_style_(sf, chrome), sf->wash);
         for(col = 0; col < sf->cols && col < w - margin_w; col++){
             bool cursor;
 
@@ -2372,10 +2398,11 @@ static int draw_surface_chrome(TimuiFrame *f, TimuiCellBuffer *buf,
     chrome = wash_style_(sf, chrome);
     if(sf->wash != FYTIM_COLOR_DEFAULT && max > 0)
         timui_draw_fill(buf, TIMUI_RECT(x, y, w, max), chrome);
-    n = draw_chrome(f, buf, x + margin_w, y, w - margin_w, text, chrome,
-                    max);
+    n = draw_chrome_bg(f, buf, x + margin_w, y, w - margin_w, text, chrome,
+                       max, sf->wash);
     for(row = 0; margin_w > 0 && row < n; row++)
-        draw_row_styled(f, buf, x, y + row, margin_w, sf->margin, chrome);
+        draw_row_styled_bg(f, buf, x, y + row, margin_w, sf->margin, chrome,
+                           sf->wash);
     return n;
 }
 
@@ -2571,6 +2598,7 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                     ctx.buf = buf; ctx.x = tx; ctx.y = ty;
                     ctx.max_x = tx + tw;
                     ctx.origin_x = ctx.x;
+                    ctx.wash = FYTIM_COLOR_DEFAULT;
                     ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT,
                                                 TIMUI_COLOR_DEFAULT, 0);
                     fytim_sgr_init(&sp);
@@ -3127,6 +3155,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                     ctx.buf = buf; ctx.x = r->x; ctx.y = y;
                     ctx.max_x = r->x + r->w;
                     ctx.origin_x = ctx.x;
+                    ctx.wash = FYTIM_COLOR_DEFAULT;
                     ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT,
                                                 TIMUI_COLOR_DEFAULT, 0);
                     fytim_sgr_init(&sp);
@@ -3186,6 +3215,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                         ctx.buf = buf; ctx.x = r->x; ctx.y = y;
                         ctx.max_x = r->x + r->w;
                     ctx.origin_x = ctx.x;
+                    ctx.wash = FYTIM_COLOR_DEFAULT;
                         ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT,
                                                     TIMUI_COLOR_DEFAULT, 0);
                         fytim_sgr_init(&sp);
