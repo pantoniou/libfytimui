@@ -2112,6 +2112,35 @@ static TimuiStyle ground_on_(const struct ground *g, TimuiStyle st,
     return st;
 }
 
+/*
+ * Put a run of chrome on @g. A row of chrome belongs to what owns it, so
+ * whatever ground the renderer that drew it painted - a colour it declared,
+ * or a reverse that makes its foreground one - is not a ground it keeps.
+ * What it says survives as the colour of its text.
+ */
+static TimuiStyle ground_run_(const struct ground *g, TimuiStyle st)
+{
+    uint32_t fg;
+
+    if(g->bg == FYTIM_COLOR_DEFAULT) return st;
+    /* Dim darkens the ground with the text; the ground is not the row's. */
+    st.attrs &= ~(unsigned)TIMUI_ATTR_DIM;
+    if(st.attrs & TIMUI_ATTR_REVERSE){
+        fg = st.fg;
+        st.fg = st.bg;
+        st.bg = fg;
+        st.attrs &= ~(unsigned)TIMUI_ATTR_REVERSE;
+    }
+    if(g->bg == FYTIM_COLOR_REVERSED){
+        st.bg = st.fg;
+        st.fg = TIMUI_COLOR_DEFAULT;
+        st.attrs |= TIMUI_ATTR_REVERSE;
+        return st;
+    }
+    st.bg = sgr_color_(g->bg);
+    return st;
+}
+
 /* The style @g itself is drawn in, for the rows nothing else covers. */
 static TimuiStyle ground_style_(const struct ground *g, TimuiStyle st)
 {
@@ -2209,7 +2238,7 @@ static bool draw_run_(void *user, const char *text, size_t len,
      * drew it painted is the theme's, not the tile's, so it is given the
      * tile's instead and only what it says is kept.
      */
-    st = ground_on_(&ctx->ground, st, style->fg, FYTIM_COLOR_DEFAULT);
+    st = ground_run_(&ctx->ground, st);
     for(i = 0; i <= len; i++){
         if(i == len || text[i] == '\n'){
             if(ctx->x < ctx->max_x && i > start){

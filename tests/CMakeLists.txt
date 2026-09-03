@@ -332,6 +332,9 @@ if(VTERM_FOUND)
               an_indexed_colour_is_left_alone the_cursor_stays_visible
               a_reversed_cell_is_washed a_head_takes_the_ground
               a_ground_is_not_dimmed a_colour_ground_is_not_dimmed
+              a_reversed_head_takes_the_ground
+              a_reversed_head_takes_a_named_ground
+              a_head_bg_takes_a_named_ground
               a_dim_run_keeps_the_ground
               the_prompt_stays_when_a_tile_has_the_keys
               the_prompt_is_lit_when_the_keys_return

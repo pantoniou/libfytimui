@@ -1350,6 +1350,92 @@ static void test_the_keys_do_not_move_anything(void)
     vth_close(&h);
 }
 
+/*
+ * A head that carries reverse of its own - a card, a marked word - is still
+ * a row of the tile. Reverse is how a run says "my ground is my foreground",
+ * and the tile's ground is not the run's to keep: what it says survives as
+ * the colour of its text.
+ */
+static void test_a_reversed_head_takes_the_ground(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 20);
+    /* white on green, reversed: the run draws a green card of its own */
+    CHECK(fytim_surface_set_top(a, "\x1b[38;2;255;255;255m\x1b[48;2;0;255;0m"
+                                   "\x1b[7mHEAD\x1b[0m") == FYTIM_OK);
+    CHECK(fytim_surface_set_bg(a, WASH, 50) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'H', &col);
+    CHECK(row >= 0);
+    if(row >= 0)
+        CHECK(shown_is(&h, row, col, WASH));
+    vth_close(&h);
+}
+
+/* The same on a ground the terminal names. */
+static void test_a_reversed_head_takes_a_named_ground(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 20);
+    CHECK(fytim_surface_set_top(a, "\x1b[38;2;0;255;0m\x1b[7mHEAD\x1b[0m") ==
+          FYTIM_OK);
+    CHECK(fytim_surface_set_bg(a, FYTIM_COLOR_REVERSED, 0) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'H', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        /* the ground of the row, and the ground of the tile beside it */
+        CHECK(cell_at(&h, row, col).attrs.reverse == 1);
+        CHECK(cell_at(&h, row, 19).attrs.reverse == 1);
+    }
+    vth_close(&h);
+}
+
+/*
+ * A head whose renderer painted a background of its own - a fenced block, a
+ * card - on a ground the terminal names. The ground of the tile is reversed,
+ * so every run of the row starts out reversed too; a run that then declares
+ * a background must not be read as one that already has a ground of its own,
+ * or it keeps the theme's and the head reads as a band of it.
+ */
+static void test_a_head_bg_takes_a_named_ground(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 20);
+    CHECK(fytim_surface_set_top(a, "\x1b[38;2;0;255;0m\x1b[48;2;40;42;46m"
+                                   "HEAD\x1b[0m") == FYTIM_OK);
+    CHECK(fytim_surface_set_bg(a, FYTIM_COLOR_REVERSED, 0) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'H', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        /* the row stands on the ground, and so does the tile beside it */
+        CHECK(cell_at(&h, row, col).attrs.reverse == 1);
+        CHECK(cell_at(&h, row, 19).attrs.reverse == 1);
+        /* what it said is the colour of its text, not of its ground */
+        CHECK(rgb_equal(&h, cell_at(&h, row, col).bg, 0x00ff00u));
+    }
+    vth_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_stand_side_by_side", test_two_tiles_stand_side_by_side },
@@ -1391,6 +1477,12 @@ static const struct case_ent cases[] = {
     { "a_reversed_cell_is_washed", test_a_reversed_cell_is_washed },
     { "a_head_takes_the_ground", test_a_head_takes_the_ground },
     { "a_ground_is_not_dimmed", test_a_ground_is_not_dimmed },
+    { "a_reversed_head_takes_the_ground",
+      test_a_reversed_head_takes_the_ground },
+    { "a_head_bg_takes_a_named_ground",
+      test_a_head_bg_takes_a_named_ground },
+    { "a_reversed_head_takes_a_named_ground",
+      test_a_reversed_head_takes_a_named_ground },
     { "a_dim_run_keeps_the_ground", test_a_dim_run_keeps_the_ground },
     { "the_prompt_stays_when_a_tile_has_the_keys",
       test_the_prompt_stays_when_a_tile_has_the_keys },
