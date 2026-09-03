@@ -326,7 +326,12 @@ if(VTERM_FOUND)
               a_wide_row_is_clipped_to_its_tile
               the_pane_stands_above_the_prompt
               the_pane_stands_below_the_prompt
-              a_pane_below_keeps_its_rows)
+              a_pane_below_keeps_its_rows
+              a_wash_grounds_the_tile a_program_colour_is_mixed
+              a_zero_mix_keeps_the_colour a_full_mix_replaces_the_colour
+              an_indexed_colour_is_left_alone the_cursor_stays_visible
+              a_reversed_cell_is_washed
+              a_wash_is_removed)
         add_test(NAME fytim.workpane.vt.${t}
                  COMMAND test_fytim_workpane_vt ${t})
     endforeach()

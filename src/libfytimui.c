@@ -80,6 +80,8 @@ struct fytim_surface {
     struct fytim          *owner;
     struct fytim_cell     *grid;   /* rows * cols, row-major */
     char *margin;                  /* chrome at the left of every row */
+    uint32_t wash;                 /* ground under the program, or DEFAULT */
+    int wash_mix;                  /* percent of the wash mixed into a colour */
     int rows, cols;
     int requested_rows;            /* layout request; 0 follows grid rows */
     int granted_cols;              /* columns the grid was given last frame */
@@ -998,6 +1000,7 @@ struct fytim_surface *fytim_surface_open(struct fytim *ft, int rows, int cols)
 
     sf->wb = wb;
     sf->owner = ft;
+    sf->wash = FYTIM_COLOR_DEFAULT;
     sf->rows = rows;
     sf->cols = cols;
     sf->cur_row = sf->cur_col = -1;
@@ -1650,6 +1653,7 @@ struct fytim_surface *fytim_surface_open_in(struct fytim_workpane *wp,
 
     sf->wb = t;
     sf->owner = wp->owner;
+    sf->wash = FYTIM_COLOR_DEFAULT;
     sf->rows = rows;
     sf->cols = cols;
     sf->cur_row = sf->cur_col = -1;
@@ -1675,6 +1679,17 @@ enum fytim_result fytim_surface_set_margin(struct fytim_surface *sf,
 {
     if(!sf) return FYTIM_ERR_INVALID;
     return set_dup_sgr(&sf->margin, text);
+}
+
+enum fytim_result fytim_surface_set_bg(struct fytim_surface *sf, uint32_t bg,
+                                       int mix)
+{
+    if(!sf) return FYTIM_ERR_INVALID;
+    if(mix < 0) mix = 0;
+    if(mix > 100) mix = 100;
+    sf->wash = bg;
+    sf->wash_mix = mix;
+    return FYTIM_OK;
 }
 
 enum fytim_result fytim_surface_granted_cols(const struct fytim_surface *sf,
@@ -2013,6 +2028,40 @@ static uint32_t sgr_color_(uint32_t c)
     return c;
 }
 
+/*
+ * The tile's own ground, under a cell that has @bg. A cell with no colour of
+ * its own takes the wash; one the program coloured keeps that colour, mixed
+ * toward the wash. An indexed colour is a palette entry this library does not
+ * know the value of, so there is nothing to mix and it is left alone.
+ */
+static uint32_t wash_bg_(const struct fytim_surface *sf, uint32_t bg)
+{
+    uint32_t out = 0;
+    int i, a, b;
+
+    if(sf->wash == FYTIM_COLOR_DEFAULT) return bg;
+    if(bg == FYTIM_COLOR_DEFAULT) return sf->wash;
+    if(bg & FYTIM_COLOR_INDEXED) return bg;
+    if(sf->wash_mix <= 0) return bg;
+    if(sf->wash_mix >= 100) return sf->wash;
+    if(!timui_caps_has(timui_caps(sf->owner->ui), TIMUI_CAP_TRUECOLOR))
+        return bg;
+    for(i = 16; i >= 0; i -= 8){
+        a = (int)((bg >> i) & 0xff);
+        b = (int)((sf->wash >> i) & 0xff);
+        out |= (uint32_t)(a + (b - a) * sf->wash_mix / 100) << i;
+    }
+    return out;
+}
+
+/* The chrome style of a washed tile: its own ground under the same rule. */
+static TimuiStyle wash_style_(const struct fytim_surface *sf, TimuiStyle st)
+{
+    if(sf && sf->wash != FYTIM_COLOR_DEFAULT)
+        st.bg = sgr_color_(sf->wash);
+    return st;
+}
+
 static uint32_t timui_attrs_from_fytim_(uint32_t attrs)
 {
     uint32_t out = 0;
@@ -2259,18 +2308,41 @@ static void draw_surface(TimuiFrame *f, TimuiCellBuffer *buf,
     if(margin_w > w) margin_w = w;
     sf->granted_cols = w - margin_w;
 
+    /* The ground of the tile, so that the part of it the grid does not cover
+     * carries the wash as the grid does. */
+    if(sf->wash != FYTIM_COLOR_DEFAULT)
+        timui_draw_fill(buf, TIMUI_RECT(x, y, w, rows),
+                        wash_style_(sf, chrome));
+
     for(row = first; row < sf->rows; row++, y++){
         if(margin_w)
-            draw_row_styled(f, buf, x, y, margin_w, sf->margin, chrome);
+            draw_row_styled(f, buf, x, y, margin_w, sf->margin,
+                            wash_style_(sf, chrome));
         for(col = 0; col < sf->cols && col < w - margin_w; col++){
+            bool cursor;
+
             cell = &sf->grid[(size_t)row * (size_t)sf->cols + (size_t)col];
             st = timui_style_make(sgr_color_(cell->fg), sgr_color_(cell->bg),
                                   timui_attrs_from_fytim_(cell->attrs));
             /* The cursor is a reverse-video cell: the cursor of the terminal
              * belongs to the prompt, and a surface is watched while the user
              * types somewhere else. */
-            if(sf->cur_visible && row == sf->cur_row && col == sf->cur_col)
+            cursor = sf->cur_visible && row == sf->cur_row &&
+                     col == sf->cur_col;
+            if(cursor)
                 st.attrs ^= TIMUI_ATTR_REVERSE;
+            /*
+             * The wash is the background the cell SHOWS. A reversed cell
+             * shows its foreground as its background, so it is washed there
+             * instead. The cursor keeps its reverse: it is the only thing
+             * that says where it is.
+             */
+            if(!cursor && sf->wash != FYTIM_COLOR_DEFAULT){
+                if(st.attrs & TIMUI_ATTR_REVERSE)
+                    st.fg = sgr_color_(wash_bg_(sf, cell->fg));
+                else
+                    st.bg = sgr_color_(wash_bg_(sf, cell->bg));
+            }
             len = 0;
             for(i = 0; i < FYTIM_CELL_CHARS && cell->chars[i]; i++)
                 len += fytim_utf8_put_(utf8 + len, cell->chars[i]);
@@ -2297,6 +2369,9 @@ static int draw_surface_chrome(TimuiFrame *f, TimuiCellBuffer *buf,
 
     margin_w = sf->margin ? sgr_disp_width(sf->margin) : 0;
     if(margin_w > w) margin_w = w;
+    chrome = wash_style_(sf, chrome);
+    if(sf->wash != FYTIM_COLOR_DEFAULT && max > 0)
+        timui_draw_fill(buf, TIMUI_RECT(x, y, w, max), chrome);
     n = draw_chrome(f, buf, x + margin_w, y, w - margin_w, text, chrome,
                     max);
     for(row = 0; margin_w > 0 && row < n; row++)

@@ -142,6 +142,25 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *s) FYTIM_EXPORT;
 enum fytim_result fytim_surface_set_margin(struct fytim_surface *s,
                                            const char *text) FYTIM_EXPORT;
 
+/*
+ * A background of the tile's own, under whatever the program draws. Every
+ * cell that has no colour of its own takes @bg - the ground of the grid, the
+ * margin, the chrome, and the part of the tile the grid does not cover - so
+ * that a host can say which tile it is talking about without taking a column
+ * for a marker.
+ *
+ * A cell the program did colour keeps that colour, mixed @mix percent toward
+ * @bg: 0 leaves it exactly as the program set it and 100 replaces it. Mixing
+ * needs a terminal that takes 24-bit colour, and it needs a colour to mix: an
+ * INDEXED background is the terminal's own palette entry, whose value this
+ * library does not know and does not guess, so it is left alone. The cursor
+ * cell is left alone too, because reversing it is what makes it visible.
+ *
+ * @bg of FYTIM_COLOR_DEFAULT removes the wash.
+ */
+enum fytim_result fytim_surface_set_bg(struct fytim_surface *s, uint32_t bg,
+                                       int mix) FYTIM_EXPORT;
+
 /* The columns the grid was given at the last frame: the width less the
  * margin. */
 enum fytim_result fytim_surface_granted_cols(const struct fytim_surface *s,

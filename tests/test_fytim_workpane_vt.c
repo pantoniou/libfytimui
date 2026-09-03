@@ -737,6 +737,267 @@ static void test_a_pane_below_keeps_its_rows(void)
     vth_close(&h);
 }
 
+
+/* ---- the focus wash ----------------------------------------------------- */
+
+/*
+ * A tile can be given a background of its own, under whatever the program
+ * draws: the ground of the tile, its margin and its chrome take it, a cell
+ * the program coloured is mixed toward it, and the cursor stays legible.
+ * Only cells can say any of this.
+ */
+#define WASH 0x0000ffu
+
+/* The mix the library must make: @pct of @over on top of @under. */
+static uint32_t mix_rgb(uint32_t under, uint32_t over, int pct)
+{
+    uint32_t out = 0;
+    int i, a, b;
+
+    for(i = 16; i >= 0; i -= 8){
+        a = (int)((under >> i) & 0xff);
+        b = (int)((over >> i) & 0xff);
+        out |= (uint32_t)(a + (b - a) * pct / 100) << i;
+    }
+    return out;
+}
+
+/* The background the cell shows: a reversed cell shows its foreground. */
+static union fyvt_color shown_bg(struct vth *h, int row, int col)
+{
+    struct fyvt_screen_cell c = cell_at(h, row, col);
+    union fyvt_color out = c.attrs.reverse ? c.fg : c.bg;
+
+    fyvt_screen_convert_color_to_rgb(h->vs, &out);
+    return out;
+}
+
+static int shown_is(struct vth *h, int row, int col, uint32_t rgb)
+{
+    union fyvt_color want, got = shown_bg(h, row, col);
+
+    fyvt_color_rgb(&want, (uint8_t)(rgb >> 16), (uint8_t)(rgb >> 8),
+                   (uint8_t)rgb);
+    fyvt_screen_convert_color_to_rgb(h->vs, &want);
+    return fyvt_color_is_equal(&got, &want);
+}
+
+/* A tile whose program painted @ch on a bg of @bg, with the wash at @mix. */
+static struct fytim_surface *wash_tile(struct vth *h, uint32_t ch, uint32_t bg,
+                                       int mix)
+{
+    struct fytim_cell cells[COLS];
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    int i, row;
+
+    wp = fytim_workpane_create(h->ft);
+    a = fytim_surface_open_in(wp, 3, 20);
+    CHECK(fytim_surface_set_margin(a, "  ") == FYTIM_OK);
+    CHECK(fytim_surface_set_top(a, "head") == FYTIM_OK);
+    memset(cells, 0, sizeof cells);
+    for(i = 0; i < 20; i++){
+        cells[i].chars[0] = ch;
+        cells[i].fg = FYTIM_COLOR_DEFAULT;
+        cells[i].bg = bg;
+        cells[i].width = 1;
+    }
+    for(row = 0; row < 3; row++)
+        fytim_surface_put_row(a, row, cells, 20);
+    CHECK(fytim_surface_set_bg(a, WASH, mix) == FYTIM_OK);
+    return a;
+}
+
+/* The ground of the tile: a cell the program left alone takes the wash. */
+static void test_a_wash_grounds_the_tile(void)
+{
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wash_tile(&h, 'A', FYTIM_COLOR_DEFAULT, 50);
+    vth_pump(&h);
+    row = find_char(&h, 'A', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        /* the program's cell, the margin beside it, and the head above it */
+        CHECK(rgb_equal(&h, cell_at(&h, row, col).bg, WASH));
+        CHECK(rgb_equal(&h, cell_at(&h, row, 0).bg, WASH));
+        CHECK(rgb_equal(&h, cell_at(&h, row - 1, 0).bg, WASH));
+        /* and the columns of the tile the grid does not cover */
+        CHECK(rgb_equal(&h, cell_at(&h, row, 30).bg, WASH));
+    }
+    vth_close(&h);
+}
+
+/* A colour the program set is kept, mixed toward the wash. */
+static void test_a_program_colour_is_mixed(void)
+{
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wash_tile(&h, 'A', 0xff0000u, 50);
+    vth_pump(&h);
+    row = find_char(&h, 'A', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        CHECK(rgb_equal(&h, cell_at(&h, row, col).bg,
+                        mix_rgb(0xff0000u, WASH, 50)));
+        /* the ground beside it is the wash itself, not the mix */
+        CHECK(rgb_equal(&h, cell_at(&h, row, 0).bg, WASH));
+    }
+    vth_close(&h);
+}
+
+/* A mix of zero is the program's colour: the wash grounds and nothing else. */
+static void test_a_zero_mix_keeps_the_colour(void)
+{
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wash_tile(&h, 'A', 0xff0000u, 0);
+    vth_pump(&h);
+    row = find_char(&h, 'A', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        CHECK(rgb_equal(&h, cell_at(&h, row, col).bg, 0xff0000u));
+        CHECK(rgb_equal(&h, cell_at(&h, row, 0).bg, WASH));
+    }
+    vth_close(&h);
+}
+
+/* A full mix is the wash: the program's colour is gone. */
+static void test_a_full_mix_replaces_the_colour(void)
+{
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wash_tile(&h, 'A', 0xff0000u, 100);
+    vth_pump(&h);
+    row = find_char(&h, 'A', &col);
+    CHECK(row >= 0);
+    if(row >= 0)
+        CHECK(rgb_equal(&h, cell_at(&h, row, col).bg, WASH));
+    vth_close(&h);
+}
+
+/*
+ * An indexed colour is the terminal's own palette entry, and this library
+ * does not guess what the user set it to. It is left alone, whatever the
+ * mix says.
+ */
+static void test_an_indexed_colour_is_left_alone(void)
+{
+    struct vth plain, washed;
+    struct fyvt_screen_cell a, b;
+    int row, col = -1;
+
+    if(!vth_open(&plain)){ CHECK(0); return; }
+    wash_tile(&plain, 'A', FYTIM_COLOR_INDEXED | 1u, 0);
+    vth_pump(&plain);
+    row = find_char(&plain, 'A', &col);
+    CHECK(row >= 0);
+    a = cell_at(&plain, row, col);
+    fyvt_screen_convert_color_to_rgb(plain.vs, &a.bg);
+    vth_close(&plain);
+
+    if(!vth_open(&washed)){ CHECK(0); return; }
+    wash_tile(&washed, 'A', FYTIM_COLOR_INDEXED | 1u, 100);
+    vth_pump(&washed);
+    row = find_char(&washed, 'A', &col);
+    CHECK(row >= 0);
+    b = cell_at(&washed, row, col);
+    fyvt_screen_convert_color_to_rgb(washed.vs, &b.bg);
+    vth_close(&washed);
+
+    CHECK(fyvt_color_is_equal(&a.bg, &b.bg));
+}
+
+/*
+ * The cursor is drawn by reversing a cell, so a wash forced onto it would
+ * take away the only thing that shows it.
+ */
+static void test_the_cursor_stays_visible(void)
+{
+    struct fytim_surface *a;
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    a = wash_tile(&h, 'A', FYTIM_COLOR_DEFAULT, 50);
+    CHECK(fytim_surface_set_cursor(a, 1, 2, true) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'A', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        union fyvt_color cur = shown_bg(&h, row + 1, col + 2);
+        union fyvt_color nb = shown_bg(&h, row + 1, col + 3);
+        /* the cell beside it is washed ground; the cursor is not */
+        CHECK(cell_at(&h, row + 1, col + 2).attrs.reverse == 1);
+        CHECK(shown_is(&h, row + 1, col + 3, WASH));
+        CHECK(!fyvt_color_is_equal(&cur, &nb));
+    }
+    vth_close(&h);
+}
+
+/*
+ * A cell the program reversed shows its foreground as its background, so
+ * that is where the wash goes: a reversed row grounds with the tile instead
+ * of standing out of it.
+ */
+static void test_a_reversed_cell_is_washed(void)
+{
+    struct fytim_cell cells[COLS];
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int i, row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 20);
+    memset(cells, 0, sizeof cells);
+    for(i = 0; i < 20; i++){
+        cells[i].chars[0] = 'R';
+        cells[i].fg = FYTIM_COLOR_DEFAULT;
+        cells[i].bg = FYTIM_COLOR_DEFAULT;
+        cells[i].attrs = FYTIM_ATTR_REVERSE;
+        cells[i].width = 1;
+    }
+    fytim_surface_put_row(a, 0, cells, 20);
+    CHECK(fytim_surface_set_bg(a, WASH, 50) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'R', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        CHECK(cell_at(&h, row, col).attrs.reverse == 1);
+        CHECK(shown_is(&h, row, col, WASH));
+    }
+    vth_close(&h);
+}
+
+/* Removing the wash gives the tile its ground back. */
+static void test_a_wash_is_removed(void)
+{
+    struct fytim_surface *a;
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    a = wash_tile(&h, 'A', FYTIM_COLOR_DEFAULT, 50);
+    vth_pump(&h);
+    CHECK(fytim_surface_set_bg(a, FYTIM_COLOR_DEFAULT, 0) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'A', &col);
+    CHECK(row >= 0);
+    if(row >= 0)
+        CHECK(!rgb_equal(&h, cell_at(&h, row, col).bg, WASH));
+    vth_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_stand_side_by_side", test_two_tiles_stand_side_by_side },
@@ -768,6 +1029,15 @@ static const struct case_ent cases[] = {
     { "the_pane_stands_below_the_prompt",
       test_the_pane_stands_below_the_prompt },
     { "a_pane_below_keeps_its_rows", test_a_pane_below_keeps_its_rows },
+    { "a_wash_grounds_the_tile", test_a_wash_grounds_the_tile },
+    { "a_program_colour_is_mixed", test_a_program_colour_is_mixed },
+    { "a_zero_mix_keeps_the_colour", test_a_zero_mix_keeps_the_colour },
+    { "a_full_mix_replaces_the_colour", test_a_full_mix_replaces_the_colour },
+    { "an_indexed_colour_is_left_alone",
+      test_an_indexed_colour_is_left_alone },
+    { "the_cursor_stays_visible", test_the_cursor_stays_visible },
+    { "a_reversed_cell_is_washed", test_a_reversed_cell_is_washed },
+    { "a_wash_is_removed", test_a_wash_is_removed },
     { "a_wide_row_is_clipped_to_its_tile",
       test_a_wide_row_is_clipped_to_its_tile },
 };
