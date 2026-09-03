@@ -156,6 +156,11 @@ enum fytim_result fytim_surface_set_margin(struct fytim_surface *s,
  * library does not know and does not guess, so it is left alone. The cursor
  * cell is left alone too, because reversing it is what makes it visible.
  *
+ * @bg of FYTIM_COLOR_REVERSED is the ground the terminal draws text in,
+ * which needs no colour of the terminal's at all: a cell with no ground of
+ * its own is reversed, and one that has a colour keeps it as the colour of
+ * its text. @mix is not read, because there is no value to mix toward.
+ *
  * @bg of FYTIM_COLOR_DEFAULT removes the wash.
  */
 enum fytim_result fytim_surface_set_bg(struct fytim_surface *s, uint32_t bg,

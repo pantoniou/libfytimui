@@ -783,6 +783,9 @@ static int shown_is(struct vth *h, int row, int col, uint32_t rgb)
 }
 
 /* A tile whose program painted @ch on a bg of @bg, with the wash at @mix. */
+/* The tile the last wash_tile() made, for a test that changes it after. */
+static struct fytim_surface *wash_last;
+
 static struct fytim_surface *wash_tile(struct vth *h, uint32_t ch, uint32_t bg,
                                        int mix)
 {
@@ -805,6 +808,7 @@ static struct fytim_surface *wash_tile(struct vth *h, uint32_t ch, uint32_t bg,
     for(row = 0; row < 3; row++)
         fytim_surface_put_row(a, row, cells, 20);
     CHECK(fytim_surface_set_bg(a, WASH, mix) == FYTIM_OK);
+    wash_last = a;
     return a;
 }
 
@@ -1028,6 +1032,137 @@ static void test_a_head_takes_the_ground(void)
     vth_close(&h);
 }
 
+/* ---- a ground the terminal names --------------------------------------- */
+
+/*
+ * A colour is a colour, and a terminal the user made light or dark has its
+ * own. FYTIM_COLOR_REVERSED asks for the ground the terminal draws text in,
+ * which contrasts on either and needs no colour support at all.
+ */
+static void test_a_reversed_ground_grounds_the_tile(void)
+{
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wash_tile(&h, 'A', FYTIM_COLOR_DEFAULT, 0);
+    CHECK(fytim_surface_set_bg(wash_last, FYTIM_COLOR_REVERSED, 0) ==
+          FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'A', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        /* the cell, the margin beside it and the ground past the grid */
+        CHECK(cell_at(&h, row, col).attrs.reverse == 1);
+        CHECK(cell_at(&h, row, 0).attrs.reverse == 1);
+        CHECK(cell_at(&h, row, 30).attrs.reverse == 1);
+    }
+    vth_close(&h);
+}
+
+/*
+ * A colour the program set is what it says, so it is kept - as the colour of
+ * the text, because the ground is now the terminal's.
+ */
+static void test_a_reversed_ground_keeps_a_colour(void)
+{
+    struct fytim_cell cells[COLS];
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int i, row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 20);
+    memset(cells, 0, sizeof cells);
+    for(i = 0; i < 20; i++){
+        cells[i].chars[0] = 'C';
+        cells[i].fg = 0x00ff00u;
+        cells[i].bg = FYTIM_COLOR_DEFAULT;
+        cells[i].width = 1;
+    }
+    fytim_surface_put_row(a, 0, cells, 20);
+    CHECK(fytim_surface_set_bg(a, FYTIM_COLOR_REVERSED, 0) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'C', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        /* reversed, so the stored background is what the text shows as */
+        CHECK(cell_at(&h, row, col).attrs.reverse == 1);
+        CHECK(rgb_equal(&h, cell_at(&h, row, col).bg, 0x00ff00u));
+    }
+    vth_close(&h);
+}
+
+/* A cell with a ground of its own has nothing to gain and keeps it. */
+static void test_a_reversed_ground_leaves_a_bg(void)
+{
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wash_tile(&h, 'A', 0xff0000u, 0);
+    CHECK(fytim_surface_set_bg(wash_last, FYTIM_COLOR_REVERSED, 0) ==
+          FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'A', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        CHECK(cell_at(&h, row, col).attrs.reverse == 0);
+        CHECK(rgb_equal(&h, cell_at(&h, row, col).bg, 0xff0000u));
+        /* and the ground beside it is still the terminal's */
+        CHECK(cell_at(&h, row, 0).attrs.reverse == 1);
+    }
+    vth_close(&h);
+}
+
+/* The head is a row of the tile, so it stands on the same ground. */
+static void test_a_reversed_ground_takes_the_head(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 20);
+    CHECK(fytim_surface_set_top(a, "\x1b[38;2;0;255;0m\x1b[48;2;0;0;0m"
+                                   "HEAD\x1b[0m") == FYTIM_OK);
+    CHECK(fytim_surface_set_bg(a, FYTIM_COLOR_REVERSED, 0) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'H', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        CHECK(cell_at(&h, row, col).attrs.reverse == 1);
+        /* what the head said is kept, as the colour of its text */
+        CHECK(rgb_equal(&h, cell_at(&h, row, col).bg, 0x00ff00u));
+    }
+    vth_close(&h);
+}
+
+/* The cursor is the one cell that is not on the ground, so it is seen. */
+static void test_a_reversed_ground_shows_the_cursor(void)
+{
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wash_tile(&h, 'A', FYTIM_COLOR_DEFAULT, 0);
+    CHECK(fytim_surface_set_bg(wash_last, FYTIM_COLOR_REVERSED, 0) ==
+          FYTIM_OK);
+    CHECK(fytim_surface_set_cursor(wash_last, 1, 2, true) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'A', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        CHECK(cell_at(&h, row + 1, col + 2).attrs.reverse == 0);
+        CHECK(cell_at(&h, row + 1, col + 3).attrs.reverse == 1);
+    }
+    vth_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_stand_side_by_side", test_two_tiles_stand_side_by_side },
@@ -1068,6 +1203,15 @@ static const struct case_ent cases[] = {
     { "the_cursor_stays_visible", test_the_cursor_stays_visible },
     { "a_reversed_cell_is_washed", test_a_reversed_cell_is_washed },
     { "a_head_takes_the_ground", test_a_head_takes_the_ground },
+    { "a_reversed_ground_grounds_the_tile",
+      test_a_reversed_ground_grounds_the_tile },
+    { "a_reversed_ground_keeps_a_colour",
+      test_a_reversed_ground_keeps_a_colour },
+    { "a_reversed_ground_leaves_a_bg", test_a_reversed_ground_leaves_a_bg },
+    { "a_reversed_ground_takes_the_head",
+      test_a_reversed_ground_takes_the_head },
+    { "a_reversed_ground_shows_the_cursor",
+      test_a_reversed_ground_shows_the_cursor },
     { "a_wash_is_removed", test_a_wash_is_removed },
     { "a_wide_row_is_clipped_to_its_tile",
       test_a_wide_row_is_clipped_to_its_tile },

@@ -2016,11 +2016,11 @@ struct draw_run_ctx {
      * so inline chrome (for example a colored status margin) does not cancel
      * the row's dim/bold/reverse presentation. */
     TimuiStyle base;
-    /* The ground of a washed tile. A run of chrome is a row of the tile and
-     * not output of a program, so it does not keep a background of its own:
-     * the renderer that drew it painted the theme's ground, which is exactly
-     * what the wash replaces. FYTIM_COLOR_DEFAULT leaves every run alone. */
-    uint32_t wash;
+    /* The tile whose ground the run stands on, or NULL for a run that is
+     * not part of one. A row of chrome is a row of the tile and does not
+     * keep a background of its own: the renderer that drew it painted the
+     * theme's ground, which is what the tile's replaces. */
+    const struct fytim_surface *wash;
 };
 /* Indexed (16/256-palette) colors pass through AS INDEXED: the core
  * emits the classic 30-37/90-97 codes, so the terminal's own theme
@@ -2059,11 +2059,44 @@ static uint32_t wash_bg_(const struct fytim_surface *sf, uint32_t bg)
     return out;
 }
 
-/* The chrome style of a washed tile: its own ground under the same rule. */
+/*
+ * Put @st on the tile's ground. @fg and @bg are what the cell or the run asked
+ * for, and @st already carries them.
+ *
+ * A ground the terminal names is applied by reversing: what the cell said in
+ * its foreground becomes the colour of its text, because the ground is now
+ * the one the terminal draws text in. A cell that has a ground of its own
+ * keeps it, as it keeps a colour there is nothing to mix.
+ */
+static TimuiStyle wash_on_(const struct fytim_surface *sf, TimuiStyle st,
+                           uint32_t fg, uint32_t bg)
+{
+    if(!sf || sf->wash == FYTIM_COLOR_DEFAULT) return st;
+    if(sf->wash == FYTIM_COLOR_REVERSED){
+        /* A cell already reversed shows its foreground as its ground. */
+        if((st.attrs & TIMUI_ATTR_REVERSE) || bg != FYTIM_COLOR_DEFAULT)
+            return st;
+        st.bg = sgr_color_(fg);
+        st.fg = TIMUI_COLOR_DEFAULT;
+        st.attrs |= TIMUI_ATTR_REVERSE;
+        return st;
+    }
+    if(st.attrs & TIMUI_ATTR_REVERSE) st.fg = sgr_color_(wash_bg_(sf, fg));
+    else                              st.bg = sgr_color_(wash_bg_(sf, bg));
+    return st;
+}
+
+/* The style the ground of a washed tile is filled with. */
 static TimuiStyle wash_style_(const struct fytim_surface *sf, TimuiStyle st)
 {
-    if(sf && sf->wash != FYTIM_COLOR_DEFAULT)
-        st.bg = sgr_color_(sf->wash);
+    if(!sf || sf->wash == FYTIM_COLOR_DEFAULT) return st;
+    if(sf->wash == FYTIM_COLOR_REVERSED){
+        st.fg = TIMUI_COLOR_DEFAULT;
+        st.bg = TIMUI_COLOR_DEFAULT;
+        st.attrs |= TIMUI_ATTR_REVERSE;
+        return st;
+    }
+    st.bg = sgr_color_(sf->wash);
     return st;
 }
 
@@ -2136,11 +2169,13 @@ static bool draw_run_(void *user, const char *text, size_t len,
     if(style->attrs & FYTIM_ATTR_UNDERLINE) st.attrs |= TIMUI_ATTR_UNDERLINE;
     if(style->attrs & FYTIM_ATTR_REVERSE)   st.attrs |= TIMUI_ATTR_REVERSE;
     if(style->attrs & FYTIM_ATTR_STRIKE)    st.attrs |= TIMUI_ATTR_STRIKE;
-    /* A reversed run shows its foreground as its background. */
-    if(ctx->wash != FYTIM_COLOR_DEFAULT){
-        if(st.attrs & TIMUI_ATTR_REVERSE) st.fg = sgr_color_(ctx->wash);
-        else                              st.bg = sgr_color_(ctx->wash);
-    }
+    /*
+     * A row of chrome belongs to the tile: whatever ground the renderer that
+     * drew it painted is the theme's, not the tile's, so it is given the
+     * tile's instead and only what it says is kept.
+     */
+    if(ctx->wash)
+        st = wash_on_(ctx->wash, st, style->fg, FYTIM_COLOR_DEFAULT);
     for(i = 0; i <= len; i++){
         if(i == len || text[i] == '\n'){
             if(ctx->x < ctx->max_x && i > start){
@@ -2220,7 +2255,7 @@ static int sgr_disp_width(const char *s)
 static void draw_row_styled_bg(TimuiFrame *f, TimuiCellBuffer *buf,
                                int x, int y, int w,
                                const char *text, TimuiStyle plain,
-                               uint32_t wash)
+                               const struct fytim_surface *wash)
 {
     if(strchr(text, '\x1b')){
         struct draw_run_ctx ctx;
@@ -2240,7 +2275,7 @@ static void draw_row_styled(TimuiFrame *f, TimuiCellBuffer *buf,
                             int x, int y, int w,
                             const char *text, TimuiStyle plain)
 {
-    draw_row_styled_bg(f, buf, x, y, w, text, plain, FYTIM_COLOR_DEFAULT);
+    draw_row_styled_bg(f, buf, x, y, w, text, plain, NULL);
 }
 
 /*
@@ -2263,7 +2298,7 @@ static int chrome_rows(const char *s)
  */
 static int draw_chrome_bg(TimuiFrame *f, TimuiCellBuffer *buf, int x, int y,
                           int w, const char *s, TimuiStyle st, int max,
-                          uint32_t wash)
+                          const struct fytim_surface *wash)
 {
     const char *nl;
     char *line;
@@ -2300,7 +2335,7 @@ static int draw_chrome_bg(TimuiFrame *f, TimuiCellBuffer *buf, int x, int y,
 static int draw_chrome(TimuiFrame *f, TimuiCellBuffer *buf, int x, int y,
                        int w, const char *s, TimuiStyle st, int max)
 {
-    return draw_chrome_bg(f, buf, x, y, w, s, st, max, FYTIM_COLOR_DEFAULT);
+    return draw_chrome_bg(f, buf, x, y, w, s, st, max, NULL);
 }
 
 /*
@@ -2343,7 +2378,7 @@ static void draw_surface(TimuiFrame *f, TimuiCellBuffer *buf,
     for(row = first; row < sf->rows; row++, y++){
         if(margin_w)
             draw_row_styled_bg(f, buf, x, y, margin_w, sf->margin,
-                               wash_style_(sf, chrome), sf->wash);
+                               wash_style_(sf, chrome), sf);
         for(col = 0; col < sf->cols && col < w - margin_w; col++){
             bool cursor;
 
@@ -2355,20 +2390,15 @@ static void draw_surface(TimuiFrame *f, TimuiCellBuffer *buf,
              * types somewhere else. */
             cursor = sf->cur_visible && row == sf->cur_row &&
                      col == sf->cur_col;
+            /*
+             * The ground first, then the cursor, which is the one cell that
+             * is NOT on it: reversing a ground the terminal names takes the
+             * cell off it, and reversing a coloured one shows the colour the
+             * ground was drawn against.
+             */
+            st = wash_on_(sf, st, cell->fg, cell->bg);
             if(cursor)
                 st.attrs ^= TIMUI_ATTR_REVERSE;
-            /*
-             * The wash is the background the cell SHOWS. A reversed cell
-             * shows its foreground as its background, so it is washed there
-             * instead. The cursor keeps its reverse: it is the only thing
-             * that says where it is.
-             */
-            if(!cursor && sf->wash != FYTIM_COLOR_DEFAULT){
-                if(st.attrs & TIMUI_ATTR_REVERSE)
-                    st.fg = sgr_color_(wash_bg_(sf, cell->fg));
-                else
-                    st.bg = sgr_color_(wash_bg_(sf, cell->bg));
-            }
             len = 0;
             for(i = 0; i < FYTIM_CELL_CHARS && cell->chars[i]; i++)
                 len += fytim_utf8_put_(utf8 + len, cell->chars[i]);
@@ -2399,10 +2429,10 @@ static int draw_surface_chrome(TimuiFrame *f, TimuiCellBuffer *buf,
     if(sf->wash != FYTIM_COLOR_DEFAULT && max > 0)
         timui_draw_fill(buf, TIMUI_RECT(x, y, w, max), chrome);
     n = draw_chrome_bg(f, buf, x + margin_w, y, w - margin_w, text, chrome,
-                       max, sf->wash);
+                       max, sf);
     for(row = 0; margin_w > 0 && row < n; row++)
         draw_row_styled_bg(f, buf, x, y + row, margin_w, sf->margin, chrome,
-                           sf->wash);
+                           sf);
     return n;
 }
 
@@ -2598,7 +2628,7 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                     ctx.buf = buf; ctx.x = tx; ctx.y = ty;
                     ctx.max_x = tx + tw;
                     ctx.origin_x = ctx.x;
-                    ctx.wash = FYTIM_COLOR_DEFAULT;
+                    ctx.wash = NULL;
                     ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT,
                                                 TIMUI_COLOR_DEFAULT, 0);
                     fytim_sgr_init(&sp);
@@ -3155,7 +3185,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                     ctx.buf = buf; ctx.x = r->x; ctx.y = y;
                     ctx.max_x = r->x + r->w;
                     ctx.origin_x = ctx.x;
-                    ctx.wash = FYTIM_COLOR_DEFAULT;
+                    ctx.wash = NULL;
                     ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT,
                                                 TIMUI_COLOR_DEFAULT, 0);
                     fytim_sgr_init(&sp);
@@ -3215,7 +3245,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                         ctx.buf = buf; ctx.x = r->x; ctx.y = y;
                         ctx.max_x = r->x + r->w;
                     ctx.origin_x = ctx.x;
-                    ctx.wash = FYTIM_COLOR_DEFAULT;
+                    ctx.wash = NULL;
                         ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT,
                                                     TIMUI_COLOR_DEFAULT, 0);
                         fytim_sgr_init(&sp);

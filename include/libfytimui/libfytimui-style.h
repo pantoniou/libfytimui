@@ -28,4 +28,13 @@ enum {
 #define FYTIM_COLOR_DEFAULT  0xFF000000u
 #define FYTIM_COLOR_INDEXED  0x01000000u
 
+/*
+ * The ground the terminal itself draws text in, named rather than given: it
+ * is applied by reversing a cell, so it contrasts on a light terminal and on
+ * a dark one alike, and asks the terminal for no colour it may not have. It
+ * is a ground for fytim_surface_set_bg() and not a colour: nothing composes
+ * with it, and there is no value to mix a program's own colour toward.
+ */
+#define FYTIM_COLOR_REVERSED 0xFE000000u
+
 #endif /* LIBFYTIMUI_STYLE_H */
