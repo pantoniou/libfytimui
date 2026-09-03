@@ -660,6 +660,83 @@ static void test_a_wide_row_is_clipped_to_its_tile(void)
     vth_close(&h);
 }
 
+
+/*
+ * Where the pane stands. By default it is the last thing above the prompt
+ * block; asked for, it takes the rows below it, so the user types over the
+ * work instead of under it. A byte capture cannot say which came out first
+ * on the screen: only the rows can.
+ */
+static void place_check(enum fytim_workpane_place place, int *panerow,
+                        int *promptrow)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+
+    *panerow = *promptrow = -1;
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_place(wp, place) == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 3, 30);
+    paint(a, 'A', FYTIM_COLOR_DEFAULT);
+    CHECK(fytim_set_input(h.ft, "zzzz") == FYTIM_OK);
+    vth_pump(&h);
+    *panerow = find_char(&h, 'A', NULL);
+    *promptrow = find_char(&h, 'z', NULL);
+    vth_close(&h);
+}
+
+static void test_the_pane_stands_above_the_prompt(void)
+{
+    int pane = -1, prompt = -1;
+
+    place_check(FYTIM_WORKPANE_ABOVE_PROMPT, &pane, &prompt);
+    CHECK(pane >= 0);
+    CHECK(prompt >= 0);
+    CHECK(pane < prompt);
+}
+
+static void test_the_pane_stands_below_the_prompt(void)
+{
+    int pane = -1, prompt = -1;
+
+    place_check(FYTIM_WORKPANE_BELOW_PROMPT, &pane, &prompt);
+    CHECK(pane >= 0);
+    CHECK(prompt >= 0);
+    CHECK(prompt < pane);
+}
+
+/* The rows below the prompt are the pane's own: the tile keeps the height it
+ * asked for, and the chrome above it is drawn whole. */
+static void test_a_pane_below_keeps_its_rows(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int first = -1, last = -1, row, r;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_place(wp, FYTIM_WORKPANE_BELOW_PROMPT) ==
+          FYTIM_OK);
+    a = fytim_surface_open_in(wp, 3, 30);
+    paint(a, 'A', FYTIM_COLOR_DEFAULT);
+    CHECK(fytim_set_input(h.ft, "zzzz") == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'A', NULL);
+    CHECK(row >= 0);
+    for(r = 0; r < ROWS; r++){
+        run_of(&h, r, 'A', &first, &last);
+        if(first < 0) continue;
+        CHECK(first == 0);
+        CHECK(last == 29);
+    }
+    /* Three rows of screen, and none of them over the prompt. */
+    CHECK(find_char(&h, 'z', NULL) < row);
+    vth_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_stand_side_by_side", test_two_tiles_stand_side_by_side },
@@ -686,6 +763,11 @@ static const struct case_ent cases[] = {
       test_regression_margin_spans_surface_chrome },
     { "two_band_tiles_stand_side_by_side",
       test_two_band_tiles_stand_side_by_side },
+    { "the_pane_stands_above_the_prompt",
+      test_the_pane_stands_above_the_prompt },
+    { "the_pane_stands_below_the_prompt",
+      test_the_pane_stands_below_the_prompt },
+    { "a_pane_below_keeps_its_rows", test_a_pane_below_keeps_its_rows },
     { "a_wide_row_is_clipped_to_its_tile",
       test_a_wide_row_is_clipped_to_its_tile },
 };

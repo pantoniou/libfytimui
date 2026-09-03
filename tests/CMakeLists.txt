@@ -323,7 +323,10 @@ if(VTERM_FOUND)
               a_margin_is_drawn_inside_the_tile
               regression_margin_spans_surface_chrome
               two_band_tiles_stand_side_by_side
-              a_wide_row_is_clipped_to_its_tile)
+              a_wide_row_is_clipped_to_its_tile
+              the_pane_stands_above_the_prompt
+              the_pane_stands_below_the_prompt
+              a_pane_below_keeps_its_rows)
         add_test(NAME fytim.workpane.vt.${t}
                  COMMAND test_fytim_workpane_vt ${t})
     endforeach()

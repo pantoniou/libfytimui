@@ -112,6 +112,7 @@ struct fytim_workpane {
     struct fytim_workband *zoom;   /* the tile that takes the pane, or NULL */
     char *sep;                     /* rule between adjacent columns */
     int columns;                   /* 0 selects the automatic grid */
+    enum fytim_workpane_place place;
     int min_tile_cols;
     unsigned int controls;
     /* The explicit grid, or 0 x 0 for the arrangement the pane solves. */
@@ -1546,6 +1547,17 @@ enum fytim_result fytim_workband_set_cell(struct fytim_workband *wb, int row,
     return wb_set_cell(wb, row, col, row_span, col_span);
 }
 
+enum fytim_result fytim_workpane_set_place(struct fytim_workpane *wp,
+                                           enum fytim_workpane_place place)
+{
+    if(!wp) return FYTIM_ERR_INVALID;
+    if(place != FYTIM_WORKPANE_ABOVE_PROMPT &&
+       place != FYTIM_WORKPANE_BELOW_PROMPT)
+        return FYTIM_ERR_INVALID;
+    wp->place = place;
+    return FYTIM_OK;
+}
+
 enum fytim_result fytim_workpane_set_columns(struct fytim_workpane *wp,
                                              int cols)
 {
@@ -2773,11 +2785,48 @@ static int wb_rows(const struct fytim_workband *wb)
  * one spare row when nothing is live -- the layout always reserves a
  * transcript row, and sizing the band to exactly the chrome would shed a
  * status row to pay for it. */
+/*
+ * The band that asked for the rows below the prompt, if there is one. It is
+ * drawn after the chrome, so it is left out of the region the transcript and
+ * the other bands share.
+ */
+static struct fytim_workband *wb_footer(const struct fytim *ft)
+{
+    struct fytim_workband *wb;
+
+    for(wb = ft->wbands; wb; wb = wb->next)
+        if(wb->pane && wb->pane->place == FYTIM_WORKPANE_BELOW_PROMPT)
+            return wb;
+    return NULL;
+}
+
+static int wb_footer_rows(const struct fytim *ft)
+{
+    const struct fytim_workband *wb = wb_footer(ft);
+
+    return wb ? wb_rows(wb) : 0;
+}
+
+/*
+ * The rows the band chrome is solved in. A pane below the prompt keeps the
+ * last rows of the band for itself, and the chrome stands above them. It
+ * never takes the whole band: the prompt outranks it.
+ */
+static int layout_height(const struct fytim *ft, int height)
+{
+    int foot = wb_footer_rows(ft);
+
+    if(foot >= height) foot = 0;
+    return height - foot;
+}
+
 static int wb_rows_total(const struct fytim *ft)
 {
+    const struct fytim_workband *foot = wb_footer(ft);
     const struct fytim_workband *wb;
     int n = styled_rows(ft->tail);
-    for(wb = ft->wbands; wb; wb = wb->next) n += wb_rows(wb);
+    for(wb = ft->wbands; wb; wb = wb->next)
+        if(wb != foot) n += wb_rows(wb);
     return n > 0 ? n : 1;
 }
 
@@ -2898,6 +2947,27 @@ static void layout_drop_empty_chrome(const struct fytim *ft,
     }
 }
 
+/*
+ * One band that holds a pane, in a region of @rows. The pane places its own
+ * tiles; the band gives it the region and its own frame. Returns the rows
+ * taken, which is @rows.
+ */
+static int draw_pane_band(TimuiFrame *f, TimuiCellBuffer *buf,
+                          struct fytim_workband *wb, TimuiStyle wb_st,
+                          int x, int y, int w, int rows)
+{
+    int top = chrome_rows(wb->top);
+    int bottom = chrome_rows(wb->bottom);
+    int content = rows - top - bottom;
+
+    if(content < 1){ top = bottom = 0; content = rows; }
+    if(top) y += draw_chrome(f, buf, x, y, w, wb->top, wb_st, top);
+    draw_pane(f, buf, wb->pane, wb_st, x, y, w, content);
+    y += content;
+    if(bottom) draw_chrome(f, buf, x, y, w, wb->bottom, wb_st, bottom);
+    return rows;
+}
+
 static void draw_band(struct fytim *ft, TimuiFrame *f,
                       const struct fytim_layout *lay, bool *submitted)
 {
@@ -2954,13 +3024,15 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
          * region is short the topmost content loses rows first; within a
          * shorted band the top row goes first, then the bottom, then the
          * earliest content lines. */
+        struct fytim_workband *foot = wb_footer(ft);
         struct fytim_workband *wb;
         int nb = 0, i, y, avail, tl = styled_rows(ft->tail);
-        for(wb = ft->wbands; wb; wb = wb->next) nb++;
+        for(wb = ft->wbands; wb; wb = wb->next) if(wb != foot) nb++;
         {
             struct fytim_workband *arr[nb > 0 ? nb : 1];
             int give[nb > 0 ? nb : 1];
-            for(wb = ft->wbands, i = 0; wb; wb = wb->next, i++) arr[i] = wb;
+            for(wb = ft->wbands, i = 0; wb; wb = wb->next)
+                if(wb != foot) arr[i++] = wb;
             avail = r->h;
             for(i = nb - 1; i >= 0; i--){
                 int want = wb_rows(arr[i]);
@@ -2991,21 +3063,8 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                 int rows = give[i], top, bottom, content, lines, skip;
                 wb = arr[i];
                 if(wb->pane){
-                    /* The pane places its own tiles; the band gives it the
-                     * region and its own frame. */
-                    int ptop = chrome_rows(wb->top);
-                    int pbot = chrome_rows(wb->bottom);
-                    int pcontent = rows - ptop - pbot;
-                    if(pcontent < 1){ ptop = pbot = 0; pcontent = rows; }
-                    if(ptop)
-                        y += draw_chrome(f, buf, r->x, y, r->w, wb->top,
-                                         wb_st, ptop);
-                    draw_pane(f, buf, wb->pane, wb_st, r->x, y, r->w,
-                              pcontent);
-                    y += pcontent;
-                    if(pbot)
-                        y += draw_chrome(f, buf, r->x, y, r->w, wb->bottom,
-                                         wb_st, pbot);
+                    y += draw_pane_band(f, buf, wb, wb_st, r->x, y, r->w,
+                                        rows);
                     continue;
                 }
                 lines = wb->surface ? surface_content_rows(wb->surface)
@@ -3125,6 +3184,20 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
         if(r->h > 1 && ft->status[1])
             draw_row_styled(f, buf, r->x, r->y + 1, r->w,
                             ft->status[1], status_st);
+    }
+    /*
+     * A pane that asked for the rows below the prompt takes the last rows of
+     * the band. The layout above was solved for what is left, so nothing it
+     * placed reaches them.
+     */
+    {
+        struct fytim_workband *foot = wb_footer(ft);
+        int rows = foot ? wb_rows(foot) : 0;
+        int h = timui_height(f), w = timui_width(f);
+
+        if(rows > h) rows = h;
+        if(foot && rows > 0)
+            draw_pane_band(f, buf, foot, wb_st, 0, h - rows, w, rows);
     }
 }
 
@@ -3398,6 +3471,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
                    (prompt_lines(ft) - 1);
         else
             want = FYTIM_HEADER_ROWS + FYTIM_STATUS_ROWS + wb_rows_total(ft);
+        want += wb_footer_rows(ft);
         /* Growth is immediate; a shrink is allowed only up to the rows
          * COMMITTED in this same pump, so shrink and scroll cancel and the
          * bubble never moves -- all motion is text scrolling. An
@@ -3442,7 +3516,8 @@ enum fytim_result fytim_pump(struct fytim *ft)
      */
     if(ft->keys){
         surface_keys_collect(ft, f);
-        if(fytim_layout_compute_ex(timui_width(f), timui_height(f),
+        if(fytim_layout_compute_ex(timui_width(f),
+                                   layout_height(ft, timui_height(f)),
                                    prompt_lines(ft), &lay)){
             layout_drop_empty_chrome(ft, &lay);
             draw_band(ft, f, &lay, &submitted);
@@ -3497,7 +3572,8 @@ enum fytim_result fytim_pump(struct fytim *ft)
             hist_next(ft);
     }
 
-    if(fytim_layout_compute_ex(timui_width(f), timui_height(f),
+    if(fytim_layout_compute_ex(timui_width(f),
+                               layout_height(ft, timui_height(f)),
                                prompt_lines(ft), &lay)){
         layout_drop_empty_chrome(ft, &lay);
         draw_band(ft, f, &lay, &submitted);

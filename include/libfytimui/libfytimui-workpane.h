@@ -42,6 +42,21 @@ struct fytim_workpane;   /* opaque; owned by the fytim it was created on */
 struct fytim_workpane *fytim_workpane_create(struct fytim *ft) FYTIM_EXPORT;
 void fytim_workpane_destroy(struct fytim_workpane *wp) FYTIM_EXPORT;
 
+/*
+ * Where the pane stands on the screen. By default it is the last band above
+ * the prompt block, which keeps the work next to the transcript it came from.
+ * FYTIM_WORKPANE_BELOW_PROMPT takes the rows under the prompt instead: the
+ * user types over the work rather than under it, and a pane that grows moves
+ * nothing the user is reading.
+ */
+enum fytim_workpane_place {
+    FYTIM_WORKPANE_ABOVE_PROMPT = 0,
+    FYTIM_WORKPANE_BELOW_PROMPT
+};
+enum fytim_result fytim_workpane_set_place(struct fytim_workpane *wp,
+                                           enum fytim_workpane_place place)
+    FYTIM_EXPORT;
+
 /* The tiles the pane holds. A pane with none takes no rows. */
 int fytim_workpane_count(const struct fytim_workpane *wp) FYTIM_EXPORT;
 
