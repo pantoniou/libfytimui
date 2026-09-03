@@ -331,6 +331,8 @@ if(VTERM_FOUND)
               a_zero_mix_keeps_the_colour a_full_mix_replaces_the_colour
               an_indexed_colour_is_left_alone the_cursor_stays_visible
               a_reversed_cell_is_washed a_head_takes_the_ground
+              a_ground_is_not_dimmed a_colour_ground_is_not_dimmed
+              a_dim_run_keeps_the_ground
               a_reversed_ground_grounds_the_tile
               a_reversed_ground_keeps_a_colour
               a_reversed_ground_leaves_a_bg

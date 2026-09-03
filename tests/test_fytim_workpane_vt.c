@@ -1163,6 +1163,84 @@ static void test_a_reversed_ground_shows_the_cursor(void)
     vth_close(&h);
 }
 
+/*
+ * Chrome is drawn dim, which is right for a rule beside content the terminal
+ * itself grounds. On a ground of the tile's own it is not: dim darkens the
+ * ground it stands on, and the head then reads as a grey band across a tile
+ * whose body is not grey. A ground is one colour or it is not a ground.
+ */
+static void test_a_ground_is_not_dimmed(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 20);
+    CHECK(fytim_surface_set_margin(a, "  ") == FYTIM_OK);
+    CHECK(fytim_surface_set_top(a, "HEAD") == FYTIM_OK);
+    CHECK(fytim_surface_set_bg(a, FYTIM_COLOR_REVERSED, 0) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'H', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        CHECK(cell_at(&h, row, col).attrs.reverse == 1);
+        CHECK(cell_at(&h, row, col).attrs.dim == 0);
+        /* the margin beside it stands on the same ground */
+        CHECK(cell_at(&h, row, 0).attrs.reverse == 1);
+        CHECK(cell_at(&h, row, 0).attrs.dim == 0);
+    }
+    vth_close(&h);
+}
+
+/* The same for a ground of the host's own: dim would darken that too. */
+static void test_a_colour_ground_is_not_dimmed(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 20);
+    CHECK(fytim_surface_set_top(a, "HEAD") == FYTIM_OK);
+    CHECK(fytim_surface_set_bg(a, WASH, 50) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'H', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        CHECK(rgb_equal(&h, cell_at(&h, row, col).bg, WASH));
+        CHECK(cell_at(&h, row, col).attrs.dim == 0);
+    }
+    vth_close(&h);
+}
+
+/* A row that dims itself does not dim the ground either. */
+static void test_a_dim_run_keeps_the_ground(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int row, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 20);
+    CHECK(fytim_surface_set_top(a, "\x1b[2mHEAD\x1b[0m") == FYTIM_OK);
+    CHECK(fytim_surface_set_bg(a, WASH, 50) == FYTIM_OK);
+    vth_pump(&h);
+    row = find_char(&h, 'H', &col);
+    CHECK(row >= 0);
+    if(row >= 0){
+        CHECK(rgb_equal(&h, cell_at(&h, row, col).bg, WASH));
+        CHECK(cell_at(&h, row, col).attrs.dim == 0);
+    }
+    vth_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_stand_side_by_side", test_two_tiles_stand_side_by_side },
@@ -1203,6 +1281,10 @@ static const struct case_ent cases[] = {
     { "the_cursor_stays_visible", test_the_cursor_stays_visible },
     { "a_reversed_cell_is_washed", test_a_reversed_cell_is_washed },
     { "a_head_takes_the_ground", test_a_head_takes_the_ground },
+    { "a_ground_is_not_dimmed", test_a_ground_is_not_dimmed },
+    { "a_dim_run_keeps_the_ground", test_a_dim_run_keeps_the_ground },
+    { "a_colour_ground_is_not_dimmed",
+      test_a_colour_ground_is_not_dimmed },
     { "a_reversed_ground_grounds_the_tile",
       test_a_reversed_ground_grounds_the_tile },
     { "a_reversed_ground_keeps_a_colour",

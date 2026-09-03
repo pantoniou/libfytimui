@@ -2092,6 +2092,12 @@ static TimuiStyle ground_on_(const struct ground *g, TimuiStyle st,
                              uint32_t fg, uint32_t bg)
 {
     if(g->bg == FYTIM_COLOR_DEFAULT) return st;
+    /*
+     * Dim darkens the whole cell, ground and all, so chrome drawn dim would
+     * lay a grey band across a tile whose body is not grey. A ground is one
+     * colour or it is not a ground; what a row says is still its own.
+     */
+    st.attrs &= ~(unsigned)TIMUI_ATTR_DIM;
     if(g->bg == FYTIM_COLOR_REVERSED){
         /* A cell already reversed shows its foreground as its ground. */
         if((st.attrs & TIMUI_ATTR_REVERSE) || bg != FYTIM_COLOR_DEFAULT)
@@ -2110,6 +2116,7 @@ static TimuiStyle ground_on_(const struct ground *g, TimuiStyle st,
 static TimuiStyle ground_style_(const struct ground *g, TimuiStyle st)
 {
     if(g->bg == FYTIM_COLOR_DEFAULT) return st;
+    st.attrs &= ~(unsigned)TIMUI_ATTR_DIM;
     if(g->bg == FYTIM_COLOR_REVERSED){
         st.fg = TIMUI_COLOR_DEFAULT;
         st.bg = TIMUI_COLOR_DEFAULT;
