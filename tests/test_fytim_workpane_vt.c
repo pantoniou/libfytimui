@@ -1241,6 +1241,115 @@ static void test_a_dim_run_keeps_the_ground(void)
     vth_close(&h);
 }
 
+/*
+ * A tile that takes the keys does not take the prompt away with them. The
+ * prompt is where the user goes back to, and a row that is there but not
+ * lit says that better than a row that is gone: the ground moves to the
+ * tile, and the prompt keeps its marker and what was typed into it.
+ */
+static void test_the_prompt_stays_when_a_tile_has_the_keys(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int prow, trow, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "PROMPT ") == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "typed") == FYTIM_OK);
+    CHECK(fytim_set_prompt_bg(h.ft, FYTIM_COLOR_REVERSED) == FYTIM_OK);
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 3, 20);
+    paint(a, 'A', FYTIM_COLOR_DEFAULT);
+    CHECK(fytim_surface_set_bg(a, FYTIM_COLOR_REVERSED, 0) == FYTIM_OK);
+    CHECK(fytim_surface_set_keys(a, true) == FYTIM_OK);
+    vth_pump(&h);
+
+    /* the prompt is still drawn, marker and all */
+    prow = find_char(&h, 'P', &col);
+    CHECK(prow >= 0);
+    trow = find_char(&h, 'A', NULL);
+    CHECK(trow >= 0);
+    if(prow >= 0 && trow >= 0){
+        /* under the tile, which is where the prompt always is */
+        CHECK(trow < prow);
+        /* the tile is lit and the prompt is not */
+        CHECK(cell_at(&h, trow, 0).attrs.reverse == 1);
+        CHECK(cell_at(&h, prow, col).attrs.reverse == 0);
+    }
+    vth_close(&h);
+}
+
+/* Giving the keys back lights the prompt again. */
+static void test_the_prompt_is_lit_when_the_keys_return(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int prow, col = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "PROMPT ") == FYTIM_OK);
+    CHECK(fytim_set_prompt_bg(h.ft, FYTIM_COLOR_REVERSED) == FYTIM_OK);
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 3, 20);
+    paint(a, 'A', FYTIM_COLOR_DEFAULT);
+    CHECK(fytim_surface_set_keys(a, true) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(fytim_surface_set_keys(a, false) == FYTIM_OK);
+    vth_pump(&h);
+
+    prow = find_char(&h, 'P', &col);
+    CHECK(prow >= 0);
+    if(prow >= 0)
+        CHECK(cell_at(&h, prow, col).attrs.reverse == 1);
+    vth_close(&h);
+}
+
+/*
+ * Nothing moves when the keys do. The prompt block stands whether it is lit
+ * or not, so a tile is granted the same rows before and after it takes the
+ * keys: a program that is being watched does not reflow because the user
+ * looked at it.
+ */
+static void test_the_keys_do_not_move_anything(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct vth h;
+    int before = 0, during = 0, after = 0, row_before, row_during;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "PROMPT ") == FYTIM_OK);
+    CHECK(fytim_set_prompt_bg(h.ft, FYTIM_COLOR_REVERSED) == FYTIM_OK);
+    wp = fytim_workpane_create(h.ft);
+    /* Ask for the whole screen: what is granted then says what the chrome
+     * left, which is the thing that must not change. */
+    a = fytim_surface_open_in(wp, ROWS, 20);
+    paint(a, 'A', FYTIM_COLOR_DEFAULT);
+    vth_pump(&h);
+    CHECK(fytim_surface_granted_rows(a, &before) == FYTIM_OK);
+    row_before = find_char(&h, 'A', NULL);
+
+    CHECK(fytim_surface_set_keys(a, true) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(fytim_surface_granted_rows(a, &during) == FYTIM_OK);
+    row_during = find_char(&h, 'A', NULL);
+
+    CHECK(fytim_surface_set_keys(a, false) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(fytim_surface_granted_rows(a, &after) == FYTIM_OK);
+
+    CHECK(before > 0);
+    CHECK(before < ROWS);   /* the chrome took rows, or this proves nothing */
+    CHECK(during == before);
+    CHECK(after == before);
+    /* and the screen did not slide up or down under it */
+    CHECK(row_before >= 0);
+    CHECK(row_during == row_before);
+    vth_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "two_tiles_stand_side_by_side", test_two_tiles_stand_side_by_side },
@@ -1283,6 +1392,11 @@ static const struct case_ent cases[] = {
     { "a_head_takes_the_ground", test_a_head_takes_the_ground },
     { "a_ground_is_not_dimmed", test_a_ground_is_not_dimmed },
     { "a_dim_run_keeps_the_ground", test_a_dim_run_keeps_the_ground },
+    { "the_prompt_stays_when_a_tile_has_the_keys",
+      test_the_prompt_stays_when_a_tile_has_the_keys },
+    { "the_keys_do_not_move_anything", test_the_keys_do_not_move_anything },
+    { "the_prompt_is_lit_when_the_keys_return",
+      test_the_prompt_is_lit_when_the_keys_return },
     { "a_colour_ground_is_not_dimmed",
       test_a_colour_ground_is_not_dimmed },
     { "a_reversed_ground_grounds_the_tile",

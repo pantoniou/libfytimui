@@ -183,10 +183,11 @@ static int row_with_text(struct vth *h, const char *text)
 }
 
 /*
- * The prompt is not on screen while a surface holds the keys: there is
- * nothing to type into it, and its rows belong to the program instead.
+ * The prompt stays while a surface holds the keys. It is where the user goes
+ * back to, so it keeps its row and its marker; what says the keys are
+ * elsewhere is that it is no longer lit, not that it is gone.
  */
-static void test_prompt_leaves_while_a_surface_holds_keys(void)
+static void test_prompt_stays_while_a_surface_holds_keys(void)
 {
     struct fytim_surface *s;
     struct vth h;
@@ -200,9 +201,9 @@ static void test_prompt_leaves_while_a_surface_holds_keys(void)
     CHECK(s != NULL);
     CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
     vth_pump(&h);
-    CHECK(row_with_text(&h, "PROMPTMARK") < 0);
+    CHECK(row_with_text(&h, "PROMPTMARK") >= 0);
 
-    /* Giving the keys back brings it out again. */
+    /* Giving the keys back changes nothing about it being there. */
     CHECK(fytim_surface_set_keys(s, false) == FYTIM_OK);
     vth_pump(&h);
     CHECK(row_with_text(&h, "PROMPTMARK") >= 0);
@@ -262,8 +263,11 @@ static void test_prompt_leaves_when_it_is_not_wanted(void)
 }
 
 /*
- * A chrome row with nothing in it is not a row: with no header, no status and
- * no prompt, a surface reaches the last line of the screen.
+ * A chrome row with nothing in it is not a row - for a host that asked for no
+ * prompt, which is the one that wants the whole screen. A surface that merely
+ * holds the keys keeps the screen it had: rows given to it when the keys
+ * arrived would be taken back when they left, and everything on the screen
+ * would move twice for a keystroke.
  */
 static void test_empty_chrome_gives_its_rows_back(void)
 {
@@ -275,7 +279,7 @@ static void test_empty_chrome_gives_its_rows_back(void)
     if(!vth_open(&h)){ CHECK(0); return; }
     s = fytim_surface_open(h.ft, ROWS, 8);
     CHECK(s != NULL);
-    CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
+    CHECK(fytim_set_prompt_enabled(h.ft, false) == FYTIM_OK);
     blank_row(cells, 8);
     for(i = 0; i < 8; i++)
         cells[i].chars[0] = 'b';
@@ -289,11 +293,6 @@ static void test_empty_chrome_gives_its_rows_back(void)
     vth_close(&h);
 }
 
-/*
- * The margin stands to the left of the screen and the screen starts after it.
- * A byte capture can only say the margin was written; where the cells landed
- * is a property of the grid.
- */
 static void test_margin_shifts_the_grid(void)
 {
     struct fytim_cell cells[6];
@@ -497,8 +496,8 @@ static const struct case_ent cases[] = {
     { "colour_reaches_the_cell",        test_colour_reaches_the_cell },
     { "empty_chrome_gives_its_rows_back", test_empty_chrome_gives_its_rows_back },
     { "margin_shifts_the_grid",         test_margin_shifts_the_grid },
-    { "prompt_leaves_while_a_surface_holds_keys",
-      test_prompt_leaves_while_a_surface_holds_keys },
+    { "prompt_stays_while_a_surface_holds_keys",
+      test_prompt_stays_while_a_surface_holds_keys },
     { "prompt_leaves_when_it_is_not_wanted",
       test_prompt_leaves_when_it_is_not_wanted },
     { "wide_glyph_keeps_the_row",       test_wide_glyph_keeps_the_row },

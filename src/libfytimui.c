@@ -3011,7 +3011,14 @@ static int wb_rows_total(const struct fytim *ft)
 static int prompt_lines(const struct fytim *ft)
 {
     const char *marker = ft->marker ? ft->marker : "> ";
-    if(ft->keys || ft->no_prompt) return 0;
+    /*
+     * A tile that took the keys did not take the prompt: it is where the
+     * user goes back to, and a row that is there but not lit says so. Only
+     * a host that asked for no prompt has none, and one row is all a prompt
+     * nobody is typing into needs.
+     */
+    if(ft->no_prompt) return 0;
+    if(ft->keys) return 1;
     const char *p = ft->input;
     size_t len = strlen(p), i = 0, next;
     int width = ft->term_w - sgr_disp_width(marker);
@@ -3094,7 +3101,12 @@ static void layout_drop_empty_chrome(const struct fytim *ft,
     int freed = 0;
     size_t i;
 
-    if(!ft->keys && !ft->no_prompt) return;
+    /*
+     * Only a host that asked for no prompt takes these rows. Giving them to
+     * a tile while it holds the keys would move everything on the screen the
+     * moment the keys went to it, and give them back when they came home.
+     */
+    if(!ft->no_prompt) return;
 
     if(!ft->header && lay->band[FYTIM_BAND_HEADER].h){
         freed += lay->band[FYTIM_BAND_HEADER].h;
@@ -3193,7 +3205,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
      * are reads the same wherever they are. The marker is drawn on it and
      * keeps what it says, as the head of a tile does.
      */
-    if(ft->prompt_bg != FYTIM_COLOR_DEFAULT){
+    if(ft->prompt_bg != FYTIM_COLOR_DEFAULT && !ft->keys){
         struct ground g = { ft, ft->prompt_bg, 100 };
 
         in_st = ground_style_(&g, in_st);
@@ -3342,10 +3354,14 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
         draw_row_styled(f, buf, r->x, r->y, r->w, marker, marker_st);
         marker_w = sgr_disp_width(marker);
         /*
-         * A surface holding the keys leaves no prompt band at all, so this
-         * runs only when the prompt is the user's. Drawing a focused text
-         * area then would also eat the text the surface was just given.
+         * The editor is drawn only when the prompt has the keys: a focused
+         * text area would eat the text the surface was just given. The row
+         * still shows what was typed, so the user sees the line waiting for
+         * them.
          */
+        if(ft->keys && ft->input[0])
+            draw_row_styled(f, buf, r->x + sgr_disp_width(marker), r->y,
+                            r->w - sgr_disp_width(marker), ft->input, in_st);
         if(!ft->keys){
             timui_set_focus(f, id);   /* no focus model: the prompt owns keys */
             if(card)

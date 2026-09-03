@@ -283,7 +283,7 @@ if(VTERM_FOUND)
         target_compile_options(test_fytim_surface_vt PRIVATE ${ASAN_C_FLAGS})
         target_link_options(test_fytim_surface_vt PRIVATE ${ASAN_C_FLAGS})
     endif()
-    foreach(t colour_reaches_the_cell prompt_leaves_while_a_surface_holds_keys
+    foreach(t colour_reaches_the_cell prompt_stays_while_a_surface_holds_keys
               prompt_leaves_when_it_is_not_wanted
               empty_chrome_gives_its_rows_back margin_shifts_the_grid
               wide_glyph_keeps_the_row
@@ -333,6 +333,9 @@ if(VTERM_FOUND)
               a_reversed_cell_is_washed a_head_takes_the_ground
               a_ground_is_not_dimmed a_colour_ground_is_not_dimmed
               a_dim_run_keeps_the_ground
+              the_prompt_stays_when_a_tile_has_the_keys
+              the_prompt_is_lit_when_the_keys_return
+              the_keys_do_not_move_anything
               a_reversed_ground_grounds_the_tile
               a_reversed_ground_keeps_a_colour
               a_reversed_ground_leaves_a_bg
