@@ -130,6 +130,18 @@ static void vth_row(struct vth *h, int y, char *out, size_t cap)
 }
 
 /* Row index whose text contains needle, or -1. */
+/* A cell colour compared as RGB, whatever the palette it arrived in. */
+static int vth_rgb_equal(struct vth *h, union fyvt_color got, uint32_t rgb)
+{
+    union fyvt_color want;
+
+    fyvt_color_rgb(&want, (uint8_t)(rgb >> 16), (uint8_t)(rgb >> 8),
+                   (uint8_t)rgb);
+    fyvt_screen_convert_color_to_rgb(h->vs, &got);
+    fyvt_screen_convert_color_to_rgb(h->vs, &want);
+    return fyvt_color_is_equal(&got, &want);
+}
+
 static int vth_find_row(struct vth *h, const char *needle)
 {
     char line[512];
@@ -182,6 +194,90 @@ static void test_prompt_style_fills_card(void)
                    dy, styled, h.cols);
         CHECK(styled == h.cols);
     }
+    vth_close(&h);
+}
+
+/* ---- the prompt stands on the same ground a tile does ------------------- */
+
+/*
+ * The prompt is where the keys are when no tile holds them, so it is grounded
+ * the way a focused tile is: one call, one ground, and the two read alike.
+ */
+static void test_prompt_ground_named(void)
+{
+    struct vth h;
+    int y, x, dy;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "PROMPT ") == FYTIM_OK);
+    /* no prompt style of its own: the ground is the whole of it */
+    CHECK(fytim_set_prompt_bg(h.ft, FYTIM_COLOR_REVERSED) == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "hello") == FYTIM_OK);
+    vth_pump(&h);
+
+    y = vth_find_row(&h, "PROMPT hello");
+    CHECK(y > 0 && y + 1 < h.rows);
+    for(dy = -1; dy <= 1; dy++){
+        int styled = 0;
+        for(x = 0; x < h.cols; x++){
+            struct fyvt_screen_cell cell;
+            struct fyvt_pos p = { y + dy, x };
+            fyvt_screen_get_cell(h.vs, p, &cell);
+            styled += !!cell.attrs.reverse;
+        }
+        CHECK(styled == h.cols);
+    }
+    vth_close(&h);
+}
+
+/* A ground of the host's own colours the same three rows. */
+static void test_prompt_ground_colour(void)
+{
+    struct fyvt_screen_cell cell;
+    struct fyvt_pos p;
+    struct vth h;
+    int y, dy;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "PROMPT ") == FYTIM_OK);
+    CHECK(fytim_set_prompt_bg(h.ft, 0x0000ffu) == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "hello") == FYTIM_OK);
+    vth_pump(&h);
+
+    y = vth_find_row(&h, "PROMPT hello");
+    CHECK(y > 0 && y + 1 < h.rows);
+    for(dy = -1; dy <= 1; dy++){
+        p.row = y + dy;
+        p.col = 4;
+        fyvt_screen_get_cell(h.vs, p, &cell);
+        CHECK(cell.attrs.reverse == 0);
+        CHECK(vth_rgb_equal(&h, cell.bg, 0x0000ffu));
+    }
+    vth_close(&h);
+}
+
+/* Removing it gives the prompt back to the style it had. */
+static void test_prompt_ground_removed(void)
+{
+    struct fyvt_screen_cell cell;
+    struct fyvt_pos p;
+    struct vth h;
+    int y;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "PROMPT ") == FYTIM_OK);
+    CHECK(fytim_set_prompt_bg(h.ft, 0x0000ffu) == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "hello") == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(fytim_set_prompt_bg(h.ft, FYTIM_COLOR_DEFAULT) == FYTIM_OK);
+    vth_pump(&h);
+
+    y = vth_find_row(&h, "PROMPT hello");
+    CHECK(y > 0);
+    p.row = y;
+    p.col = 4;
+    fyvt_screen_get_cell(h.vs, p, &cell);
+    CHECK(!vth_rgb_equal(&h, cell.bg, 0x0000ffu));
     vth_close(&h);
 }
 
@@ -612,6 +708,9 @@ int main(int argc, char **argv)
           test_regression_bubble_pinned_while_streaming },
         { "regression_indexed_colors_mapped",
           test_regression_indexed_colors_mapped },
+        { "prompt_ground_named", test_prompt_ground_named },
+        { "prompt_ground_colour", test_prompt_ground_colour },
+        { "prompt_ground_removed", test_prompt_ground_removed },
         { "regression_marker_sgr", test_regression_marker_sgr },
         { "regression_unmatched_shrink_held",
           test_regression_unmatched_shrink_held },

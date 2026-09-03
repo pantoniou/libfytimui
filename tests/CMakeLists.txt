@@ -391,7 +391,9 @@ if(VTERM_FOUND)
         target_compile_options(test_fytim_vt PRIVATE ${ASAN_C_FLAGS})
         target_link_options(test_fytim_vt PRIVATE ${ASAN_C_FLAGS})
     endif()
-    foreach(t prompt_style_fills_card prompt_wraps_and_grows
+    foreach(t prompt_style_fills_card prompt_ground_named
+              prompt_ground_colour prompt_ground_removed
+              prompt_wraps_and_grows
               prompt_reflows_after_resize
               regression_workband_cap_keeps_chrome
               regression_resize_repaints_width

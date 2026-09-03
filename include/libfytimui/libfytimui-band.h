@@ -169,6 +169,19 @@ enum fytim_result fytim_set_marker(struct fytim *ft, const char *marker) FYTIM_E
 enum fytim_result fytim_set_prompt_style(struct fytim *ft,
                                          const char *sgr) FYTIM_EXPORT;
 /*
+ * The ground the prompt block stands on - the editor row and the two rows
+ * that frame it - which is the ground of fytim_surface_set_bg() and follows
+ * the same rules: FYTIM_COLOR_REVERSED for the one the terminal draws text
+ * in, whatever the user made it, and 0xRRGGBB for one of the host's own. The
+ * marker keeps what it says, as a tile's head does.
+ *
+ * The prompt is where the keys are when no tile holds them, so a host that
+ * grounds its focused tile grounds this the same way and the two read alike.
+ * FYTIM_COLOR_DEFAULT removes it, leaving the prompt style above.
+ */
+enum fytim_result fytim_set_prompt_bg(struct fytim *ft,
+                                      uint32_t bg) FYTIM_EXPORT;
+/*
  * Say whether there is a user at this keyboard. A host that nobody types
  * into - a program driven by another program - asks for no prompt, and the
  * rows the prompt and its empty chrome would take go to the content. The
