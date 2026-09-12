@@ -44,7 +44,12 @@ enum fytim_event_type {
      * back through the history, negative is toward the live screen. */
     FYTIM_EVENT_SURFACE_SCROLL,
     FYTIM_EVENT_SURFACE_ZOOM,   /* the user asked to zoom or unzoom it */
-    FYTIM_EVENT_SURFACE_CLOSE   /* the user asked to be rid of it */
+    FYTIM_EVENT_SURFACE_CLOSE,  /* the user asked to be rid of it */
+    /* A click on the head of a tile, off its controls. @row and @col are
+     * the cell of the head text that was clicked, from the first cell after
+     * the margin of the tile: the host that wrote the head knows what is
+     * there. */
+    FYTIM_EVENT_SURFACE_CLICK
 };
 
 struct fytim_event {
@@ -69,6 +74,10 @@ struct fytim_event {
     /* FYTIM_EVENT_SURFACE_SCROLL: rows asked for, back through the history
      * when positive and toward the live screen when negative. */
     int delta;
+
+    /* FYTIM_EVENT_SURFACE_CLICK: the cell of the head text. */
+    int row;
+    int col;
 };
 
 /* Pop one event. Returns false when the queue is empty. */

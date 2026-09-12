@@ -94,6 +94,7 @@ struct fytim_surface {
      * drawn, and a click there is a click on nothing. */
     int rect_x, rect_y, rect_w, rect_h;
     int bar_x, zoom_x, close_x, ctl_y;
+    int head_x, head_y, head_rows;  /* the head text at the last frame */
 };
 
 /*
@@ -1660,6 +1661,7 @@ struct fytim_surface *fytim_surface_open_in(struct fytim_workpane *wp,
     sf->cols = cols;
     sf->cur_row = sf->cur_col = -1;
     sf->bar_x = sf->zoom_x = sf->close_x = sf->ctl_y = -1;
+    sf->head_rows = 0;
     /* The grid is the content: a surface is not capped below its own size
      * unless the host asks for it. */
     t->max_rows = rows;
@@ -2632,6 +2634,7 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                 sf->rect_x = tx; sf->rect_y = y;
                 sf->rect_w = tw; sf->rect_h = th;
                 sf->bar_x = sf->zoom_x = sf->close_x = sf->ctl_y = -1;
+    sf->head_rows = 0;
             }
             lines = sf ? surface_content_rows(sf) : styled_rows(t->content);
             content = lines;
@@ -2658,9 +2661,15 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
             if(top){
                 if(sf && pane_controls_live(wp))
                     draw_tile_marks(buf, sf, wp->controls, chrome, tx, ty, tw);
-                if(sf)
-                    ty += draw_surface_chrome(f, buf, sf, tx, ty, tw,
-                                              t->top, chrome, top);
+                if(sf){
+                    int n = draw_surface_chrome(f, buf, sf, tx, ty, tw,
+                                                t->top, chrome, top);
+                    int mw = sf->margin ? sgr_disp_width(sf->margin) : 0;
+                    sf->head_x = tx + (mw < tw ? mw : tw);
+                    sf->head_y = ty;
+                    sf->head_rows = n;
+                    ty += n;
+                }
                 else
                     ty += draw_chrome(f, buf, tx, ty, tw, t->top, chrome,
                                       top);
@@ -2747,6 +2756,7 @@ static void tile_unplaced(struct fytim_workband *t)
     sf->granted = 0;
     sf->rect_w = sf->rect_h = 0;
     sf->bar_x = sf->zoom_x = sf->close_x = -1;
+    sf->head_rows = 0;
 }
 
 /*
@@ -3597,6 +3607,20 @@ static void ev_push_surface(struct fytim *ft, enum fytim_event_type type,
     ev = &ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP];
     ev->surface = sf;
     ev->delta = delta;
+    ev->row = 0;
+    ev->col = 0;
+}
+
+/* A click on the head text of @sf, at its (@row, @col). */
+static void ev_push_click(struct fytim *ft, struct fytim_surface *sf, int row,
+                          int col)
+{
+    struct fytim_event *ev;
+
+    ev_push_surface(ft, FYTIM_EVENT_SURFACE_CLICK, sf, 0);
+    ev = &ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP];
+    ev->row = row;
+    ev->col = col;
 }
 
 /* The tile drawn over (@x, @y) at the last frame, or NULL. */
@@ -3639,6 +3663,10 @@ static bool pane_mouse(struct fytim *ft, TimuiFrame *f)
                 ev_push_surface(ft, FYTIM_EVENT_SURFACE_CLOSE, sf, 0);
             }else if(y == sf->ctl_y && sf->zoom_x >= 0 && x == sf->zoom_x){
                 ev_push_surface(ft, FYTIM_EVENT_SURFACE_ZOOM, sf, 0);
+            }else if(sf->head_rows > 0 && y >= sf->head_y &&
+                     y < sf->head_y + sf->head_rows && x >= sf->head_x){
+                /* The head is the host's: say which of its cells it was. */
+                ev_push_click(ft, sf, y - sf->head_y, x - sf->head_x);
             }else if(sf->bar_x >= 0 && x == sf->bar_x){
                 /* On the bar: the ends step a row when they are arrows, and
                  * the track pages toward where the user pointed. */
