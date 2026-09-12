@@ -136,6 +136,20 @@ jobs:
         cmake --build "${RUNNER_TEMP}/libfyaml-build"
         cmake --install "${RUNNER_TEMP}/libfyaml-build"
 
+    - name: Build libfypalette
+      shell: bash
+      run: |
+        git clone --depth 1 https://github.com/pantoniou/libfypalette.git "${RUNNER_TEMP}/libfypalette"
+        cmake -S "${RUNNER_TEMP}/libfypalette" -B "${RUNNER_TEMP}/libfypalette-build" \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_FYPALETTE_TESTS=OFF \
+          -DBUILD_FYPALETTE_TOOLS=OFF \
+          -DCMAKE_PREFIX_PATH="${RUNNER_TEMP}/fytimui-deps" \
+          -DCMAKE_INSTALL_PREFIX="${RUNNER_TEMP}/fytimui-deps"
+        cmake --build "${RUNNER_TEMP}/libfypalette-build"
+        cmake --install "${RUNNER_TEMP}/libfypalette-build"
+
     - name: Build libfyvterm
       shell: bash
       run: |
