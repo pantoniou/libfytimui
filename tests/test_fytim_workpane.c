@@ -828,6 +828,59 @@ static void test_a_click_asks_to_zoom(void)
     h_close(&h);
 }
 
+/* A click on the head of a tile says which cell of the head text it was. */
+static void test_a_click_on_the_head_reports_its_cell(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_event ev;
+    struct h_events evs;
+    char buf[16384];
+
+    if(!h_open_mouse(&h, true)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    fytim_workpane_set_controls(wp, FYTIM_WORKPANE_ZOOM);
+    a = fytim_surface_open_in(wp, 3, 80);
+    fytim_surface_set_top(a, "TILE NAME");
+    paint(a, 'A', 6);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    h_drain(&h, &evs);
+
+    h_click(&h, 3, 0);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SURFACE_CLICK, &ev));
+    CHECK(ev.surface == a && ev.row == 0 && ev.col == 3);
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_ZOOM, NULL));
+
+    /* the zoom mark is a control, not the head */
+    h_click(&h, 79, 0);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SURFACE_ZOOM, NULL));
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_CLICK, NULL));
+
+    /* a click on the screen of the program is not a head click */
+    h_click(&h, 3, 2);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_CLICK, NULL));
+
+    /* the column counts from the head text, after the margin */
+    fytim_surface_set_margin(a, "  ");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    h_drain(&h, &evs);
+    h_click(&h, 5, 0);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SURFACE_CLICK, &ev));
+    CHECK(ev.col == 3);
+    h_close(&h);
+}
+
 /* The wheel over a tile is that tile's, and does not reach the transcript. */
 static void test_the_wheel_belongs_to_the_tile(void)
 {
@@ -1299,6 +1352,7 @@ static const struct case_ent cases[] = {
     { "controls_take_a_column",      test_controls_take_a_column },
     { "a_click_asks_to_close",       test_a_click_asks_to_close },
     { "a_click_asks_to_zoom",        test_a_click_asks_to_zoom },
+    { "a_click_on_the_head_reports_its_cell", test_a_click_on_the_head_reports_its_cell },
     { "the_wheel_belongs_to_the_tile", test_the_wheel_belongs_to_the_tile },
     { "the_wheel_stays_with_the_transcript",
       test_the_wheel_stays_with_the_transcript },

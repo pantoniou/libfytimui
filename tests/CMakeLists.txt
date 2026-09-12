@@ -204,6 +204,7 @@ foreach(t two_tiles_share_the_width one_tile_takes_the_width
           destroy_with_open_tiles
           controls_need_the_grab controls_take_a_column
           a_click_asks_to_close a_click_asks_to_zoom
+          a_click_on_the_head_reports_its_cell
           the_wheel_belongs_to_the_tile the_wheel_stays_with_the_transcript
           the_bar_follows_the_extent
           a_band_is_a_tile_too two_bands_tile a_band_tile_commits
