@@ -248,7 +248,11 @@ foreach(t a_page_is_set_and_cleared a_page_replaces_the_band_stack
           rejects_bad_tile_pages the_prompt_reports_its_card
           a_page_view_keeps_the_grant a_committed_tile_page_keeps_its_head
           bound_tiles_take_their_slots a_tile_reports_its_rows
-          an_unplaced_tile_is_granted_nothing)
+          an_unplaced_tile_is_granted_nothing text_draws_into_cells
+          text_carries_its_style text_is_cut_to_its_box
+          text_measures_glyphs text_rejects_bad_input
+          cells_take_a_ground cells_take_a_wash a_surface_reads_back
+          a_band_reads_back)
     add_test(NAME fytim.page.${t} COMMAND test_fytim_page ${t})
 endforeach()
 

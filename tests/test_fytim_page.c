@@ -969,6 +969,294 @@ static void test_an_unplaced_tile_is_granted_nothing(void)
     h_close(&h);
 }
 
+#define CG_ROWS 4
+#define CG_COLS 10
+
+static void cells_fill(struct fytim_cell *g, uint32_t ch)
+{
+    int i;
+
+    memset(g, 0, sizeof(*g) * CG_ROWS * CG_COLS);
+    for(i = 0; i < CG_ROWS * CG_COLS; i++){
+        g[i].chars[0] = ch;
+        g[i].fg = g[i].bg = FYTIM_COLOR_DEFAULT;
+        g[i].width = 1;
+    }
+}
+
+#define CELL(g, r, c) ((g)[(r) * CG_COLS + (c)])
+
+/* Rows land at their cell, and what the text does not reach is kept. */
+static void test_text_draws_into_cells(void)
+{
+    struct fytim_cell g[CG_ROWS * CG_COLS];
+
+    cells_fill(g, 'x');
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 1, 2, 8, 3,
+                                "ab\ncd", 5) == 2);
+    CHECK(CELL(g, 1, 2).chars[0] == 'a' && CELL(g, 1, 3).chars[0] == 'b');
+    CHECK(CELL(g, 2, 2).chars[0] == 'c' && CELL(g, 2, 3).chars[0] == 'd');
+    CHECK(CELL(g, 1, 1).chars[0] == 'x' && CELL(g, 1, 4).chars[0] == 'x');
+    CHECK(CELL(g, 0, 2).chars[0] == 'x' && CELL(g, 3, 2).chars[0] == 'x');
+    CHECK(CELL(g, 1, 2).fg == FYTIM_COLOR_DEFAULT && CELL(g, 1, 2).attrs == 0);
+}
+
+/* The style carries across rows until it is reset. */
+static void test_text_carries_its_style(void)
+{
+    struct fytim_cell g[CG_ROWS * CG_COLS];
+    const char text[] = "\x1b[1mA\nB\x1b[0mC\n\x1b[38;2;1;2;3mX";
+
+    cells_fill(g, ' ');
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 0, 0, CG_COLS, CG_ROWS,
+                                text, sizeof text - 1) == 3);
+    CHECK((CELL(g, 0, 0).attrs & FYTIM_ATTR_BOLD) != 0);
+    CHECK((CELL(g, 1, 0).attrs & FYTIM_ATTR_BOLD) != 0);
+    CHECK(CELL(g, 1, 1).chars[0] == 'C' &&
+          (CELL(g, 1, 1).attrs & FYTIM_ATTR_BOLD) == 0);
+    CHECK(CELL(g, 2, 0).chars[0] == 'X' && CELL(g, 2, 0).fg == 0x010203);
+}
+
+/* A row is cut at its width with an ellipsis, and rows past the height are
+ * not drawn. */
+static void test_text_is_cut_to_its_box(void)
+{
+    struct fytim_cell g[CG_ROWS * CG_COLS];
+
+    cells_fill(g, 'x');
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 0, 0, 4, 2,
+                                "abcdef\n12\n34", 13) == 2);
+    CHECK(CELL(g, 0, 0).chars[0] == 'a' && CELL(g, 0, 2).chars[0] == 'c');
+    CHECK(CELL(g, 0, 3).chars[0] == 0x2026);
+    CHECK(CELL(g, 0, 4).chars[0] == 'x');
+    CHECK(CELL(g, 1, 0).chars[0] == '1');
+    CHECK(CELL(g, 2, 0).chars[0] == 'x');
+    /* the box is cut to the grid */
+    cells_fill(g, 'x');
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 3, 8, 50, 50,
+                                "abcd\nef", 7) == 1);
+    CHECK(CELL(g, 3, 8).chars[0] == 'a' && CELL(g, 3, 9).chars[0] == 0x2026);
+}
+
+/* A wide glyph takes two cells; a combining mark joins its base. */
+static void test_text_measures_glyphs(void)
+{
+    struct fytim_cell g[CG_ROWS * CG_COLS];
+
+    cells_fill(g, 'x');
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 0, 0, CG_COLS, 1,
+                                "\xe4\xb8\xadz", 4) == 1);
+    CHECK(CELL(g, 0, 0).chars[0] == 0x4e2d && CELL(g, 0, 0).width == 2);
+    CHECK(CELL(g, 0, 1).chars[0] == 0);
+    CHECK(CELL(g, 0, 2).chars[0] == 'z');
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 1, 0, CG_COLS, 1,
+                                "e\xcc\x81!", 4) == 1);
+    CHECK(CELL(g, 1, 0).chars[0] == 'e' && CELL(g, 1, 0).chars[1] == 0x301);
+    CHECK(CELL(g, 1, 1).chars[0] == '!');
+    /* a wide glyph with one column left is cut */
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 2, 0, 2, 1,
+                                "a\xe4\xb8\xad", 4) == 1);
+    CHECK(CELL(g, 2, 0).chars[0] == 'a' && CELL(g, 2, 1).chars[0] == 0x2026);
+}
+
+static void test_text_rejects_bad_input(void)
+{
+    struct fytim_cell g[CG_ROWS * CG_COLS];
+    const char bad[] = "ok\x1b[2Jgone";
+
+    cells_fill(g, 'x');
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 0, 0, CG_COLS, CG_ROWS,
+                                bad, sizeof bad - 1) == -1);
+    CHECK(CELL(g, 0, 0).chars[0] == 'x');
+    CHECK(fytim_cells_draw_text(NULL, CG_ROWS, CG_COLS, 0, 0, 1, 1, "a", 1) ==
+          -1);
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 0, 0, 1, 1, NULL, 1) ==
+          -1);
+    CHECK(fytim_cells_draw_text(g, -1, CG_COLS, 0, 0, 1, 1, "a", 1) == -1);
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 0, 0, 1, 1, NULL, 0) ==
+          0);
+    /* a box outside the grid or with no size draws nothing */
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 9, 0, 1, 1, "a", 1) ==
+          0);
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 0, -1, 1, 1, "a", 1) ==
+          -1);
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 0, 0, 0, 1, "a", 1) == 0);
+    CHECK(CELL(g, 0, 0).chars[0] == 'x');
+}
+
+/* A ground takes the box and nothing past it; a cell keeps what it says. */
+static void test_cells_take_a_ground(void)
+{
+    struct fytim_cell g[CG_ROWS * CG_COLS];
+
+    cells_fill(g, ' ');
+    CELL(g, 0, 1).fg = 0x112233;
+    CELL(g, 0, 1).bg = 0x445566;
+    CELL(g, 0, 1).attrs = FYTIM_ATTR_DIM | FYTIM_ATTR_BOLD;
+    CELL(g, 0, 2).fg = 0x112233;
+    CELL(g, 0, 2).attrs = FYTIM_ATTR_REVERSE;
+    CHECK(fytim_cells_ground(g, CG_ROWS, CG_COLS, 0, 0, 3, 2, 0x0a0b0c) == 0);
+    CHECK(CELL(g, 0, 0).bg == 0x0a0b0c && CELL(g, 1, 2).bg == 0x0a0b0c);
+    CHECK(CELL(g, 0, 1).fg == 0x112233 && CELL(g, 0, 1).bg == 0x0a0b0c &&
+          CELL(g, 0, 1).attrs == FYTIM_ATTR_BOLD);
+    /* a reversed cell says its ground as its text */
+    CHECK(CELL(g, 0, 2).fg == FYTIM_COLOR_DEFAULT &&
+          CELL(g, 0, 2).bg == 0x0a0b0c && CELL(g, 0, 2).attrs == 0);
+    CHECK(CELL(g, 0, 3).bg == FYTIM_COLOR_DEFAULT);
+    CHECK(CELL(g, 2, 0).bg == FYTIM_COLOR_DEFAULT);
+
+    /* the ground the terminal draws text in */
+    cells_fill(g, ' ');
+    CELL(g, 0, 0).fg = 0x112233;
+    CHECK(fytim_cells_ground(g, CG_ROWS, CG_COLS, 0, 0, 2, 1,
+                             FYTIM_COLOR_REVERSED) == 0);
+    CHECK(CELL(g, 0, 0).bg == 0x112233 && CELL(g, 0, 0).fg ==
+          FYTIM_COLOR_DEFAULT && (CELL(g, 0, 0).attrs & FYTIM_ATTR_REVERSE));
+    CHECK(CELL(g, 0, 1).bg == FYTIM_COLOR_DEFAULT &&
+          (CELL(g, 0, 1).attrs & FYTIM_ATTR_REVERSE));
+    CHECK(!(CELL(g, 0, 2).attrs & FYTIM_ATTR_REVERSE));
+
+    /* no ground, a box off the grid, and bad arguments */
+    cells_fill(g, ' ');
+    CHECK(fytim_cells_ground(g, CG_ROWS, CG_COLS, 0, 0, CG_COLS, CG_ROWS,
+                             FYTIM_COLOR_DEFAULT) == 0);
+    CHECK(fytim_cells_ground(g, CG_ROWS, CG_COLS, 3, 8, 50, 50, 0x010101) ==
+          0);
+    CHECK(CELL(g, 3, 9).bg == 0x010101 && CELL(g, 2, 9).bg ==
+          FYTIM_COLOR_DEFAULT && CELL(g, 0, 0).bg == FYTIM_COLOR_DEFAULT);
+    CHECK(fytim_cells_ground(g, CG_ROWS, CG_COLS, CG_ROWS, 0, 1, 1, 1) == 0);
+    CHECK(fytim_cells_ground(NULL, CG_ROWS, CG_COLS, 0, 0, 1, 1, 1) == -1);
+    CHECK(fytim_cells_ground(g, CG_ROWS, CG_COLS, -1, 0, 1, 1, 1) == -1);
+}
+
+/* The cells of a program take a wash: a colour of its own is mixed only in
+ * 24-bit colour, and a palette colour and a ground of its own are kept. */
+static void test_cells_take_a_wash(void)
+{
+    struct fytim_cell g[CG_ROWS * CG_COLS];
+
+    cells_fill(g, ' ');
+    CELL(g, 0, 1).bg = 0x101010;
+    CELL(g, 0, 1).attrs = FYTIM_ATTR_DIM;
+    CELL(g, 0, 2).bg = FYTIM_COLOR_INDEXED | 4;
+    CELL(g, 0, 3).fg = 0x101010;
+    CELL(g, 0, 3).attrs = FYTIM_ATTR_REVERSE;
+    CHECK(fytim_cells_wash(g, CG_ROWS, CG_COLS, 0, 0, 4, 1, 0x707070, 50,
+                           true) == 0);
+    CHECK(CELL(g, 0, 0).bg == 0x707070);
+    CHECK(CELL(g, 0, 1).bg == 0x404040 && CELL(g, 0, 1).attrs == 0);
+    CHECK(CELL(g, 0, 2).bg == (FYTIM_COLOR_INDEXED | 4));
+    /* a reversed cell shows its foreground as its ground */
+    CHECK(CELL(g, 0, 3).fg == 0x404040 &&
+          CELL(g, 0, 3).bg == FYTIM_COLOR_DEFAULT);
+    CHECK(CELL(g, 1, 0).bg == FYTIM_COLOR_DEFAULT);
+
+    /* without 24-bit colour a colour is kept, unless the mix is whole */
+    cells_fill(g, ' ');
+    CELL(g, 0, 0).bg = 0x101010;
+    CHECK(fytim_cells_wash(g, CG_ROWS, CG_COLS, 0, 0, 1, 1, 0x707070, 50,
+                           false) == 0);
+    CHECK(CELL(g, 0, 0).bg == 0x101010);
+    CHECK(fytim_cells_wash(g, CG_ROWS, CG_COLS, 0, 0, 1, 1, 0x707070, 100,
+                           false) == 0);
+    CHECK(CELL(g, 0, 0).bg == 0x707070);
+
+    /* the ground the terminal draws text in */
+    cells_fill(g, ' ');
+    CELL(g, 0, 0).fg = 0x112233;
+    CELL(g, 0, 1).bg = 0x445566;
+    CHECK(fytim_cells_wash(g, CG_ROWS, CG_COLS, 0, 0, 2, 1,
+                           FYTIM_COLOR_REVERSED, 0, false) == 0);
+    CHECK(CELL(g, 0, 0).bg == 0x112233 &&
+          CELL(g, 0, 0).fg == FYTIM_COLOR_DEFAULT &&
+          (CELL(g, 0, 0).attrs & FYTIM_ATTR_REVERSE));
+    CHECK(CELL(g, 0, 1).bg == 0x445566 &&
+          !(CELL(g, 0, 1).attrs & FYTIM_ATTR_REVERSE));
+    CHECK(fytim_cells_wash(NULL, CG_ROWS, CG_COLS, 0, 0, 1, 1, 1, 0,
+                           false) == -1);
+}
+
+/* A host reads back what a band holds. */
+static void test_a_band_reads_back(void)
+{
+    struct fytim_workband *wb;
+    struct harness h;
+    const char body[] = "one\ntwo\n\x1b[0m";
+    int rows = -1;
+
+    if(!h_open(&h)){
+        CHECK(0);
+        return;
+    }
+    wb = fytim_workband_create(h.ft);
+    CHECK(wb != NULL);
+    CHECK(fytim_workband_top(wb) == NULL && fytim_workband_bottom(wb) == NULL);
+    CHECK(fytim_workband_set(wb, body, sizeof body - 1) == FYTIM_OK);
+    CHECK(fytim_workband_set_top(wb, "") == FYTIM_OK);
+    CHECK(fytim_workband_set_bottom(wb, "FOOT") == FYTIM_OK);
+    CHECK(fytim_workband_set_max_rows(wb, 3) == FYTIM_OK);
+    /* a last row of styling alone takes no row */
+    CHECK(fytim_workband_content(wb, &rows) != NULL && rows == 2);
+    CHECK(fytim_workband_content(wb, NULL) != NULL);
+    CHECK(fytim_workband_top(wb) != NULL && fytim_workband_top(wb)[0] == '\0');
+    CHECK(fytim_workband_bottom(wb) != NULL &&
+          !strcmp(fytim_workband_bottom(wb), "FOOT"));
+    CHECK(fytim_workband_max_rows(wb) == 3);
+    CHECK(fytim_workband_content(NULL, &rows) == NULL && rows == 0);
+    CHECK(fytim_workband_top(NULL) == NULL && fytim_workband_max_rows(NULL) == 0);
+    fytim_workband_destroy(wb);
+    h_close(&h);
+}
+
+/* A host reads back the cells and the cursor it published. */
+static void test_a_surface_reads_back(void)
+{
+    struct harness h;
+    struct fytim_surface *sf;
+    struct fytim_cell row[3];
+    const struct fytim_cell *got;
+    bool visible = false;
+    uint32_t bg = 0;
+    int r = -1, c = -1, i;
+
+    if(!h_open(&h)){
+        CHECK(0);
+        return;
+    }
+    sf = fytim_surface_open(h.ft, 2, 3);
+    CHECK(sf != NULL);
+    memset(row, 0, sizeof row);
+    for(i = 0; i < 3; i++){
+        row[i].fg = row[i].bg = FYTIM_COLOR_DEFAULT;
+        row[i].width = 1;
+    }
+    row[1].chars[0] = 'q';
+    CHECK(fytim_surface_put_row(sf, 1, row, 3) == FYTIM_OK);
+    got = fytim_surface_row(sf, 1);
+    CHECK(got != NULL && got[1].chars[0] == 'q');
+    CHECK(fytim_surface_row(sf, 2) == NULL && fytim_surface_row(sf, -1) == NULL &&
+          fytim_surface_row(NULL, 0) == NULL);
+    CHECK(fytim_surface_set_cursor(sf, 1, 2, true) == FYTIM_OK);
+    CHECK(fytim_surface_cursor(sf, &r, &c, &visible) == FYTIM_OK &&
+          r == 1 && c == 2 && visible);
+    CHECK(fytim_surface_cursor(NULL, &r, &c, &visible) == FYTIM_ERR_INVALID);
+    CHECK(!fytim_truecolor(NULL));
+    /* the chrome it stands in */
+    CHECK(fytim_surface_margin(sf, &c) == NULL && c == 0);
+    CHECK(fytim_surface_set_margin(sf, "\x1b[7m::\x1b[27m") == FYTIM_OK);
+    CHECK(fytim_surface_margin(sf, &c) != NULL && c == 2);
+    CHECK(fytim_surface_margin(sf, NULL) != NULL);
+    CHECK(fytim_surface_bg(sf, &bg, &r) == FYTIM_OK &&
+          bg == FYTIM_COLOR_DEFAULT);
+    CHECK(fytim_surface_set_bg(sf, 0x123456, 150) == FYTIM_OK);
+    CHECK(fytim_surface_bg(sf, &bg, &r) == FYTIM_OK && bg == 0x123456 &&
+          r == 100);
+    CHECK(fytim_surface_bg(NULL, &bg, &r) == FYTIM_ERR_INVALID);
+    CHECK(fytim_surface_margin(NULL, &c) == NULL && c == 0);
+    fytim_surface_close(sf);
+    h_close(&h);
+}
+
 static void test_rejects_bad_tile_pages(void)
 {
     struct harness h;
@@ -1035,6 +1323,15 @@ static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "a_tile_reports_its_rows", test_a_tile_reports_its_rows },
     { "an_unplaced_tile_is_granted_nothing",
       test_an_unplaced_tile_is_granted_nothing },
+    { "text_draws_into_cells", test_text_draws_into_cells },
+    { "text_carries_its_style", test_text_carries_its_style },
+    { "text_is_cut_to_its_box", test_text_is_cut_to_its_box },
+    { "text_measures_glyphs", test_text_measures_glyphs },
+    { "text_rejects_bad_input", test_text_rejects_bad_input },
+    { "cells_take_a_ground", test_cells_take_a_ground },
+    { "cells_take_a_wash", test_cells_take_a_wash },
+    { "a_surface_reads_back", test_a_surface_reads_back },
+    { "a_band_reads_back", test_a_band_reads_back },
     { "a_committed_tile_page_keeps_its_head",
       test_a_committed_tile_page_keeps_its_head },
 };
