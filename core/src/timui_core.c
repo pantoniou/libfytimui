@@ -383,6 +383,29 @@ static Timui *g_sig_restore_ui = NULL;
 
 /* Minimal relative cursor move for the inline band ('A' up, 'B' down,
  * 'C' right). No stdio; mirrors the renderer's hand formatting. */
+/* The band cannot stand below the bottom of the screen: rows that do not fit
+ * scroll it up. A screen of unknown size leaves the row as it is. */
+static void inline_anchor_clamp_(Timui *ui){
+    int w = 0, h = 0;
+    if(ui->inline_anchor_row < 0) return;
+    if(timui_term_size(ui->fd.write_fd, &w, &h) != TIMUI_OK || h <= 0) return;
+    if(ui->inline_anchor_row + ui->h > h) ui->inline_anchor_row = h - ui->h;
+    if(ui->inline_anchor_row < 0) ui->inline_anchor_row = 0;
+}
+/* After a full paint: committed rows moved the anchor down. The cursor is on
+ * the anchor, so a band that does not know its row asks for it here. Only a
+ * band that takes clicks needs the row. */
+static void inline_anchor_advance_(Timui *ui, int committed){
+    if(ui->inline_anchor_row >= 0) ui->inline_anchor_row += committed;
+    else if(ui->inline_locating) ui->inline_locate_committed += committed;
+    inline_anchor_clamp_(ui);
+    if(ui->inline_anchor_row < 0 && !ui->inline_locating &&
+       (ui->cfg.flags & TIMUI_FLAG_MOUSE) && ui->transport.write){
+        (void)ui->transport.write(&ui->transport, "\x1b[6n", 4);
+        ui->inline_locating = 1;
+        ui->inline_locate_committed = 0;
+    }
+}
 static void inline_rel_move_(TimuiTransport *t, int n, char dir){
     char buf[16];
     char tmp[8];
@@ -572,6 +595,7 @@ TIMUI_API TimuiResult timui_open(const TimuiConfig *cfg, Timui **out_ui){
     }
     timui_set_terminal_pixels_(ui, w, h, px_w, px_h);
     ui->inline_dirty = 1;   /* inline: the first frame always claims the band */
+    ui->inline_anchor_row = -1;
     *out_ui = ui;
     timui_install_sig_handlers(ui);   /* W6: restore the terminal on SIGTERM/SIGHUP/SIGQUIT */
     return TIMUI_OK;
@@ -759,7 +783,11 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
         while(timui_poll_event(ui, &ev)){
             if(ev.kind == TIMUI_EVENT_MOUSE){
                 int mx = ev.as.mouse.x - 1;
-                int my = ev.as.mouse.y - 1;
+                /* the terminal counts from the top of the screen, the
+                 * frame from the top of the band */
+                int my = ev.as.mouse.y - 1 -
+                         ((ui->cfg.flags & TIMUI_FLAG_INLINE) &&
+                          ui->inline_anchor_row > 0 ? ui->inline_anchor_row : 0);
                 ui->mouse_wheel += ev.as.mouse.wheel_y;   /* expose wheel to the app */
                 if(ev.as.mouse.wheel_y){
                     ui->mouse_wheel_x = mx;
@@ -863,6 +891,15 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
                                            ev.as.paste.len);
                 int n = timui_append_paste_bytes_(ui, ev.as.paste.ptr, ev.as.paste.len);
                 if(n > 0) timui_edit_add_text_(ui, start, n);
+            } else if(ev.kind == TIMUI_EVENT_CURSOR_REPORT){
+                /* The answer to the question the band asked. A report that
+                 * nobody asked for, such as a key, is not an answer. */
+                if(ui->inline_locating){
+                    ui->inline_locating = 0;
+                    ui->inline_anchor_row = ev.as.cursor.row - 1 +
+                                            ui->inline_locate_committed;
+                    inline_anchor_clamp_(ui);
+                }
             } else if(ev.kind == TIMUI_EVENT_FOCUS){
                 if(focus_count < (int)(sizeof(focus_events) / sizeof(focus_events[0])))
                     focus_events[focus_count++] = ev;
@@ -984,6 +1021,7 @@ TIMUI_API void timui_end(TimuiFrame *frame){
             }
             ui->inline_trusted = 1;
             ui->inline_prev_rows = ui->curr.h;
+            inline_anchor_advance_(ui, committed);
         }else if(cells_changed){
             timui_inline_paint_diff(&ui->transport, &ui->prev, &ui->curr);
         }
@@ -1128,6 +1166,8 @@ TIMUI_API TimuiResult timui_resume(Timui *ui){
                            timui_str_from_cstr(ui->cfg.title));
     if(ui->transport.flush) ui->transport.flush(&ui->transport);
     ui->suspended = 0;
+    /* the child wrote to the screen: the band is not where it was */
+    timui_inline_locate(ui);
     timui_full_redraw(ui);
     return TIMUI_OK;
 }
@@ -1148,7 +1188,15 @@ TIMUI_API void timui_inline_clear_screen(Timui *ui){
     if(ui->transport.flush) ui->transport.flush(&ui->transport);
     ui->inline_prev_rows = 0;
     ui->inline_cursor_shown = 0;
+    ui->inline_anchor_row = 0;
+    ui->inline_locating = 0;
     timui_full_redraw(ui);   /* the screen is blank: nothing of ours is on it */
+}
+
+TIMUI_API void timui_inline_locate(Timui *ui){
+    if(!ui) return;
+    ui->inline_anchor_row = -1;
+    ui->inline_locating = 0;
 }
 
 TIMUI_API void timui_full_redraw(Timui *ui){

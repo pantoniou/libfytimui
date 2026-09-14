@@ -86,6 +86,13 @@ struct Timui {
      * shrink can clean up the rows it uncovered with a targeted erase. */
     int               inline_trusted;
     int               inline_prev_rows;
+    /* The row of the screen the anchor is on, or -1 while it is unknown. A
+     * click is reported on the rows of the band, so the band asks the
+     * terminal where it is (inline_locating) and adds the rows committed
+     * since it asked to the answer. */
+    int               inline_anchor_row;
+    int               inline_locating;
+    int               inline_locate_committed;
     TimuiRenderer     renderer;
     TimuiInputParser  input;
     TimuiMpsc         postq;     /* thread-safe message queue (timui_post) */

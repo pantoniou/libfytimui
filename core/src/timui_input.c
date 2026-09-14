@@ -70,6 +70,14 @@ static void emit_mouse(TimuiEventFn cb, void *ctx, const int *mp, unsigned char 
     if(code & 0x10) ev.as.mouse.mods |= TIMUI_MOD_CTRL;
     if(cb) cb(ctx, &ev);
 }
+/* A cursor position report: CSI row;col R, both given and 1-based. */
+static void emit_cursor(TimuiEventFn cb, void *ctx, int row, int col){
+    TimuiEvent ev;
+    ev.kind = TIMUI_EVENT_CURSOR_REPORT;
+    ev.as.cursor.row = row;
+    ev.as.cursor.col = col;
+    if(cb) cb(ctx, &ev);
+}
 static TimuiKey csi_letter(unsigned char f){
     switch(f){
         case 'A': return TIMUI_KEY_UP;
@@ -360,6 +368,10 @@ TIMUI_API size_t timui_input_feed(TimuiInputParser *p, const void *data, size_t 
                     /* Kitty keyboard: CSI <code>;<mods>u */
                     int code = p->nparams ? p->param : 0;
                     emit_key(cb, ctx, kitty_code_key(code), mods, (uint32_t)code);
+                    count++;
+                } else if(c == 'R' && p->nparams && p->has_mod &&
+                          p->param > 0 && p->mod_param > 0){
+                    emit_cursor(cb, ctx, p->param, p->mod_param);
                     count++;
                 } else if(c == 'I'){ emit_focus(cb, ctx, 1); count++; }
                 else if(c == 'O'){ emit_focus(cb, ctx, 0); count++; }

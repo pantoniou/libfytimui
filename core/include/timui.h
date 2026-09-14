@@ -262,6 +262,9 @@ TIMUI_API void             timui_full_redraw(Timui *ui);
 /* Inline mode: clear the screen and anchor the band at the top of it. The
  * scrollback of the terminal is untouched. */
 TIMUI_API void             timui_inline_clear_screen(Timui *ui);
+/* Forget the row of the screen the band is on, as a resize that rewrapped the
+ * screen does; a full paint asks the terminal again. */
+TIMUI_API void timui_inline_locate(Timui *ui);
 /* Advanced raw-event polling. timui_begin consumes key/text/mouse/paste into
  * frame aggregators (timui_text_input, key flags, mouse helpers). Events left
  * after begin are for out-of-band cases such as focus changes. */
@@ -1028,7 +1031,8 @@ TIMUI_API void timui_show_cursor(TimuiTransport *t);
 typedef enum {
     TIMUI_EVENT_NONE = 0, TIMUI_EVENT_KEY, TIMUI_EVENT_TEXT, TIMUI_EVENT_MOUSE,
     TIMUI_EVENT_PASTE, TIMUI_EVENT_RESIZE, TIMUI_EVENT_FOCUS, /* RESIZE reserved */
-    TIMUI_EVENT_TIMER, TIMUI_EVENT_USER
+    TIMUI_EVENT_TIMER, TIMUI_EVENT_USER,
+    TIMUI_EVENT_CURSOR_REPORT   /* CSI row;col R, 1-based */
 } TimuiEventKind;
 
 typedef enum {
@@ -1058,6 +1062,7 @@ struct TimuiEvent {
         struct { int x; int y; int button; int wheel_y; uint32_t mods;
                  int pressed; int released; int motion; } mouse;
         struct { int focused; } focus;
+        struct { int row; int col; } cursor;
     } as;
 };
 

@@ -4814,6 +4814,8 @@ enum fytim_result fytim_pump(struct fytim *ft)
             ft->term_w = nw;
             ft->term_h = nh;
             resized = true;
+            /* the terminal rewrapped the screen: the page asks where it is */
+            timui_inline_locate(ft->ui);
             ev_push(ft, FYTIM_EVENT_RESIZE, NULL, 0, nw, nh);
         }
         /*
