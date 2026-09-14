@@ -125,7 +125,7 @@ endif()
 
 foreach(t create_paints_inline commit_batches_into_pump
           commit_rejects_disallowed line_event_on_enter esc_emits_interrupt
-          page_key_emits_scrollback history_recall completion
+          page_key_emits_scrollback wheel_emits_scrollback_with_its_direction history_recall completion
           chrome_and_workband chrome_style_contract
           workband_lifecycle workband_caps_last_rows workband_top_bottom
           workband_trailing_newline_not_a_row
@@ -256,7 +256,12 @@ foreach(t a_page_is_set_and_cleared a_page_replaces_the_band_stack
           a_band_reads_back
           regression_a_click_below_the_top_finds_its_act
           regression_a_commit_moves_the_band_down
-          regression_a_stray_cursor_report_is_ignored)
+          regression_a_stray_cursor_report_is_ignored
+          the_alt_screen_takes_the_terminal a_drag_selects_text
+          a_click_or_a_drag_outside_selects_nothing
+          copy_needs_the_clipboard a_text_region_is_accepted
+          the_alt_screen_is_left_and_taken_again
+          a_wheel_names_the_region_under_it)
     add_test(NAME fytim.page.${t} COMMAND test_fytim_page ${t})
 endforeach()
 
@@ -433,7 +438,9 @@ if(VTERM_FOUND)
         target_link_options(test_fytim_page_vt PRIVATE ${ASAN_C_FLAGS})
     endif()
 
-    foreach(t the_rows_stand_in_order a_surface_stays_in_its_slot
+    foreach(t a_selection_is_drawn_in_reverse a_scroll_clears_the_selection
+              a_scroll_elsewhere_keeps_the_selection
+              the_rows_stand_in_order a_surface_stays_in_its_slot
               the_tail_shows_its_last_rows a_pane_tiles_inside_its_slot
               an_unbound_slot_is_blank a_cleared_page_restores_the_stack
               a_tile_page_frames_its_screen a_prompt_card_frames_the_editor

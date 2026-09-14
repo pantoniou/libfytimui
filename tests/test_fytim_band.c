@@ -167,11 +167,40 @@ static void test_page_key_emits_scrollback(void)
 {
     struct harness h;
     struct fytim_event ev;
+    int rows = 0;
     if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_size(h.ft, NULL, &rows) == FYTIM_OK);
     h_keys(&h, "\x1b[5~");
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     CHECK(fytim_next_event(h.ft, &ev));
     CHECK(ev.type == FYTIM_EVENT_SCROLLBACK);
+    /* A page back is a screen, less the row that stays to read on from. */
+    CHECK(rows > 1 && ev.delta == rows - 1);
+    h_keys(&h, "\x1b[6~");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev));
+    CHECK(ev.type == FYTIM_EVENT_SCROLLBACK);
+    CHECK(ev.delta == -(rows - 1));
+    h_close(&h);
+}
+
+/* A turn of the wheel says which way and how far: up is back through the
+ * history. */
+static void test_wheel_emits_scrollback_with_its_direction(void)
+{
+    struct harness h;
+    struct fytim_event ev;
+    if(!h_open(&h)){ CHECK(0); return; }
+    h_keys(&h, "\x1b[<64;1;1M");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev));
+    CHECK(ev.type == FYTIM_EVENT_SCROLLBACK);
+    CHECK(ev.delta == 3);
+    h_keys(&h, "\x1b[<65;1;1M");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev));
+    CHECK(ev.type == FYTIM_EVENT_SCROLLBACK);
+    CHECK(ev.delta == -3);
     h_close(&h);
 }
 
@@ -1044,6 +1073,8 @@ int main(int argc, char **argv)
         { "line_event_on_enter", test_line_event_on_enter },
         { "esc_emits_interrupt", test_esc_emits_interrupt },
         { "page_key_emits_scrollback", test_page_key_emits_scrollback },
+    { "wheel_emits_scrollback_with_its_direction",
+      test_wheel_emits_scrollback_with_its_direction },
         { "history_recall", test_history_recall },
         { "completion", test_completion },
         { "chrome_and_workband", test_chrome_and_workband },

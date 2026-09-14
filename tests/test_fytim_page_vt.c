@@ -13,6 +13,7 @@
 #include <libfyvterm.h>
 
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,6 +56,30 @@ static int vth_open(struct vth *h)
     fytim_cfg_default(&cfg);
     cfg.input_fd  = h->in[0];
     cfg.output_fd = h->out[1];
+    h->ft = fytim_create(&cfg);
+    return h->ft != NULL;
+}
+
+/* The same terminal, with the library on the alternate screen. */
+static int vth_open_alt(struct vth *h)
+{
+    struct fytim_cfg cfg;
+
+    setenv("COLORTERM", "truecolor", 1);
+    memset(h, 0, sizeof *h);
+    if(pipe(h->in) != 0) return 0;
+    if(pipe(h->out) != 0){ close(h->in[0]); close(h->in[1]); return 0; }
+    fcntl(h->out[0], F_SETFL, O_NONBLOCK);
+    h->vt = fyvt_create(&(struct fyvt_cfg){
+                    .struct_size = sizeof(struct fyvt_cfg),
+                    .rows = ROWS, .cols = COLS });
+    fyvt_set_utf8(h->vt, 1);
+    h->vs = fyvt_obtain_screen(h->vt);
+    fyvt_screen_reset(h->vs, 1);
+    fytim_cfg_default(&cfg);
+    cfg.input_fd  = h->in[0];
+    cfg.output_fd = h->out[1];
+    cfg.screen = FYTIM_SCREEN_ALT;
     h->ft = fytim_create(&cfg);
     return h->ft != NULL;
 }
@@ -477,7 +502,180 @@ static void test_a_prompt_card_frames_the_editor(void)
     vth_close(&h);
 }
 
+/* Whether the cell at @row, @col is drawn in reverse video. */
+static bool reverse_at(struct vth *h, int row, int col)
+{
+    struct fyvt_screen_cell c;
+    struct fyvt_pos pos;
+
+    memset(&c, 0, sizeof c);
+    pos.row = row;
+    pos.col = col;
+    fyvt_screen_get_cell(h->vs, pos, &c);
+    return c.attrs.reverse;
+}
+
+/* A selection is the cells between its two ends in reading order, within its
+ * text region, and nothing else; clearing it leaves no reverse cell. */
+static void test_a_selection_is_drawn_in_reverse(void)
+{
+    struct fytim_page_region r = {
+        .id = "transcript", .kind = FYTIM_PAGE_TEXT,
+        .row = 1, .col = 2, .width = 20, .height = 3
+    };
+    static const char rows[] =
+        "top\n"
+        "  aaaaaaaaaaaaaaaaaaaa\n"
+        "  bbbbbbbbbbbbbbbbbbbb\n"
+        "  cccccccccccccccccccc\n";
+    struct fytim_event ev;
+    char keys[64];
+    struct vth h;
+    int row, col;
+    bool want;
+
+    if(!vth_open_alt(&h)){ CHECK(0); return; }
+    CHECK(fytim_page_set(h.ft, rows, strlen(rows), &r, 1) == FYTIM_OK);
+    vth_pump(&h);
+    snprintf(keys, sizeof keys, "\x1b[<0;%d;%dM", 5 + 1, 1 + 1);
+    CHECK(write(h.in[1], keys, strlen(keys)) == (ssize_t)strlen(keys));
+    vth_pump(&h);
+    snprintf(keys, sizeof keys, "\x1b[<32;%d;%dM", 9 + 1, 2 + 1);
+    CHECK(write(h.in[1], keys, strlen(keys)) == (ssize_t)strlen(keys));
+    vth_pump(&h);
+    snprintf(keys, sizeof keys, "\x1b[<0;%d;%dm", 9 + 1, 2 + 1);
+    CHECK(write(h.in[1], keys, strlen(keys)) == (ssize_t)strlen(keys));
+    vth_pump(&h);
+    while(fytim_next_event(h.ft, &ev))
+        ;
+    for(row = 0; row < 5; row++)
+        for(col = 0; col < 30; col++){
+            /* From row 1 column 5 to row 2 column 9, inside columns 2..21. */
+            want = (row == 1 && col >= 5 && col <= 21) ||
+                   (row == 2 && col >= 2 && col <= 9);
+            if(reverse_at(&h, row, col) != want){
+                printf("  cell %d,%d reverse=%d, want %d\n", row, col,
+                       reverse_at(&h, row, col), want);
+                CHECK(0);
+                row = 5;
+                break;
+            }
+        }
+    fytim_selection_clear(h.ft);
+    vth_pump(&h);
+    for(row = 0; row < 5; row++)
+        for(col = 0; col < 30; col++)
+            if(reverse_at(&h, row, col)){
+                printf("  cell %d,%d is still reversed\n", row, col);
+                CHECK(0);
+                row = 5;
+                break;
+            }
+    vth_close(&h);
+}
+
+/* Whether any of the first rows and columns is drawn in reverse video. */
+static bool any_reverse(struct vth *h)
+{
+    int row, col;
+
+    for(row = 0; row < 5; row++)
+        for(col = 0; col < 30; col++)
+            if(reverse_at(h, row, col))
+                return true;
+    return false;
+}
+
+/* A turn of the wheel scrolls the text of the host, so the selection that
+ * stood on that text goes, and the host is told to scroll. */
+static void test_a_scroll_clears_the_selection(void)
+{
+    struct fytim_page_region r = {
+        .id = "transcript", .kind = FYTIM_PAGE_TEXT,
+        .row = 1, .col = 2, .width = 20, .height = 3
+    };
+    static const char rows[] =
+        "top\n"
+        "  aaaaaaaaaaaaaaaaaaaa\n"
+        "  bbbbbbbbbbbbbbbbbbbb\n"
+        "  cccccccccccccccccccc\n";
+    static const char *const drag[] = {
+        "\x1b[<0;6;2M", "\x1b[<32;10;3M", "\x1b[<0;10;3m",
+    };
+    struct fytim_event ev;
+    bool scrolled = false;
+    struct vth h;
+    size_t i;
+
+    if(!vth_open_alt(&h)){ CHECK(0); return; }
+    CHECK(fytim_page_set(h.ft, rows, strlen(rows), &r, 1) == FYTIM_OK);
+    vth_pump(&h);
+    for(i = 0; i < sizeof(drag) / sizeof(drag[0]); i++){
+        CHECK(write(h.in[1], drag[i], strlen(drag[i])) ==
+              (ssize_t)strlen(drag[i]));
+        vth_pump(&h);
+    }
+    while(fytim_next_event(h.ft, &ev))
+        ;
+    CHECK(any_reverse(&h));
+    CHECK(write(h.in[1], "\x1b[<64;6;3M", 10) == 10);
+    vth_pump(&h);
+    while(fytim_next_event(h.ft, &ev))
+        if(ev.type == FYTIM_EVENT_SCROLLBACK)
+            scrolled = true;
+    CHECK(scrolled);
+    CHECK(!any_reverse(&h));
+    vth_close(&h);
+}
+
+/* Scrolling another region leaves the selection where it stands; scrolling
+ * the region of the selection clears it. */
+static void test_a_scroll_elsewhere_keeps_the_selection(void)
+{
+    struct fytim_page_region r[2] = {
+        { .id = "transcript", .kind = FYTIM_PAGE_TEXT,
+          .row = 1, .col = 2, .width = 20, .height = 3 },
+        { .id = "text:1", .kind = FYTIM_PAGE_SLOT,
+          .row = 4, .col = 0, .width = 30, .height = 1 },
+    };
+    static const char rows[] =
+        "top\n"
+        "  aaaaaaaaaaaaaaaaaaaa\n"
+        "  bbbbbbbbbbbbbbbbbbbb\n"
+        "  cccccccccccccccccccc\n"
+        "output\n";
+    static const char *const drag[] = {
+        "\x1b[<0;6;2M", "\x1b[<32;10;3M", "\x1b[<0;10;3m",
+    };
+    struct fytim_event ev;
+    struct vth h;
+    size_t i;
+
+    if(!vth_open_alt(&h)){ CHECK(0); return; }
+    CHECK(fytim_page_set(h.ft, rows, strlen(rows), r, 2) == FYTIM_OK);
+    vth_pump(&h);
+    for(i = 0; i < sizeof(drag) / sizeof(drag[0]); i++){
+        CHECK(write(h.in[1], drag[i], strlen(drag[i])) ==
+              (ssize_t)strlen(drag[i]));
+        vth_pump(&h);
+    }
+    CHECK(any_reverse(&h));
+    CHECK(write(h.in[1], "\x1b[<64;3;5M", 10) == 10);
+    vth_pump(&h);
+    CHECK(any_reverse(&h));
+    CHECK(write(h.in[1], "\x1b[<64;6;3M", 10) == 10);
+    vth_pump(&h);
+    CHECK(!any_reverse(&h));
+    while(fytim_next_event(h.ft, &ev))
+        ;
+    vth_close(&h);
+}
+
 static const struct { const char *name; void (*fn)(void); } cases[] = {
+    { "a_selection_is_drawn_in_reverse", test_a_selection_is_drawn_in_reverse },
+    { "a_scroll_clears_the_selection", test_a_scroll_clears_the_selection },
+    { "a_scroll_elsewhere_keeps_the_selection",
+      test_a_scroll_elsewhere_keeps_the_selection },
     { "the_rows_stand_in_order", test_the_rows_stand_in_order },
     { "a_surface_stays_in_its_slot", test_a_surface_stays_in_its_slot },
     { "the_tail_shows_its_last_rows", test_the_tail_shows_its_last_rows },

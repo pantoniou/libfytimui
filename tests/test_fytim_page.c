@@ -11,11 +11,15 @@
 #include "libfytimui.h"
 
 #include <fcntl.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
+
+#include "test_pty.h"
 
 static int failures;
 #define CHECK(cond)                                                         \
@@ -52,6 +56,23 @@ static int h_open(struct harness *h)
     return h_open_mouse(h, false);
 }
 
+/* An instance on the alternate screen, with the clipboard when @clipboard. */
+static int h_open_alt(struct harness *h, bool clipboard)
+{
+    struct fytim_cfg cfg;
+    memset(h, 0, sizeof *h);
+    if(pipe(h->in) != 0) return 0;
+    if(pipe(h->out) != 0){ close(h->in[0]); close(h->in[1]); return 0; }
+    fcntl(h->out[0], F_SETFL, O_NONBLOCK);
+    fytim_cfg_default(&cfg);
+    cfg.input_fd  = h->in[0];
+    cfg.output_fd = h->out[1];
+    cfg.screen = FYTIM_SCREEN_ALT;
+    cfg.clipboard = clipboard;
+    h->ft = fytim_create(&cfg);
+    return h->ft != NULL;
+}
+
 static void h_type(struct harness *h, const char *s)
 {
     ssize_t n = write(h->in[1], s, strlen(s));
@@ -64,6 +85,22 @@ static void h_click(struct harness *h, int col, int row)
     snprintf(buf, sizeof buf, "\x1b[<0;%d;%dM\x1b[<0;%d;%dm",
              col + 1, row + 1, col + 1, row + 1);
     h_type(h, buf);
+}
+
+/* A drag of the first button from column @c0, row @r0 to @c1, @r1, one pump
+ * for each report, as a terminal sends them. */
+static void h_drag(struct harness *h, int c0, int r0, int c1, int r1)
+{
+    char buf[64];
+    snprintf(buf, sizeof buf, "\x1b[<0;%d;%dM", c0 + 1, r0 + 1);
+    h_type(h, buf);
+    (void)fytim_pump(h->ft);
+    snprintf(buf, sizeof buf, "\x1b[<32;%d;%dM", c1 + 1, r1 + 1);
+    h_type(h, buf);
+    (void)fytim_pump(h->ft);
+    snprintf(buf, sizeof buf, "\x1b[<0;%d;%dm", c1 + 1, r1 + 1);
+    h_type(h, buf);
+    (void)fytim_pump(h->ft);
 }
 
 #define H_EVENTS_MAX 32
@@ -412,6 +449,234 @@ static void test_regression_a_stray_cursor_report_is_ignored(void)
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     CHECK(acted(&h, 3, 11));
     CHECK(!acted(&h, 3, 21));
+    h_close(&h);
+}
+
+/* The alternate screen is the whole terminal: the page is not drawn as a band
+ * on the normal screen, and there is no scrollback to commit to. */
+static void test_the_alt_screen_takes_the_terminal(void)
+{
+    struct harness h, inl;
+    char buf[16384];
+    size_t n;
+
+    if(!h_open_alt(&h, false)){ CHECK(0); return; }
+    CHECK(set_rows(&h, "top\n") == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "top"));
+    CHECK(!contains(buf, n, "\x1b[0m\r\x1b[J"));
+    CHECK(fytim_commit(h.ft, "line\n", 5) == FYTIM_ERR_UNSUPPORTED);
+    h_close(&h);
+
+    if(!h_open(&inl)){ CHECK(0); return; }
+    CHECK(fytim_commit(inl.ft, "line\n", 5) == FYTIM_OK);
+    h_close(&inl);
+}
+
+/* The page with a text region "transcript": rows 1 to 3, columns 2 to 21. */
+static int page_with_text(struct harness *h)
+{
+    struct fytim_page_region r = {
+        .id = "transcript", .kind = FYTIM_PAGE_TEXT,
+        .row = 1, .col = 2, .width = 20, .height = 3
+    };
+    char buf[16384];
+
+    if(fytim_page_set(h->ft, "top\n  one\n  two\n  three\n", 24, &r, 1) !=
+       FYTIM_OK)
+        return 0;
+    if(fytim_pump(h->ft) != FYTIM_OK) return 0;
+    (void)h_out(h, buf, sizeof buf);
+    return 1;
+}
+
+/* A drag in a text region reports where it started and ended, counted from
+ * the region, and the id of the region. */
+static void test_a_drag_selects_text(void)
+{
+    struct fytim_event ev;
+    struct h_events evs;
+    struct harness h;
+
+    if(!h_open_alt(&h, false)){ CHECK(0); return; }
+    CHECK(page_with_text(&h));
+    h_drain(&h, &evs);
+    h_drag(&h, 5, 1, 9, 2);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SELECT, &ev));
+    CHECK(ev.text && ev.text_len == 10 && !memcmp(ev.text, "transcript", 10));
+    CHECK(ev.row == 0 && ev.col == 3);
+    CHECK(ev.end_row == 1 && ev.end_col == 7);
+
+    /* A drag that ends past the region ends on its edge. */
+    h_drag(&h, 4, 3, 40, 9);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SELECT, &ev));
+    CHECK(ev.row == 2 && ev.col == 2);
+    CHECK(ev.end_row == 2 && ev.end_col == 19);
+    h_close(&h);
+}
+
+/* A click is not a selection, and a drag that starts outside a text region
+ * selects nothing. */
+static void test_a_click_or_a_drag_outside_selects_nothing(void)
+{
+    struct h_events evs;
+    struct harness h;
+
+    if(!h_open_alt(&h, false)){ CHECK(0); return; }
+    CHECK(page_with_text(&h));
+    h_drain(&h, &evs);
+    h_click(&h, 5, 1);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(!h_event(&evs, FYTIM_EVENT_SELECT, NULL));
+    h_drag(&h, 5, 0, 9, 2);
+    h_drain(&h, &evs);
+    CHECK(!h_event(&evs, FYTIM_EVENT_SELECT, NULL));
+    h_close(&h);
+}
+
+/* The host copies the text it knows with OSC 52, and only when it asked for
+ * the clipboard. */
+static void test_copy_needs_the_clipboard(void)
+{
+    struct harness h;
+    char buf[1024];
+    size_t n;
+
+    if(!h_open_alt(&h, false)){ CHECK(0); return; }
+    CHECK(fytim_copy(h.ft, "hello", 5) == FYTIM_ERR_UNSUPPORTED);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(!contains(buf, n, "\x1b]52;"));
+    h_close(&h);
+
+    if(!h_open_alt(&h, true)){ CHECK(0); return; }
+    CHECK(fytim_copy(h.ft, "hello", 5) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "\x1b]52;c;aGVsbG8=\x1b\\"));
+    CHECK(fytim_copy(h.ft, NULL, 0) == FYTIM_ERR_INVALID);
+    CHECK(fytim_copy(h.ft, "", 0) == FYTIM_ERR_INVALID);
+    CHECK(fytim_copy(NULL, "x", 1) == FYTIM_ERR_INVALID);
+    h_close(&h);
+}
+
+/* Read what the terminal at @master was sent within a quarter of a second. */
+static size_t pty_read(int master, char *buf, size_t cap)
+{
+    struct pollfd pfd = { .fd = master, .events = POLLIN };
+    size_t n = 0;
+    ssize_t r;
+
+    while(n < cap - 1 && poll(&pfd, 1, 250) > 0){
+        r = read(master, buf + n, cap - 1 - n);
+        if(r <= 0) break;
+        n += (size_t)r;
+    }
+    buf[n] = '\0';
+    return n;
+}
+
+/* On a terminal the alternate screen is entered with drag tracking, left on
+ * suspend and taken again on resume, and left on destroy. */
+static void test_the_alt_screen_is_left_and_taken_again(void)
+{
+    struct fytim_cfg cfg;
+    struct winsize ws = { .ws_row = 24, .ws_col = 80 };
+    struct fytim *ft;
+    char buf[65536];
+    int master, slave, input;
+    size_t n;
+
+    if(!timui_test_open_pty_pair(__func__, &master, &slave)) return;
+    input = open("/dev/null", O_RDONLY);
+    if(input < 0){ close(slave); close(master); CHECK(0); return; }
+    CHECK(ioctl(slave, TIOCSWINSZ, &ws) == 0);
+    fytim_cfg_default(&cfg);
+    cfg.input_fd = input;
+    cfg.output_fd = slave;
+    cfg.screen = FYTIM_SCREEN_ALT;
+    ft = fytim_create(&cfg);
+    CHECK(ft != NULL);
+    if(!ft){ close(input); close(slave); close(master); return; }
+    n = pty_read(master, buf, sizeof buf);
+    CHECK(contains(buf, n, "\x1b[?1049h"));
+    CHECK(contains(buf, n, "\x1b[?1002h"));
+    CHECK(fytim_suspend(ft) == FYTIM_OK);
+    n = pty_read(master, buf, sizeof buf);
+    CHECK(contains(buf, n, "\x1b[?1049l"));
+    CHECK(fytim_resume(ft) == FYTIM_OK);
+    n = pty_read(master, buf, sizeof buf);
+    CHECK(contains(buf, n, "\x1b[?1049h"));
+    fytim_destroy(ft);
+    n = pty_read(master, buf, sizeof buf);
+    CHECK(contains(buf, n, "\x1b[?1049l"));
+    close(input);
+    close(slave);
+    close(master);
+}
+
+/* A turn of the wheel names the region of the page under it, the last of the
+ * regions that hold the cell; a page key names none. */
+static void test_a_wheel_names_the_region_under_it(void)
+{
+    struct fytim_page_region r[3] = {
+        { .id = "canvas", .kind = FYTIM_PAGE_SLOT,
+          .row = 0, .col = 0, .width = 30, .height = 6 },
+        { .id = "transcript", .kind = FYTIM_PAGE_TEXT,
+          .row = 1, .col = 2, .width = 20, .height = 3 },
+        { .id = "text:1", .kind = FYTIM_PAGE_SLOT,
+          .row = 4, .col = 0, .width = 30, .height = 2 },
+    };
+    static const struct { int col, row; const char *id; } wheels[] = {
+        { 5, 2, "transcript" }, { 5, 4, "text:1" }, { 1, 0, "canvas" },
+    };
+    struct fytim_event ev;
+    struct h_events evs;
+    struct harness h;
+    char buf[64];
+    size_t i;
+
+    if(!h_open_alt(&h, false)){ CHECK(0); return; }
+    CHECK(fytim_page_set(h.ft, "\n\n\n\n\n\n", 6, r, 3) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    for(i = 0; i < sizeof(wheels) / sizeof(wheels[0]); i++){
+        snprintf(buf, sizeof buf, "\x1b[<64;%d;%dM", wheels[i].col + 1,
+                 wheels[i].row + 1);
+        h_type(&h, buf);
+        CHECK(fytim_pump(h.ft) == FYTIM_OK);
+        h_drain(&h, &evs);
+        CHECK(h_event(&evs, FYTIM_EVENT_SCROLLBACK, &ev));
+        CHECK(ev.delta == 3);
+        CHECK(ev.text && ev.text_len == strlen(wheels[i].id) &&
+              !memcmp(ev.text, wheels[i].id, ev.text_len));
+    }
+    h_type(&h, "\x1b[5~");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SCROLLBACK, &ev));
+    CHECK(ev.text == NULL && ev.text_len == 0);
+    h_close(&h);
+}
+
+/* A text region is a region of the page; a kind the library does not know is
+ * not. */
+static void test_a_text_region_is_accepted(void)
+{
+    struct fytim_page_region r = {
+        .id = "transcript", .kind = FYTIM_PAGE_TEXT,
+        .row = 0, .col = 0, .width = 4, .height = 2
+    };
+    struct harness h;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_page_set(h.ft, "ab\ncd\n", 6, &r, 1) == FYTIM_OK);
+    r.kind = (enum fytim_page_region_kind)99;
+    CHECK(fytim_page_set(h.ft, "ab\ncd\n", 6, &r, 1) == FYTIM_ERR_INVALID);
+    fytim_selection_clear(h.ft);
+    fytim_selection_clear(NULL);
     h_close(&h);
 }
 
@@ -1424,6 +1689,17 @@ static const struct { const char *name; void (*fn)(void); } cases[] = {
       test_regression_a_commit_moves_the_band_down },
     { "regression_a_stray_cursor_report_is_ignored",
       test_regression_a_stray_cursor_report_is_ignored },
+    { "the_alt_screen_takes_the_terminal",
+      test_the_alt_screen_takes_the_terminal },
+    { "a_drag_selects_text", test_a_drag_selects_text },
+    { "a_click_or_a_drag_outside_selects_nothing",
+      test_a_click_or_a_drag_outside_selects_nothing },
+    { "copy_needs_the_clipboard", test_copy_needs_the_clipboard },
+    { "a_text_region_is_accepted", test_a_text_region_is_accepted },
+    { "the_alt_screen_is_left_and_taken_again",
+      test_the_alt_screen_is_left_and_taken_again },
+    { "a_wheel_names_the_region_under_it",
+      test_a_wheel_names_the_region_under_it },
 };
 
 int main(int argc, char **argv)
