@@ -15,6 +15,11 @@ constrain everything else.
 | [0006](decisions/0006-a-page-of-slots-in-two-screen-modes.md) | A page of slots, inline and full screen, beside the band stack | The host renders UI Markdown; the library composes its slots. The band stack stays. |
 | [0007](decisions/0007-render-the-page-for-each-frame.md) | Render the page again for each frame | Measured: a page of 16 tiles at 400x120 is below 1 ms a frame; the pump, not the Markdown, is the cost. |
 
+## The page API
+
+[`page.md`](page.md) — how tile pages, the cells a host draws, the rule
+between columns and the keys a host takes fit together.
+
 ## Vendored core
 
 [`vendor-deltas.md`](vendor-deltas.md) — every change to `core/`, with the
