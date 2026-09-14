@@ -50,7 +50,9 @@ struct fytim_workpane;
 
 enum fytim_page_region_kind {
     FYTIM_PAGE_ACT = 0,    /* a clickable label, one row */
-    FYTIM_PAGE_SLOT        /* cells that a bound component draws */
+    FYTIM_PAGE_SLOT,       /* cells that a bound component draws */
+    FYTIM_PAGE_TEXT        /* cells the host drew text in, which a drag
+                              selects (FYTIM_EVENT_SELECT) */
 };
 
 /* A region of the page, in cells from its first row and column. */

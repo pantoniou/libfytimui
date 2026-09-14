@@ -14,6 +14,15 @@
 struct fytim;        /* opaque UI instance */
 struct fytim_pane;   /* opaque pane; owned by the fytim it was opened on */
 
+/* Where the UI stands on the terminal. */
+enum fytim_screen {
+    FYTIM_SCREEN_INLINE = 0, /* a live region under the scrollback of the
+                                terminal: committed rows go there */
+    FYTIM_SCREEN_ALT         /* the whole alternate screen: no scrollback, a
+                                page as tall as the terminal, and the mouse
+                                grabbed to select text the host marks */
+};
+
 struct fytim_cfg {
     size_t struct_size;      /* sizeof(struct fytim_cfg); forward-compat guard */
     int    input_fd;         /* terminal input; -1 selects stdin */
@@ -27,7 +36,8 @@ struct fytim_cfg {
                                 give a work pane its controls (scroll bars and
                                 the marks that zoom or close a tile), and the
                                 grab then lasts as long as the UI does. */
-    bool   clipboard;        /* OSC 52 copy out of a pane (pane model) */
+    bool   clipboard;        /* let fytim_copy() write the clipboard of the
+                                terminal with OSC 52 */
     int    workband_rows;    /* default max content rows per work-band;
                                 0 selects the default (4) */
     bool   intr_signal;      /* leave ^C generating SIGINT instead of
@@ -37,6 +47,8 @@ struct fytim_cfg {
                                 host whose loop is wedged cannot read ^C,
                                 because reading it needs that same loop. ^\
                                 and ^Z stay application keys. */
+    enum fytim_screen screen; /* FYTIM_SCREEN_INLINE unless the host takes
+                                 the alternate screen */
 };
 
 /* Fill cfg with defaults (stdin/stdout). */

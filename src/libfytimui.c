@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <unistd.h>
 
 #ifndef FYTIM_VERSION_STRING
@@ -230,6 +231,18 @@ struct fytim {
     struct fytim_page_region *page_regions;
     size_t page_nregions;
     int    page_h;                 /* rows, or the lowest region bottom */
+
+    /* The screen the instance stands on, and whether the host may write the
+     * clipboard of the terminal (decision 0008). */
+    enum fytim_screen screen;
+    bool   clipboard;
+    /* A selection over a text region of the page, in cells of the region:
+     * where the drag started and where it is now. @sel_id names the region,
+     * which a later page may no longer hold. */
+    char   sel_id[FYTIM_PAGE_ID_MAX + 1];
+    bool   sel_dragging;
+    bool   sel_shown;
+    int    sel_row0, sel_col0, sel_row1, sel_col1;
 };
 
 const char *fytim_version_string(void)
@@ -261,6 +274,7 @@ void fytim_cfg_default(struct fytim_cfg *cfg)
     cfg->clipboard = false;
     cfg->workband_rows = 0;   /* 0 selects the default */
     cfg->intr_signal   = false;
+    cfg->screen        = FYTIM_SCREEN_INLINE;
 }
 
 static struct fytim_pane *pane_new(struct fytim *ft, const char *title)
@@ -297,6 +311,8 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
         return NULL;   /* built against a different header revision */
     }
 
+    if(cfg->screen != FYTIM_SCREEN_INLINE && cfg->screen != FYTIM_SCREEN_ALT)
+        return NULL;
     ft = calloc(1, sizeof *ft);
     if(!ft) return NULL;
 
@@ -310,9 +326,15 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
      * FORCED, not capability-gated: unsupporting terminals ignore the
      * private mode, supporting ones render each update atomically -- the
      * last line of defense against streaming flicker. */
-    tcfg.flags |= TIMUI_FLAG_EXTERNAL_POLL | TIMUI_FLAG_INLINE |
-                  TIMUI_FLAG_HIDE_CURSOR |
+    tcfg.flags |= TIMUI_FLAG_EXTERNAL_POLL | TIMUI_FLAG_HIDE_CURSOR |
                   TIMUI_FLAG_KITTY_KEYBOARD | TIMUI_FLAG_SYNC_OUTPUT;
+    /* The alternate screen is the whole terminal, and the text on it is
+     * selected with the mouse (decision 0008). */
+    if(cfg->screen == FYTIM_SCREEN_ALT)
+        tcfg.flags |= TIMUI_FLAG_ALT_SCREEN | TIMUI_FLAG_MOUSE |
+                      TIMUI_FLAG_MOUSE_DRAG;
+    else
+        tcfg.flags |= TIMUI_FLAG_INLINE;
     if(cfg->intr_signal) tcfg.flags |= TIMUI_FLAG_INTR_SIGNAL;
     /*
      * The grab is the host's call and it is not free: with it, selection and
@@ -322,6 +344,9 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
      */
     if(cfg->mouse) tcfg.flags |= TIMUI_FLAG_MOUSE;
     ft->mouse = cfg->mouse;
+    ft->screen = cfg->screen;
+    ft->clipboard = cfg->clipboard;
+    if(ft->screen == FYTIM_SCREEN_ALT) ft->mouse = true;
 
     ft->wb_default_max = (cfg->workband_rows > 0) ? cfg->workband_rows
                                                   : FYTIM_WORKBAND_DEFAULT;
@@ -340,6 +365,7 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
                                                 transcript row keeps the full
                                                 chrome (see wb_rows_total) */
     if(ft->band_rows > ft->term_h) ft->band_rows = ft->term_h;
+    if(ft->screen == FYTIM_SCREEN_ALT) ft->band_rows = ft->term_h;
     ft->band_w = ft->term_w;
     tcfg.inline_rows = ft->band_rows;
 
@@ -752,6 +778,8 @@ enum fytim_result fytim_clear_screen(struct fytim *ft)
 enum fytim_result fytim_commit(struct fytim *ft, const char *buf, size_t len)
 {
     if(!ft || (!buf && len)) return FYTIM_ERR_INVALID;
+    /* The alternate screen has no scrollback to commit to. */
+    if(ft->screen == FYTIM_SCREEN_ALT) return FYTIM_ERR_UNSUPPORTED;
     if(len == 0) return FYTIM_OK;
     if(!rendered_only(buf, len)) return FYTIM_ERR_INVALID;
     commit_norm(ft, buf, len);
@@ -4271,7 +4299,7 @@ static bool page_region_valid(const struct fytim_page_region *r)
     if(r->height > INT_MAX - r->row || r->width > INT_MAX - r->col)
         return false;
     if(r->kind == FYTIM_PAGE_ACT) return r->height == 1;
-    return r->kind == FYTIM_PAGE_SLOT;
+    return r->kind == FYTIM_PAGE_SLOT || r->kind == FYTIM_PAGE_TEXT;
 }
 
 /*
@@ -4326,6 +4354,21 @@ static enum fytim_result page_copy(const char *rows, size_t len,
     return FYTIM_OK;
 }
 
+/* The text region @id of the page, or NULL. */
+static const struct fytim_page_region *page_text_region(const struct fytim *ft,
+                                                        const char *id)
+{
+    size_t i;
+
+    if(!ft->page_set || !id || !*id) return NULL;
+    for(i = 0; i < ft->page_nregions; i++)
+        if(ft->page_regions[i].kind == FYTIM_PAGE_TEXT &&
+           ft->page_regions[i].width > 0 && ft->page_regions[i].height > 0 &&
+           !strcmp(ft->page_regions[i].id, id))
+            return &ft->page_regions[i];
+    return NULL;
+}
+
 enum fytim_result fytim_page_set(struct fytim *ft, const char *rows,
                                  size_t len,
                                  const struct fytim_page_region *regions,
@@ -4345,13 +4388,58 @@ enum fytim_result fytim_page_set(struct fytim *ft, const char *rows,
     ft->page_nregions = count;
     ft->page_h = h;
     ft->page_set = true;
+    /* A selection stands only on the region it was made in. */
+    if((ft->sel_shown || ft->sel_dragging) && !page_text_region(ft, ft->sel_id))
+        fytim_selection_clear(ft);
     return FYTIM_OK;
 }
 
 void fytim_page_clear(struct fytim *ft)
 {
     if(!ft) return;
+    fytim_selection_clear(ft);
     page_free(ft);
+}
+
+void fytim_selection_clear(struct fytim *ft)
+{
+    if(!ft) return;
+    ft->sel_dragging = false;
+    ft->sel_shown = false;
+    ft->sel_id[0] = '\0';
+}
+
+/* The transport of fytim_copy(): the output of the terminal, written whole. */
+static int copy_write_(TimuiTransport *t, const void *data, size_t len)
+{
+    const int *fd = t->ctx;
+    const char *p = data;
+    ssize_t n;
+
+    while(len > 0){
+        n = write(*fd, p, len);
+        if(n < 0 && errno == EINTR) continue;
+        if(n <= 0) return -1;
+        p += n;
+        len -= (size_t)n;
+    }
+    return 0;
+}
+
+enum fytim_result fytim_copy(struct fytim *ft, const char *text, size_t len)
+{
+    TimuiTransport t;
+    TimuiStr str;
+
+    if(!ft || !text || !len) return FYTIM_ERR_INVALID;
+    if(!ft->clipboard) return FYTIM_ERR_UNSUPPORTED;
+    memset(&t, 0, sizeof t);
+    t.write = copy_write_;
+    t.ctx = &ft->out_fd;
+    str.ptr = text;
+    str.len = len;
+    timui_clipboard_set(&t, str);
+    return FYTIM_OK;
 }
 
 bool fytim_page_active(const struct fytim *ft)
@@ -4718,6 +4806,35 @@ static void draw_slot(struct fytim *ft, TimuiFrame *f,
     sf->granted = rows;
 }
 
+/* Reverse the cells of the selection, in reading order between its ends. */
+static void page_selection_draw(struct fytim *ft, TimuiFrame *f)
+{
+    TimuiCellBuffer *b = timui_frame_buffer(f);
+    const struct fytim_page_region *r;
+    int r0, c0, r1, c1, row, col, from, to, x, y;
+
+    if(!ft->sel_shown || !b) return;
+    r = page_text_region(ft, ft->sel_id);
+    if(!r) return;
+    r0 = ft->sel_row0; c0 = ft->sel_col0;
+    r1 = ft->sel_row1; c1 = ft->sel_col1;
+    if(r1 < r0 || (r1 == r0 && c1 < c0)){
+        r0 = ft->sel_row1; c0 = ft->sel_col1;
+        r1 = ft->sel_row0; c1 = ft->sel_col0;
+    }
+    for(row = r0; row <= r1; row++){
+        from = row == r0 ? c0 : 0;
+        to = row == r1 ? c1 : r->width - 1;
+        for(col = from; col <= to; col++){
+            x = r->col + col;
+            y = r->row + row;
+            if(x < 0 || y < 0 || x >= b->w || y >= b->h) continue;
+            b->cells[(size_t)y * (size_t)b->w + (size_t)x].attrs |=
+                TIMUI_ATTR_REVERSE;
+        }
+    }
+}
+
 static void draw_page(struct fytim *ft, TimuiFrame *f, bool *submitted)
 {
     TimuiStyle dim = timui_style_make(TIMUI_COLOR_DEFAULT, TIMUI_COLOR_DEFAULT,
@@ -4745,6 +4862,7 @@ static void draw_page(struct fytim *ft, TimuiFrame *f, bool *submitted)
         if(ft->page_regions[i].kind == FYTIM_PAGE_SLOT)
             draw_slot(ft, f, &ft->page_regions[i], wb_st, status_st,
                       submitted);
+    page_selection_draw(ft, f);
 }
 
 /* The page when one is set, else the band stack. */
@@ -4764,16 +4882,86 @@ static void draw_screen(struct fytim *ft, TimuiFrame *f, bool *submitted)
     }
 }
 
-/* A click on an act region of the page. The library acts on nothing. */
+/* The cell @x, @y of the screen as a cell of @r, stopped at its edges. */
+static void page_text_cell(const struct fytim_page_region *r, int x, int y,
+                           int *rowp, int *colp)
+{
+    int row = y - r->row, col = x - r->col;
+
+    if(row > r->height - 1) row = r->height - 1;
+    if(row < 0) row = 0;
+    if(col > r->width - 1) col = r->width - 1;
+    if(col < 0) col = 0;
+    *rowp = row;
+    *colp = col;
+}
+
+/*
+ * A drag over a text region: a press in it starts a selection, the mouse takes
+ * its end to the cell it is over, and a release reports the selection when the
+ * drag moved. A press and a release on one cell is a click.
+ */
+static void page_select(struct fytim *ft, TimuiFrame *f, bool pressed,
+                        int px, int py)
+{
+    const struct fytim_page_region *r;
+    struct fytim_event *ev;
+    int x = 0, y = 0, down = 0;
+    char *text;
+    size_t i;
+
+    if(pressed){
+        fytim_selection_clear(ft);
+        for(i = 0; i < ft->page_nregions; i++){
+            r = &ft->page_regions[i];
+            if(r->kind != FYTIM_PAGE_TEXT || r->width < 1 || r->height < 1 ||
+               py < r->row || py >= r->row + r->height ||
+               px < r->col || px >= r->col + r->width)
+                continue;
+            snprintf(ft->sel_id, sizeof ft->sel_id, "%s", r->id);
+            ft->sel_row0 = ft->sel_row1 = py - r->row;
+            ft->sel_col0 = ft->sel_col1 = px - r->col;
+            ft->sel_dragging = true;
+            break;
+        }
+    }
+    if(!ft->sel_dragging) return;
+    r = page_text_region(ft, ft->sel_id);
+    if(!r){
+        fytim_selection_clear(ft);
+        return;
+    }
+    (void)timui_mouse_state(f, &x, &y, &down);
+    page_text_cell(r, x, y, &ft->sel_row1, &ft->sel_col1);
+    if(ft->sel_row1 != ft->sel_row0 || ft->sel_col1 != ft->sel_col0)
+        ft->sel_shown = true;
+    if(down) return;
+    ft->sel_dragging = false;
+    if(!ft->sel_shown) return;
+    text = strdup(r->id);
+    if(!text) return;
+    ev_push(ft, FYTIM_EVENT_SELECT, text, strlen(text), 0, 0);
+    ev = &ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP];
+    ev->row = ft->sel_row0;
+    ev->col = ft->sel_col0;
+    ev->end_row = ft->sel_row1;
+    ev->end_col = ft->sel_col1;
+}
+
+/* A click on an act region of the page, and a drag over a text region. The
+ * library acts on nothing. */
 static void page_mouse(struct fytim *ft, TimuiFrame *f)
 {
     const struct fytim_page_region *r;
     int x = 0, y = 0;
+    bool pressed;
     char *text;
     size_t i;
 
-    if(!ft->mouse || !ft->page_set || !timui_mouse_clicked(f, &x, &y))
-        return;
+    if(!ft->mouse || !ft->page_set) return;
+    pressed = timui_mouse_clicked(f, &x, &y) != 0;
+    page_select(ft, f, pressed, x, y);
+    if(!pressed) return;
     for(i = 0; i < ft->page_nregions; i++){
         r = &ft->page_regions[i];
         if(r->kind != FYTIM_PAGE_ACT || y != r->row || x < r->col ||
@@ -4784,6 +4972,25 @@ static void page_mouse(struct fytim *ft, TimuiFrame *f)
             ev_push(ft, FYTIM_EVENT_ACT, text, strlen(text), 0, 0);
         return;
     }
+}
+
+/* The id of the last region of the page that holds the cell @x, @y, or NULL.
+ * A later region stands on an earlier one. An act is a label, not a place to
+ * scroll. */
+static const char *page_region_at(const struct fytim *ft, int x, int y)
+{
+    const struct fytim_page_region *r;
+    size_t i;
+
+    if(!ft->page_set) return NULL;
+    for(i = ft->page_nregions; i-- > 0; ){
+        r = &ft->page_regions[i];
+        if(r->kind == FYTIM_PAGE_ACT) continue;
+        if(x >= r->col && x < r->col + r->width &&
+           y >= r->row && y < r->row + r->height)
+            return r->id;
+    }
+    return NULL;
 }
 
 /* ---- the pump ----------------------------------------------------------- */
@@ -4844,6 +5051,8 @@ enum fytim_result fytim_pump(struct fytim *ft)
             if(want < floor_rows) want = floor_rows;
         }
         ft->pending_commit_rows = 0;
+        /* The alternate screen is as tall as the terminal. */
+        if(ft->screen == FYTIM_SCREEN_ALT) want = ft->term_h;
         if(want > ft->term_h) want = ft->term_h;
         /* a WIDTH change must resize the frame too, not only a row change */
         if(want != ft->band_rows || ft->term_w != ft->band_w){
@@ -4891,8 +5100,30 @@ enum fytim_result fytim_pump(struct fytim *ft)
     if(!pane_mouse(ft, f) &&
        (timui_mouse_wheel(f) ||
         timui_key_pressed(f, TIMUI_KEY_PAGE_UP) ||
-        timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN)))
-        ev_push(ft, FYTIM_EVENT_SCROLLBACK, NULL, 0, 0, 0);
+        timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN))){
+        struct fytim_event *sev;
+        int page = ft->term_h > 1 ? ft->term_h - 1 : 1;
+        int delta = timui_mouse_wheel(f) * 3;
+        int mx = 0, my = 0, down = 0;
+        const char *region = NULL;
+        char *text;
+
+        if(timui_mouse_wheel(f)){
+            (void)timui_mouse_state(f, &mx, &my, &down);
+            region = page_region_at(ft, mx, my);
+        }
+        if(timui_key_pressed(f, TIMUI_KEY_PAGE_UP)) delta += page;
+        if(timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN)) delta -= page;
+        /* The host moves the text of the region: a selection there would
+         * stand on other text. A key moves whatever the host chooses. */
+        if(!region || !strcmp(region, ft->sel_id))
+            fytim_selection_clear(ft);
+        text = region ? strdup(region) : NULL;
+        ev_push(ft, FYTIM_EVENT_SCROLLBACK, text, text ? strlen(text) : 0,
+                0, 0);
+        sev = &ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP];
+        if(sev->type == FYTIM_EVENT_SCROLLBACK) sev->delta = delta;
+    }
     {
         int ctrl = timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN, TIMUI_MOD_CTRL);
         uint32_t cp = timui_key_codepoint(f);

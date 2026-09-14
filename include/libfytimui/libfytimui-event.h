@@ -23,7 +23,11 @@ enum fytim_event_type {
     FYTIM_EVENT_INTERRUPT,   /* Escape/^C: cancel outstanding work */
     FYTIM_EVENT_QUIT,        /* ^D on an empty line, or a quit request */
     FYTIM_EVENT_RESIZE,
-    FYTIM_EVENT_SCROLLBACK, /* wheel/PageUp/PageDown reached the application */
+    FYTIM_EVENT_SCROLLBACK, /* wheel/PageUp/PageDown reached the application.
+                               A turn of the wheel over a region of the page
+                               names it in text/text_len, with the lifetime of
+                               FYTIM_EVENT_LINE text: the last region that
+                               holds the cell. A key names none. */
     FYTIM_EVENT_PANE_SELECT, /* the user selected a pane to expand */
     FYTIM_EVENT_EDIT,        /* ^G: the user asked for an external editor;
                                 the host runs it between fytim_suspend and
@@ -56,7 +60,13 @@ enum fytim_event_type {
     /* A key that the host bound with fytim_set_key_bindings, taken from the
      * prompt. Its name, as bound, is in text/text_len, with the lifetime of
      * FYTIM_EVENT_LINE text. */
-    FYTIM_EVENT_KEY
+    FYTIM_EVENT_KEY,
+    /* A drag over a text region of the page ended. The id of the region is
+     * in text/text_len, with the lifetime of FYTIM_EVENT_LINE text; @row and
+     * @col are the cell it started on and @end_row and @end_col the cell it
+     * ended on, counted from the region. The host knows the text there and
+     * copies it with fytim_copy(). */
+    FYTIM_EVENT_SELECT
 };
 
 struct fytim_event {
@@ -78,16 +88,35 @@ struct fytim_event {
     int width;
     int height;
 
-    /* FYTIM_EVENT_SURFACE_SCROLL: rows asked for, back through the history
-     * when positive and toward the live screen when negative. */
+    /* FYTIM_EVENT_SURFACE_SCROLL and FYTIM_EVENT_SCROLLBACK: rows asked
+     * for, back through the history when positive and toward the live screen
+     * when negative. A turn of the wheel is three rows, and a page is the
+     * rows of the terminal less one. */
     int delta;
 
-    /* FYTIM_EVENT_SURFACE_CLICK: the cell of the head text. */
+    /* FYTIM_EVENT_SURFACE_CLICK: the cell of the head text.
+     * FYTIM_EVENT_SELECT: the cell the selection started on. */
     int row;
     int col;
+
+    /* FYTIM_EVENT_SELECT: the cell the selection ended on. */
+    int end_row;
+    int end_col;
 };
 
 /* Pop one event. Returns false when the queue is empty. */
 bool fytim_next_event(struct fytim *ft, struct fytim_event *out) FYTIM_EXPORT;
+
+/*
+ * Put the @len bytes of @text on the clipboard of the terminal with OSC 52.
+ * FYTIM_ERR_UNSUPPORTED unless fytim_cfg.clipboard is set; FYTIM_ERR_INVALID
+ * for no text.
+ */
+enum fytim_result fytim_copy(struct fytim *ft, const char *text,
+                             size_t len) FYTIM_EXPORT;
+
+/* Clear the selection the library draws over a text region, as a host does
+ * when the text under it moves. */
+void fytim_selection_clear(struct fytim *ft) FYTIM_EXPORT;
 
 #endif /* LIBFYTIMUI_EVENT_H */
