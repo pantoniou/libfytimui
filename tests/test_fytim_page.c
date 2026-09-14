@@ -331,6 +331,90 @@ static void test_a_click_on_an_act_reports_its_id(void)
     h_close(&h);
 }
 
+/* A page whose first row is row @top of the screen, with an act on its second
+ * row. The terminal is asked where the page is and answers @reply. */
+static int page_below_top(struct harness *h, const char *reply)
+{
+    struct fytim_page_region r = {
+        .id = "ask.choose:2", .kind = FYTIM_PAGE_ACT,
+        .row = 1, .col = 2, .width = 4, .height = 1
+    };
+    char buf[16384];
+    size_t n;
+
+    if(!h_open_mouse(h, true)) return 0;
+    if(fytim_page_set(h->ft, "top\n  pick\n", 11, &r, 1) != FYTIM_OK) return 0;
+    if(fytim_pump(h->ft) != FYTIM_OK) return 0;
+    n = h_out(h, buf, sizeof buf);
+    /* The page does not know where the terminal put it: it asks. */
+    CHECK(contains(buf, n, "\x1b[6n"));
+    if(reply) h_type(h, reply);
+    return fytim_pump(h->ft) == FYTIM_OK;
+}
+
+static int acted(struct harness *h, int col, int row)
+{
+    struct fytim_event ev;
+    struct h_events evs;
+    char buf[16384];
+
+    h_drain(h, &evs);
+    h_click(h, col, row);
+    if(fytim_pump(h->ft) != FYTIM_OK) return 0;
+    (void)h_out(h, buf, sizeof buf);
+    h_drain(h, &evs);
+    return h_event(&evs, FYTIM_EVENT_ACT, &ev) && ev.text &&
+           ev.text_len == 12 && !memcmp(ev.text, "ask.choose:2", 12);
+}
+
+/* An inline page starts where the terminal put it, not at the top of the
+ * screen: a click is on the row of the screen the act is drawn on. */
+static void test_regression_a_click_below_the_top_finds_its_act(void)
+{
+    struct harness h;
+
+    /* The answer arrives in two reads: the page is on row 11 of the screen. */
+    if(!page_below_top(&h, "\x1b[1")){ CHECK(0); h_close(&h); return; }
+    h_type(&h, "1;1R");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(acted(&h, 3, 11));
+    /* The row of the act inside the page is a row above the page. */
+    CHECK(!acted(&h, 3, 1));
+    CHECK(!acted(&h, 1, 11));
+    h_close(&h);
+}
+
+/* Committed lines go above the page and move it down the screen. */
+static void test_regression_a_commit_moves_the_band_down(void)
+{
+    struct harness h;
+
+    if(!page_below_top(&h, "\x1b[11;1R")){ CHECK(0); h_close(&h); return; }
+    CHECK(fytim_commit(h.ft, "a\nb\nc\n", 6) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(acted(&h, 3, 14));
+    CHECK(!acted(&h, 3, 11));
+    h_close(&h);
+}
+
+/* A report that is not an answer to a question does not move the page. */
+static void test_regression_a_stray_cursor_report_is_ignored(void)
+{
+    struct harness h;
+
+    /* No column: not a report. The question is still open. */
+    if(!page_below_top(&h, "\x1b[5R")){ CHECK(0); h_close(&h); return; }
+    h_type(&h, "\x1b[11;1R");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(acted(&h, 3, 11));
+    /* Answered once: a second report, such as a key, is not an answer. */
+    h_type(&h, "\x1b[21;1R");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(acted(&h, 3, 11));
+    CHECK(!acted(&h, 3, 21));
+    h_close(&h);
+}
+
 /* Binding an id that another component holds takes it. */
 static void test_a_bind_takes_the_id(void)
 {
@@ -1334,6 +1418,12 @@ static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "a_band_reads_back", test_a_band_reads_back },
     { "a_committed_tile_page_keeps_its_head",
       test_a_committed_tile_page_keeps_its_head },
+    { "regression_a_click_below_the_top_finds_its_act",
+      test_regression_a_click_below_the_top_finds_its_act },
+    { "regression_a_commit_moves_the_band_down",
+      test_regression_a_commit_moves_the_band_down },
+    { "regression_a_stray_cursor_report_is_ignored",
+      test_regression_a_stray_cursor_report_is_ignored },
 };
 
 int main(int argc, char **argv)
