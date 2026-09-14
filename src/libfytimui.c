@@ -1334,6 +1334,8 @@ int fytim_cells_draw_text(struct fytim_cell *grid, int grid_rows,
 {
     struct cells_draw_ctx ctx;
     struct fytim_sgr_parser sp;
+    const char *el, *cur;
+    size_t left, chunk;
 
     if(!grid || (!text && len) || grid_rows < 0 || grid_cols < 0 ||
        row < 0 || col < 0)
@@ -1351,7 +1353,30 @@ int fytim_cells_draw_text(struct fytim_cell *grid, int grid_rows,
     ctx.max_x = width > grid_cols - col ? grid_cols : col + width;
     ctx.max_y = height > grid_rows - row ? grid_rows : row + height;
     fytim_sgr_init(&sp);
-    fytim_sgr_feed(&sp, text, len, cells_run_, &ctx);
+    /*
+     * A bare EL is the structural fill of a libfymd4c card row: the rest of
+     * the row takes the active style, as a terminal fills it.
+     */
+    cur = text;
+    left = len;
+    while(left > 0){
+        el = memmem(cur, left, "\x1b[K", 3);
+        chunk = el ? (size_t)(el - cur) : left;
+        if(chunk)
+            fytim_sgr_feed(&sp, cur, chunk, cells_run_, &ctx);
+        if(!el) break;
+        if(ctx.y < ctx.max_y && !ctx.cut && ctx.x < ctx.max_x){
+            if(!ctx.row_taken){
+                ctx.rows++;
+                ctx.row_taken = true;
+            }
+            for(; ctx.x < ctx.max_x; ctx.x++)
+                cells_put_(&ctx.grid[ctx.y * ctx.grid_cols + ctx.x], "", 0,
+                           &sp.style, 1);
+        }
+        cur = el + 3;
+        left -= chunk + 3;
+    }
     return ctx.rows;
 }
 
