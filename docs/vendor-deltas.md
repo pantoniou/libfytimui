@@ -182,3 +182,28 @@ Covered by `fytim.band.bound_keys_leave_the_prompt`,
 `fytim.band.key_bindings_are_checked` and
 `fytim.band.a_surface_with_the_keys_ignores_bindings`. Worth upstreaming: any
 host that binds keys beside a text area has the need.
+
+## A click is on the row of the screen the band is on
+
+**Files:** `core/include/timui.h`, `core/src/timui_input.c`,
+`core/src/timui_int.h`, `core/src/timui_core.c`
+
+An inline band starts where the terminal put it, but the terminal reports a
+click on the rows of the screen and the frame hit-tests the rows of the band.
+The two agree only when the band starts at the top of the screen, so a click on
+a page that stood under the transcript found nothing, or the wrong region.
+
+The band now keeps the row of the screen its anchor is on. A full paint of a
+band that takes clicks (`TIMUI_FLAG_MOUSE`) and does not know that row asks the
+terminal for the cursor position, `CSI 6n`, with the cursor on the anchor. The
+parser reports `CSI row;col R` as `TIMUI_EVENT_CURSOR_REPORT`, and the frame
+takes it only while a question is out, so a key with the same bytes moves
+nothing. Committed rows move the anchor down, and the height of the screen
+stops it at the bottom. A resume forgets the row, a clear of the screen puts it
+at the top, and `timui_inline_locate()` forgets it for a host that saw the
+terminal resized. A click is reported on the rows of the band.
+
+Covered by `fytim.page.regression_a_click_below_the_top_finds_its_act`,
+`fytim.page.regression_a_commit_moves_the_band_down` and
+`fytim.page.regression_a_stray_cursor_report_is_ignored`. Worth upstreaming:
+any inline host that takes clicks has the defect.
