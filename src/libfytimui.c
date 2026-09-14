@@ -3165,15 +3165,6 @@ static void draw_pane_grid(TimuiFrame *f, TimuiCellBuffer *buf,
                 if(i < nr && j < nc) taken[i][j] = true;
     }
 
-    /* The rule between adjacent columns runs the height of the pane. */
-    if(sep_w)
-        for(i = 1; i < nc; i++){
-            int sy;
-            for(sy = y; sy < y + rows; sy++)
-                draw_row_styled(f, buf, cx[i] - sep_w, sy, sep_w, wp->sep,
-                                chrome);
-        }
-
     /* Resolve every placement first: the chrome a tile reserves is what its
      * whole grid row reserves, so the row has to be known before it draws. */
     for(t = wp->tiles; t; t = t->next){
@@ -3201,6 +3192,30 @@ static void draw_pane_grid(TimuiFrame *f, TimuiCellBuffer *buf,
         row_tiles[r][row_n[r]].row_span = rs;
         row_tiles[r][row_n[r]].col_span = cs;
         row_n[r]++;
+    }
+
+    /* The rule between adjacent columns runs down every grid row, except
+     * where one tile spans both columns: a span covers the rules it
+     * swallows. */
+    if(sep_w){
+        bool crossed[FYTIM_GRID_MAX][FYTIM_GRID_MAX];
+        int k, r, c;
+
+        memset(crossed, 0, sizeof crossed);
+        for(i = 0; i < nr; i++)
+            for(j = 0; j < row_n[i]; j++)
+                for(r = i; r < i + row_tiles[i][j].row_span; r++)
+                    for(c = row_tiles[i][j].col + 1;
+                        c < row_tiles[i][j].col + row_tiles[i][j].col_span;
+                        c++)
+                        crossed[r][c] = true;
+        for(i = 0; i < nr; i++)
+            for(c = 1; c < nc; c++){
+                if(crossed[i][c]) continue;
+                for(k = cy[i]; k < cy[i] + rh[i] && k < y + rows; k++)
+                    draw_row_styled(f, buf, cx[c] - sep_w, k, sep_w, wp->sep,
+                                    chrome);
+            }
     }
 
     for(i = 0; i < nr; i++){
