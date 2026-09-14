@@ -1268,12 +1268,31 @@ static bool cells_run_(void *user, const char *text, size_t len,
     struct cells_draw_ctx *ctx = user;
     struct fytim_cell *c;
     size_t i, start = 0, off, nx;
-    int gw;
+    int gw, stop;
 
     for(i = 0; i <= len; i++){
         if(i < len && text[i] != '\n') continue;
         for(off = start; off < i && ctx->y < ctx->max_y && !ctx->cut;
             off = nx){
+            /* A cell never holds a control character: a compositor draws
+             * nothing for it, and the cell keeps what the last frame left. */
+            if((unsigned char)text[off] < 0x20 ||
+               (unsigned char)text[off] == 0x7f){
+                nx = off + 1;
+                if(text[off] != '\t') continue;
+                if(!ctx->row_taken){
+                    ctx->rows++;
+                    ctx->row_taken = true;
+                }
+                /* A tab is blank cells to the next stop of eight columns. */
+                stop = ctx->origin_x +
+                       ((ctx->x - ctx->origin_x) / 8 + 1) * 8;
+                if(stop > ctx->max_x) stop = ctx->max_x;
+                for(; ctx->x < stop; ctx->x++)
+                    cells_put_(&ctx->grid[ctx->y * ctx->grid_cols + ctx->x],
+                               "", 0, style, 1);
+                continue;
+            }
             nx = timui_grapheme_next(text, i, off);
             if(nx <= off) break;
             gw = timui_grapheme_width(text + off, nx - off);
