@@ -140,6 +140,20 @@ enum fytim_result fytim_workband_set_commit(struct fytim_workband *wb,
 enum fytim_result fytim_workband_granted_cols(const struct fytim_workband *wb,
                                               int *cols) FYTIM_EXPORT;
 
+/*
+ * What a band holds, for a host that draws the band itself. The live content,
+ * or NULL for none; *@rows, when @rows is not NULL, receives the rows the band
+ * counts for it, which a last row of styling alone is not. The top and the
+ * bottom chrome as they were set, or NULL. The texts are the band's and are
+ * valid until they are set again.
+ */
+const char *fytim_workband_content(const struct fytim_workband *wb, int *rows)
+    FYTIM_EXPORT;
+const char *fytim_workband_top(const struct fytim_workband *wb) FYTIM_EXPORT;
+const char *fytim_workband_bottom(const struct fytim_workband *wb) FYTIM_EXPORT;
+/* The cap on the content rows of @wb, or 0 for a NULL band. */
+int fytim_workband_max_rows(const struct fytim_workband *wb) FYTIM_EXPORT;
+
 /* Commit the band's content into the transcript (batched like
  * fytim_commit) and retire the band. The handle is invalid after. While
  * the transcript tail is streaming, the commit is DEFERRED so it cannot

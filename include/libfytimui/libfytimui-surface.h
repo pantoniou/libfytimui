@@ -79,6 +79,48 @@ enum fytim_result fytim_surface_put_row(struct fytim_surface *s, int row,
                                         const struct fytim_cell *cells, int n)
     FYTIM_EXPORT;
 
+/*
+ * Draw SGR-styled text into a grid of cells, as the library draws styled
+ * content: @text holds rows separated by '\n', under the contract of
+ * fytim_commit (SGR and OSC-8 only). The rows start at cell (@row, @col) of
+ * @grid, which is @grid_rows by @grid_cols, and are cut at @width columns and
+ * @height rows; a row that runs past its width ends in an ellipsis. The style
+ * carries from row to row. A double-width glyph takes two cells, and a
+ * combining character joins the cell before it. Cells the text does not reach
+ * keep what they held. Returns the rows drawn, or -1 for a bad argument or a
+ * disallowed sequence, and then draws nothing.
+ */
+int fytim_cells_draw_text(struct fytim_cell *grid, int grid_rows,
+                          int grid_cols, int row, int col, int width,
+                          int height, const char *text, size_t len)
+    FYTIM_EXPORT;
+
+/*
+ * Put the cells of a box of @grid on the ground @bg, as the library puts the
+ * chrome of a tile on the ground fytim_surface_set_bg gave it: the box starts
+ * at (@row, @col) and is cut at @width columns, @height rows and the grid. A
+ * cell loses its dim and its own ground and keeps what it says as the colour
+ * of its text. @bg of FYTIM_COLOR_REVERSED reverses every cell, and
+ * FYTIM_COLOR_DEFAULT changes nothing. Returns 0, or -1 for a bad argument.
+ */
+int fytim_cells_ground(struct fytim_cell *grid, int grid_rows, int grid_cols,
+                       int row, int col, int width, int height, uint32_t bg)
+    FYTIM_EXPORT;
+
+/*
+ * Put the cells of a box of @grid, which a program drew, on the ground @bg,
+ * as the library draws a surface that fytim_surface_set_bg gave that ground:
+ * a cell with no ground of its own takes @bg, and one the program coloured is
+ * mixed @mix percent toward it when @truecolor says the terminal takes 24-bit
+ * colour. A cell loses its dim. With FYTIM_COLOR_REVERSED a cell that has no
+ * ground and is not reversed is reversed. FYTIM_COLOR_DEFAULT changes nothing.
+ * The box is cut as fytim_cells_ground cuts it. Returns 0, or -1 for a bad
+ * argument.
+ */
+int fytim_cells_wash(struct fytim_cell *grid, int grid_rows, int grid_cols,
+                     int row, int col, int width, int height, uint32_t bg,
+                     int mix, bool truecolor) FYTIM_EXPORT;
+
 /* Blank the whole grid. */
 enum fytim_result fytim_surface_clear(struct fytim_surface *s) FYTIM_EXPORT;
 
@@ -89,6 +131,18 @@ enum fytim_result fytim_surface_clear(struct fytim_surface *s) FYTIM_EXPORT;
  */
 enum fytim_result fytim_surface_set_cursor(struct fytim_surface *s, int row,
                                            int col, bool visible) FYTIM_EXPORT;
+/* Where the cursor of @s is, and whether it is shown. */
+enum fytim_result fytim_surface_cursor(const struct fytim_surface *s, int *row,
+                                       int *col, bool *visible) FYTIM_EXPORT;
+
+/*
+ * The cells of row @row of the grid of @s, as wide as the grid, or NULL for a
+ * row outside it. The cells are the surface's: they are valid until the row
+ * is put again or the surface is resized or closed. A host that draws the
+ * surface itself reads them here.
+ */
+const struct fytim_cell *fytim_surface_row(const struct fytim_surface *s,
+                                           int row) FYTIM_EXPORT;
 
 /*
  * Give the keys to this surface. While a surface holds them, what the user
@@ -141,6 +195,13 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *s) FYTIM_EXPORT;
  */
 enum fytim_result fytim_surface_set_margin(struct fytim_surface *s,
                                            const char *text) FYTIM_EXPORT;
+/*
+ * The margin of @s, or NULL for none. *@cols, when @cols is not NULL, receives
+ * the columns it takes, which its styling does not. The text is the
+ * surface's and is valid until the margin is set again.
+ */
+const char *fytim_surface_margin(const struct fytim_surface *s, int *cols)
+    FYTIM_EXPORT;
 
 /*
  * A background of the tile's own, under whatever the program draws. Every
@@ -165,6 +226,9 @@ enum fytim_result fytim_surface_set_margin(struct fytim_surface *s,
  */
 enum fytim_result fytim_surface_set_bg(struct fytim_surface *s, uint32_t bg,
                                        int mix) FYTIM_EXPORT;
+/* The ground of @s and its mix, as fytim_surface_set_bg left them. */
+enum fytim_result fytim_surface_bg(const struct fytim_surface *s, uint32_t *bg,
+                                   int *mix) FYTIM_EXPORT;
 
 /* The columns the grid was given at the last frame: the width less the
  * margin. */

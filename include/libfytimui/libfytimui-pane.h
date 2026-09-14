@@ -50,6 +50,8 @@ void          fytim_destroy(struct fytim *ft) FYTIM_EXPORT;
  * committed lines arrive hard-wrapped and never soft-wrap. Either out
  * pointer may be NULL. */
 enum fytim_result fytim_size(const struct fytim *ft, int *w, int *h) FYTIM_EXPORT;
+/* Whether the terminal takes 24-bit colour, which mixing a ground needs. */
+bool fytim_truecolor(const struct fytim *ft) FYTIM_EXPORT;
 
 /* Whether this instance grabbed the mouse (see fytim_cfg.mouse). A work
  * pane draws no control the user could not reach. */

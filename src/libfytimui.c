@@ -458,6 +458,12 @@ bool fytim_mouse_enabled(const struct fytim *ft)
     return ft && ft->mouse;
 }
 
+bool fytim_truecolor(const struct fytim *ft)
+{
+    return ft && ft->ui && timui_caps_has(timui_caps(ft->ui),
+                                          TIMUI_CAP_TRUECOLOR);
+}
+
 enum fytim_result fytim_size(const struct fytim *ft, int *w, int *h)
 {
     if(!ft) return FYTIM_ERR_INVALID;
@@ -949,6 +955,29 @@ enum fytim_result fytim_workband_granted_cols(const struct fytim_workband *wb,
     return FYTIM_OK;
 }
 
+static int styled_rows(const char *s);
+
+const char *fytim_workband_content(const struct fytim_workband *wb, int *rows)
+{
+    if(rows) *rows = wb ? styled_rows(wb->content) : 0;
+    return wb ? wb->content : NULL;
+}
+
+const char *fytim_workband_top(const struct fytim_workband *wb)
+{
+    return wb ? wb->top : NULL;
+}
+
+const char *fytim_workband_bottom(const struct fytim_workband *wb)
+{
+    return wb ? wb->bottom : NULL;
+}
+
+int fytim_workband_max_rows(const struct fytim_workband *wb)
+{
+    return wb ? wb->max_rows : 0;
+}
+
 enum fytim_result fytim_workband_commit(struct fytim_workband *wb)
 {
     if(!wb) return FYTIM_ERR_INVALID;
@@ -1159,12 +1188,216 @@ enum fytim_result fytim_surface_put_row(struct fytim_surface *sf, int row,
     return FYTIM_OK;
 }
 
+/* Where styled text is being drawn into a grid of cells. */
+struct cells_draw_ctx {
+    struct fytim_cell *grid;
+    int grid_cols;
+    int origin_x, x, y;
+    int max_x, max_y;               /* exclusive */
+    int rows;                       /* rows that took a cell */
+    bool row_taken;
+    bool cut;                       /* the row ran past its width */
+};
+
+/* One cell of a grapheme: its codepoints in @s, the style of its run. */
+static void cells_put_(struct fytim_cell *c, const char *s, size_t n,
+                       const struct fytim_sgr_style *style, int width)
+{
+    uint32_t cp;
+    size_t off = 0;
+    int k = 0, l;
+
+    memset(c->chars, 0, sizeof c->chars);
+    while(off < n && k < FYTIM_CELL_CHARS){
+        l = timui_utf8_decode(s + off, n - off, &cp);
+        if(l < 1) break;
+        c->chars[k++] = cp;
+        off += (size_t)l;
+    }
+    c->fg = style->fg;
+    c->bg = style->bg;
+    c->attrs = style->attrs;
+    c->width = (unsigned char)width;
+}
+
+static bool cells_run_(void *user, const char *text, size_t len,
+                       const struct fytim_sgr_style *style)
+{
+    struct cells_draw_ctx *ctx = user;
+    struct fytim_cell *c;
+    size_t i, start = 0, off, nx;
+    int gw;
+
+    for(i = 0; i <= len; i++){
+        if(i < len && text[i] != '\n') continue;
+        for(off = start; off < i && ctx->y < ctx->max_y && !ctx->cut;
+            off = nx){
+            nx = timui_grapheme_next(text, i, off);
+            if(nx <= off) break;
+            gw = timui_grapheme_width(text + off, nx - off);
+            if(gw < 1) gw = 1;
+            if(!ctx->row_taken){
+                ctx->rows++;
+                ctx->row_taken = true;
+            }
+            /* A row too long for its box says so at its last column. */
+            if(ctx->x + gw > ctx->max_x){
+                if(ctx->max_x > ctx->origin_x){
+                    c = &ctx->grid[ctx->y * ctx->grid_cols + ctx->max_x - 1];
+                    cells_put_(c, "\xe2\x80\xa6", 3, style, 1);
+                }
+                ctx->cut = true;
+                break;
+            }
+            c = &ctx->grid[ctx->y * ctx->grid_cols + ctx->x];
+            cells_put_(c, text + off, nx - off, style, gw);
+            /* A double-width glyph owns the cell after it. */
+            if(gw == 2)
+                cells_put_(c + 1, "", 0, style, 0);
+            ctx->x += gw;
+        }
+        if(i < len){
+            ctx->x = ctx->origin_x;
+            ctx->y++;
+            ctx->cut = false;
+            ctx->row_taken = false;
+        }
+        start = i + 1;
+    }
+    return true;
+}
+
+int fytim_cells_draw_text(struct fytim_cell *grid, int grid_rows,
+                          int grid_cols, int row, int col, int width,
+                          int height, const char *text, size_t len)
+{
+    struct cells_draw_ctx ctx;
+    struct fytim_sgr_parser sp;
+
+    if(!grid || (!text && len) || grid_rows < 0 || grid_cols < 0 ||
+       row < 0 || col < 0)
+        return -1;
+    if(len && !rendered_only(text, len)) return -1;
+    if(!len || row >= grid_rows || col >= grid_cols || width < 1 ||
+       height < 1)
+        return 0;
+
+    memset(&ctx, 0, sizeof ctx);
+    ctx.grid = grid;
+    ctx.grid_cols = grid_cols;
+    ctx.origin_x = ctx.x = col;
+    ctx.y = row;
+    ctx.max_x = width > grid_cols - col ? grid_cols : col + width;
+    ctx.max_y = height > grid_rows - row ? grid_rows : row + height;
+    fytim_sgr_init(&sp);
+    fytim_sgr_feed(&sp, text, len, cells_run_, &ctx);
+    return ctx.rows;
+}
+
+/* The rule of ground_run_, for cells: a ground is the tile's, not the row's. */
+int fytim_cells_ground(struct fytim_cell *grid, int grid_rows, int grid_cols,
+                       int row, int col, int width, int height, uint32_t bg)
+{
+    struct fytim_cell *c;
+    uint32_t fg;
+    int r, x, max_x, max_y;
+
+    if(!grid || grid_rows < 0 || grid_cols < 0 || row < 0 || col < 0)
+        return -1;
+    if(bg == FYTIM_COLOR_DEFAULT || width < 1 || height < 1 ||
+       row >= grid_rows || col >= grid_cols)
+        return 0;
+    max_x = width > grid_cols - col ? grid_cols : col + width;
+    max_y = height > grid_rows - row ? grid_rows : row + height;
+    for(r = row; r < max_y; r++){
+        for(x = col; x < max_x; x++){
+            c = &grid[r * grid_cols + x];
+            c->attrs &= ~(uint32_t)FYTIM_ATTR_DIM;
+            if(c->attrs & FYTIM_ATTR_REVERSE){
+                fg = c->fg;
+                c->fg = c->bg;
+                c->bg = fg;
+                c->attrs &= ~(uint32_t)FYTIM_ATTR_REVERSE;
+            }
+            if(bg == FYTIM_COLOR_REVERSED){
+                c->bg = c->fg;
+                c->fg = FYTIM_COLOR_DEFAULT;
+                c->attrs |= FYTIM_ATTR_REVERSE;
+            }else{
+                c->bg = bg;
+            }
+        }
+    }
+    return 0;
+}
+
+static uint32_t ground_mix_(uint32_t ground, int mix, bool truecolor,
+                            uint32_t bg);
+
+/* The rule of ground_on_, for cells: a program keeps what it coloured. */
+int fytim_cells_wash(struct fytim_cell *grid, int grid_rows, int grid_cols,
+                     int row, int col, int width, int height, uint32_t bg,
+                     int mix, bool truecolor)
+{
+    struct fytim_cell *c;
+    uint32_t *under;
+    int r, x, max_x, max_y;
+
+    if(!grid || grid_rows < 0 || grid_cols < 0 || row < 0 || col < 0)
+        return -1;
+    if(bg == FYTIM_COLOR_DEFAULT || width < 1 || height < 1 ||
+       row >= grid_rows || col >= grid_cols)
+        return 0;
+    max_x = width > grid_cols - col ? grid_cols : col + width;
+    max_y = height > grid_rows - row ? grid_rows : row + height;
+    for(r = row; r < max_y; r++){
+        for(x = col; x < max_x; x++){
+            c = &grid[r * grid_cols + x];
+            c->attrs &= ~(uint32_t)FYTIM_ATTR_DIM;
+            if(bg == FYTIM_COLOR_REVERSED){
+                /* A cell already reversed shows its foreground as its
+                 * ground. */
+                if((c->attrs & FYTIM_ATTR_REVERSE) ||
+                   c->bg != FYTIM_COLOR_DEFAULT)
+                    continue;
+                c->bg = c->fg;
+                c->fg = FYTIM_COLOR_DEFAULT;
+                c->attrs |= FYTIM_ATTR_REVERSE;
+                continue;
+            }
+            under = (c->attrs & FYTIM_ATTR_REVERSE) ? &c->fg : &c->bg;
+            if(*under == FYTIM_COLOR_DEFAULT || mix >= 100)
+                *under = bg;
+            else if(!(*under & FYTIM_COLOR_INDEXED) && mix > 0)
+                *under = ground_mix_(bg, mix, truecolor, *under);
+        }
+    }
+    return 0;
+}
+
 enum fytim_result fytim_surface_clear(struct fytim_surface *sf)
 {
     if(!sf) return FYTIM_ERR_INVALID;
     memset(sf->grid, 0,
            (size_t)sf->rows * (size_t)sf->cols * sizeof *sf->grid);
     return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_cursor(const struct fytim_surface *sf,
+                                       int *row, int *col, bool *visible)
+{
+    if(!sf || !row || !col || !visible) return FYTIM_ERR_INVALID;
+    *row = sf->cur_row;
+    *col = sf->cur_col;
+    *visible = sf->cur_visible;
+    return FYTIM_OK;
+}
+
+const struct fytim_cell *fytim_surface_row(const struct fytim_surface *sf,
+                                           int row)
+{
+    if(!sf || row < 0 || row >= sf->rows) return NULL;
+    return &sf->grid[(size_t)row * (size_t)sf->cols];
 }
 
 enum fytim_result fytim_surface_set_cursor(struct fytim_surface *sf, int row,
@@ -1772,6 +2005,23 @@ enum fytim_result fytim_surface_set_bg(struct fytim_surface *sf, uint32_t bg,
     return FYTIM_OK;
 }
 
+enum fytim_result fytim_surface_bg(const struct fytim_surface *sf, uint32_t *bg,
+                                   int *mix)
+{
+    if(!sf || !bg || !mix) return FYTIM_ERR_INVALID;
+    *bg = sf->wash;
+    *mix = sf->wash_mix;
+    return FYTIM_OK;
+}
+
+static int sgr_disp_width(const char *s);
+
+const char *fytim_surface_margin(const struct fytim_surface *sf, int *cols)
+{
+    if(cols) *cols = sf && sf->margin ? sgr_disp_width(sf->margin) : 0;
+    return sf ? sf->margin : NULL;
+}
+
 enum fytim_result fytim_surface_granted_cols(const struct fytim_surface *sf,
                                              int *cols)
 {
@@ -2136,25 +2386,32 @@ static uint32_t sgr_color_(uint32_t c)
  * toward the wash. An indexed colour is a palette entry this library does not
  * know the value of, so there is nothing to mix and it is left alone.
  */
-/* The ground under a cell that has @bg of its own. */
-static uint32_t ground_bg_(const struct ground *g, uint32_t bg)
+/* @bg mixed @mix percent toward @ground, which only 24-bit colour can say. */
+static uint32_t ground_mix_(uint32_t ground, int mix, bool truecolor,
+                            uint32_t bg)
 {
     uint32_t out = 0;
     int i, a, b;
 
+    if(!truecolor) return bg;
+    for(i = 16; i >= 0; i -= 8){
+        a = (int)((bg >> i) & 0xff);
+        b = (int)((ground >> i) & 0xff);
+        out |= (uint32_t)(a + (b - a) * mix / 100) << i;
+    }
+    return out;
+}
+
+/* The ground under a cell that has @bg of its own. */
+static uint32_t ground_bg_(const struct ground *g, uint32_t bg)
+{
     if(g->bg == FYTIM_COLOR_DEFAULT) return bg;
     if(bg == FYTIM_COLOR_DEFAULT) return g->bg;
     if(bg & FYTIM_COLOR_INDEXED) return bg;
     if(g->mix <= 0) return bg;
     if(g->mix >= 100) return g->bg;
-    if(!timui_caps_has(timui_caps(g->ft->ui), TIMUI_CAP_TRUECOLOR))
-        return bg;
-    for(i = 16; i >= 0; i -= 8){
-        a = (int)((bg >> i) & 0xff);
-        b = (int)((g->bg >> i) & 0xff);
-        out |= (uint32_t)(a + (b - a) * g->mix / 100) << i;
-    }
-    return out;
+    return ground_mix_(g->bg, g->mix, timui_caps_has(timui_caps(g->ft->ui),
+                                                     TIMUI_CAP_TRUECOLOR), bg);
 }
 
 /*
