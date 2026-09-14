@@ -1387,6 +1387,27 @@ static void test_text_is_cut_to_its_box(void)
     CHECK(CELL(g, 3, 8).chars[0] == 'a' && CELL(g, 3, 9).chars[0] == 0x2026);
 }
 
+/* A tab is blank cells in its style to the next stop, and no cell holds a
+ * control character. */
+static void test_text_expands_tabs(void)
+{
+    struct fytim_cell g[CG_ROWS * CG_COLS];
+    const char text[] = "ab\x1b[48;2;1;2;3m\tc\x01" "d\n\t\x7f" "e";
+    int c;
+
+    cells_fill(g, 'x');
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 0, 0, CG_COLS, 2,
+                                text, sizeof text - 1) == 2);
+    CHECK(CELL(g, 0, 0).chars[0] == 'a' && CELL(g, 0, 1).chars[0] == 'b');
+    for(c = 2; c < 8; c++)
+        CHECK(CELL(g, 0, c).chars[0] == 0 && CELL(g, 0, c).bg == 0x010203);
+    CHECK(CELL(g, 0, 8).chars[0] == 'c' && CELL(g, 0, 9).chars[0] == 'd');
+    for(c = 0; c < 8; c++)
+        CHECK(CELL(g, 1, c).chars[0] == 0);
+    CHECK(CELL(g, 1, 8).chars[0] == 'e');
+    CHECK(CELL(g, 1, 9).chars[0] == 'x');
+}
+
 /* A wide glyph takes two cells; a combining mark joins its base. */
 static void test_text_measures_glyphs(void)
 {
@@ -1675,6 +1696,7 @@ static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "text_draws_into_cells", test_text_draws_into_cells },
     { "text_carries_its_style", test_text_carries_its_style },
     { "text_is_cut_to_its_box", test_text_is_cut_to_its_box },
+    { "text_expands_tabs", test_text_expands_tabs },
     { "text_measures_glyphs", test_text_measures_glyphs },
     { "text_rejects_bad_input", test_text_rejects_bad_input },
     { "cells_take_a_ground", test_cells_take_a_ground },

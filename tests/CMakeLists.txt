@@ -251,7 +251,7 @@ foreach(t a_page_is_set_and_cleared a_page_replaces_the_band_stack
           bound_tiles_take_their_slots a_tile_reports_its_rows
           an_unplaced_tile_is_granted_nothing text_draws_into_cells
           text_carries_its_style text_is_cut_to_its_box
-          text_measures_glyphs text_rejects_bad_input
+          text_expands_tabs text_measures_glyphs text_rejects_bad_input
           cells_take_a_ground cells_take_a_wash a_surface_reads_back
           a_band_reads_back
           regression_a_click_below_the_top_finds_its_act
