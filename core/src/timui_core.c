@@ -780,6 +780,11 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
                     if(!ev.as.mouse.motion && ev.as.mouse.released) saw_mouse_release = 1;
                 }
             } else if(ev.kind == TIMUI_EVENT_KEY){
+                /* A key the host took is not a key of this frame. */
+                if(ui->key_filter &&
+                   ui->key_filter(ui->key_filter_user, ev.as.key.key,
+                                  ev.as.key.codepoint, ev.as.key.mods))
+                    continue;
                 timui_input_log_add_(ui, 0, ev.as.key.key,
                                      ev.as.key.codepoint, ev.as.key.mods);
                 ui->key_pressed = ev.as.key.key;   /* app-level key detection */
@@ -841,6 +846,12 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
                 /* UTF-8 encode the codepoint into text_in (supports international
                  * input) via the single shared encoder (Z6). */
                 uint32_t cp = ev.as.text.codepoint;
+                /* A typed character is a key the host can take; a paste is
+                 * not. */
+                if(ui->key_filter &&
+                   ui->key_filter(ui->key_filter_user, TIMUI_KEY_UNKNOWN, cp,
+                                  TIMUI_MOD_NONE))
+                    continue;
                 timui_input_log_add_(ui, 1, TIMUI_KEY_UNKNOWN, cp,
                                      TIMUI_MOD_NONE);
                 int start = ui->text_in_len;
@@ -1264,6 +1275,11 @@ TIMUI_API int timui_char_pressed(const TimuiFrame *f, char ch){
 }
 /* Programmatic focus: focus the widget with `id` (persists until a click or Tab
  * moves it — call once, e.g. `if(!timui_focus(f)) timui_set_focus(f, id);`). */
+TIMUI_API void timui_set_key_filter(Timui *ui, TimuiKeyFilter fn, void *user){
+    if(!ui) return;
+    ui->key_filter = fn;
+    ui->key_filter_user = fn ? user : NULL;
+}
 TIMUI_API void timui_set_focus(TimuiFrame *f, TimuiId id){
     if(f && f->ui) f->ui->ia.focus = id;
 }

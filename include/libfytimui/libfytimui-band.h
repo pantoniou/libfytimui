@@ -224,6 +224,24 @@ enum fytim_result fytim_set_input(struct fytim *ft, const char *text) FYTIM_EXPO
 /* The current edit buffer; valid until the next fytim_pump. */
 const char *fytim_input(const struct fytim *ft) FYTIM_EXPORT;
 
+/*
+ * Keys that the host takes from the prompt, by name: "Up", "Down", "Left",
+ * "Right", "Home", "End", "PageUp", "PageDown", "Enter", "Escape", "Tab",
+ * "Backspace", "Delete", "Insert", "F1" to "F12", "Space", or one printable
+ * character, each with any of the prefixes "Ctrl-", "Alt-" and "Shift-". While
+ * no surface holds the keys, a bound key is reported as FYTIM_EVENT_KEY with
+ * its name, and neither the editor nor the keys of the library see it. Ctrl-C,
+ * Ctrl-T and Ctrl-Tab cannot be bound. A set holds at most
+ * FYTIM_KEY_BINDINGS_MAX names of at most FYTIM_KEY_NAME_MAX bytes, and a
+ * count of 0 removes every binding. A name that is not a key, or a key that
+ * cannot be bound, rejects the whole set and keeps the bindings as they were.
+ */
+#define FYTIM_KEY_BINDINGS_MAX 32
+#define FYTIM_KEY_NAME_MAX     31
+enum fytim_result fytim_set_key_bindings(struct fytim *ft,
+                                         const char *const *names,
+                                         size_t count) FYTIM_EXPORT;
+
 /* ---- external editor ---------------------------------------------------- *
  * ^G emits FYTIM_EVENT_EDIT. The host then releases the terminal with
  * fytim_suspend (band erased, raw mode left), runs its editor over the

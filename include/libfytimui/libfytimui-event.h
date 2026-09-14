@@ -52,7 +52,11 @@ enum fytim_event_type {
     FYTIM_EVENT_SURFACE_CLICK,
     /* A click on an act region of the page. The id is in text/text_len,
      * with the lifetime of FYTIM_EVENT_LINE text. */
-    FYTIM_EVENT_ACT
+    FYTIM_EVENT_ACT,
+    /* A key that the host bound with fytim_set_key_bindings, taken from the
+     * prompt. Its name, as bound, is in text/text_len, with the lifetime of
+     * FYTIM_EVENT_LINE text. */
+    FYTIM_EVENT_KEY
 };
 
 struct fytim_event {

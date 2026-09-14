@@ -143,6 +143,16 @@ struct fytim_completions {
      * completion mode is active so Tab can keep cycling */
 };
 
+/* A key the host takes from the prompt. */
+struct fytim_key_binding {
+    TimuiKey key;
+    uint32_t cp;        /* the character of a key the table cannot name */
+    uint32_t mods;      /* TIMUI_MOD_CTRL, TIMUI_MOD_ALT, TIMUI_MOD_SHIFT */
+    char name[FYTIM_KEY_NAME_MAX + 1];
+};
+
+static int key_filter_(void *user, TimuiKey key, uint32_t cp, uint32_t mods);
+
 struct fytim {
     Timui             *ui;
     struct fytim_pane *panes;      /* transcript is the head and is never closed */
@@ -175,6 +185,9 @@ struct fytim {
      * order fixes the stacking only; bands commit in completion order. */
     struct fytim_workband *wbands;
     struct fytim_surface  *keys;   /* the surface the keys go to, or NULL */
+    /* Keys the host takes from the prompt: FYTIM_EVENT_KEY, not the editor. */
+    struct fytim_key_binding bindings[FYTIM_KEY_BINDINGS_MAX];
+    int   nbindings;
     int   wb_default_max;
     int   wb_finish_seq;
 
@@ -334,6 +347,7 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
         free(ft);
         return NULL;
     }
+    timui_set_key_filter(ft->ui, key_filter_, ft);
 
     ft->transcript = pane_new(ft, NULL);
     if(!ft->transcript){
@@ -2178,6 +2192,108 @@ enum fytim_result fytim_set_input(struct fytim *ft, const char *text)
 const char *fytim_input(const struct fytim *ft)
 {
     return ft ? ft->input : "";
+}
+
+static const struct { const char *name; TimuiKey key; } key_names_[] = {
+    { "Escape", TIMUI_KEY_ESCAPE }, { "Enter", TIMUI_KEY_ENTER },
+    { "Tab", TIMUI_KEY_TAB }, { "Backspace", TIMUI_KEY_BACKSPACE },
+    { "Delete", TIMUI_KEY_DELETE }, { "Insert", TIMUI_KEY_INSERT },
+    { "Up", TIMUI_KEY_UP }, { "Down", TIMUI_KEY_DOWN },
+    { "Left", TIMUI_KEY_LEFT }, { "Right", TIMUI_KEY_RIGHT },
+    { "Home", TIMUI_KEY_HOME }, { "End", TIMUI_KEY_END },
+    { "PageUp", TIMUI_KEY_PAGE_UP }, { "PageDown", TIMUI_KEY_PAGE_DOWN },
+    { "F1", TIMUI_KEY_F1 }, { "F2", TIMUI_KEY_F2 }, { "F3", TIMUI_KEY_F3 },
+    { "F4", TIMUI_KEY_F4 }, { "F5", TIMUI_KEY_F5 }, { "F6", TIMUI_KEY_F6 },
+    { "F7", TIMUI_KEY_F7 }, { "F8", TIMUI_KEY_F8 }, { "F9", TIMUI_KEY_F9 },
+    { "F10", TIMUI_KEY_F10 }, { "F11", TIMUI_KEY_F11 }, { "F12", TIMUI_KEY_F12 },
+};
+
+/* Parse a key name into @b; false for a name that is not a key. */
+static bool key_binding_parse_(const char *name, struct fytim_key_binding *b)
+{
+    const char *p = name;
+    size_t i;
+
+    memset(b, 0, sizeof *b);
+    if(!name || !*name || strlen(name) > FYTIM_KEY_NAME_MAX) return false;
+    for(;;){
+        if(!strncmp(p, "Ctrl-", 5) && p[5]){ b->mods |= TIMUI_MOD_CTRL; p += 5; }
+        else if(!strncmp(p, "Alt-", 4) && p[4]){ b->mods |= TIMUI_MOD_ALT; p += 4; }
+        else if(!strncmp(p, "Shift-", 6) && p[6]){ b->mods |= TIMUI_MOD_SHIFT; p += 6; }
+        else break;
+    }
+    for(i = 0; i < sizeof key_names_ / sizeof key_names_[0]; i++)
+        if(!strcmp(p, key_names_[i].name)){
+            b->key = key_names_[i].key;
+            break;
+        }
+    if(b->key == TIMUI_KEY_UNKNOWN){
+        if(!strcmp(p, "Space")) b->cp = ' ';
+        else if(p[0] > 0x20 && p[0] < 0x7f && !p[1]) b->cp = (unsigned char)p[0];
+        else return false;
+        /* A chord arrives with the letter in lower case. */
+        if((b->mods & TIMUI_MOD_CTRL) && b->cp >= 'A' && b->cp <= 'Z')
+            b->cp += 'a' - 'A';
+    }
+    memcpy(b->name, name, strlen(name) + 1);
+    return true;
+}
+
+/* The keys of the library that a host cannot take. */
+static bool key_binding_reserved_(const struct fytim_key_binding *b)
+{
+    if(!(b->mods & TIMUI_MOD_CTRL)) return false;
+    if(b->key == TIMUI_KEY_TAB) return true;
+    return b->key == TIMUI_KEY_UNKNOWN && (b->cp == 'c' || b->cp == 't');
+}
+
+static bool key_binding_hit_(const struct fytim_key_binding *b, TimuiKey key,
+                             uint32_t cp, uint32_t mods)
+{
+    uint32_t want = TIMUI_MOD_CTRL | TIMUI_MOD_ALT |
+                    (b->mods & TIMUI_MOD_SHIFT);
+
+    if(b->key != key) return false;
+    if(key == TIMUI_KEY_UNKNOWN && b->cp != cp) return false;
+    return (mods & want) == b->mods;
+}
+
+/* The filter of the core: a bound key becomes FYTIM_EVENT_KEY. A surface that
+ * holds the keys gets every key, bound or not. */
+static int key_filter_(void *user, TimuiKey key, uint32_t cp, uint32_t mods)
+{
+    struct fytim *ft = user;
+    char *name;
+    int i;
+
+    if(!ft || ft->keys || ft->nbindings == 0) return 0;
+    if((mods & TIMUI_MOD_CTRL) && cp >= 'A' && cp <= 'Z') cp += 'a' - 'A';
+    for(i = 0; i < ft->nbindings; i++){
+        if(!key_binding_hit_(&ft->bindings[i], key, cp, mods)) continue;
+        name = strdup(ft->bindings[i].name);
+        /* Without memory the key goes to the prompt rather than nowhere. */
+        if(!name) return 0;
+        ev_push(ft, FYTIM_EVENT_KEY, name, strlen(name), 0, 0);
+        return 1;
+    }
+    return 0;
+}
+
+enum fytim_result fytim_set_key_bindings(struct fytim *ft,
+                                         const char *const *names,
+                                         size_t count)
+{
+    struct fytim_key_binding b[FYTIM_KEY_BINDINGS_MAX];
+    size_t i;
+
+    if(!ft || (count && !names) || count > FYTIM_KEY_BINDINGS_MAX)
+        return FYTIM_ERR_INVALID;
+    for(i = 0; i < count; i++)
+        if(!key_binding_parse_(names[i], &b[i]) || key_binding_reserved_(&b[i]))
+            return FYTIM_ERR_INVALID;
+    if(count) memcpy(ft->bindings, b, count * sizeof b[0]);
+    ft->nbindings = (int)count;
+    return FYTIM_OK;
 }
 
 /* ---- history ------------------------------------------------------------ */

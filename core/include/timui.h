@@ -1204,6 +1204,14 @@ TIMUI_API void                timui_interact_end(TimuiInteract *ia);
 /* ---- v0.2 utilities: clipboard + keymaps ------------------------------ */
 TIMUI_API void timui_clipboard_set(TimuiTransport *t, TimuiStr text);
 
+/* A filter that sees each key and each typed character before a widget, a key
+ * query or the input log does; a paste does not pass through it. A key for
+ * which it returns nonzero is taken: nothing of the frame sees it. NULL
+ * removes the filter. */
+typedef int (*TimuiKeyFilter)(void *user, TimuiKey key, uint32_t codepoint,
+                              uint32_t mods);
+TIMUI_API void timui_set_key_filter(Timui *ui, TimuiKeyFilter fn, void *user);
+
 typedef struct { TimuiKey key; uint32_t mods; int action; } TimuiKeyBinding;
 typedef struct { TimuiKeyBinding bindings[32]; int count; } TimuiKeymap;
 TIMUI_API void timui_keymap_bind(TimuiKeymap *km, TimuiKey key, uint32_t mods, int action);
