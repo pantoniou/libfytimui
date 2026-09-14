@@ -56,3 +56,15 @@ A pane that places its tiles in columns draws the rule between two columns for
 each row of its grid, after it places the tiles. A tile that spans both columns
 covers the rule on its rows, and the tiles in the rows under it keep the rule
 between them.
+
+## Keys the host takes
+
+`fytim_set_key_bindings()` names the keys that the host takes from the prompt,
+such as `Up`, `Escape` or `Ctrl-G`. While no surface holds the keys, a bound
+key is `FYTIM_EVENT_KEY` with its name, and neither the editor nor the keys of
+the library see it. Ctrl-C, Ctrl-T and Ctrl-Tab cannot be bound, and a set
+with a name that is not a key is refused whole. A surface that holds the keys
+gets every key, bound or not.
+
+The core takes the key before the frame does, through a filter that is a local
+delta of the core: see `vendor-deltas.md`.

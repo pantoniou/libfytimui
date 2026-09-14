@@ -161,3 +161,24 @@ forwarding input - a terminal pane, a remote session - has the same need.
 A host-reserved key can change the owner of bytes later in the same terminal
 read. `timui_input_push()` queues that suffix ahead of newly read input for the
 next frame, so the new owner receives it in order.
+
+## The host takes a key before the frame
+
+**Files:** `core/include/timui.h`, `core/src/timui_int.h`, `core/src/timui_core.c`
+
+A host that binds keys on its prompt must take a key before the text area edits
+with it and before the key queries of the frame see it. Nothing above
+`timui_begin()` can do that: the frame decodes the input and gives the keys to
+the focused widget in the same pass.
+
+`timui_set_key_filter()` installs a filter that sees each key and each typed
+character before a widget, a key query or the input log does. A key for which
+the filter returns nonzero is taken, and nothing of the frame sees it. A paste
+does not pass through the filter. libfytimui installs it for
+`fytim_set_key_bindings()`, and passes every key while a surface holds the
+keys.
+
+Covered by `fytim.band.bound_keys_leave_the_prompt`,
+`fytim.band.key_bindings_are_checked` and
+`fytim.band.a_surface_with_the_keys_ignores_bindings`. Worth upstreaming: any
+host that binds keys beside a text area has the need.
