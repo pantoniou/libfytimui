@@ -839,6 +839,115 @@ static void test_ctrl_t_focus_next(void)
     h_close(&h);
 }
 
+/* The first event of a pump, when it is a key the host took, named @name. */
+static int next_key_is(struct harness *h, const char *name)
+{
+    struct fytim_event ev;
+
+    return fytim_next_event(h->ft, &ev) && ev.type == FYTIM_EVENT_KEY &&
+           ev.text_len == strlen(name) && !memcmp(ev.text, name, ev.text_len);
+}
+
+/* A bound key is taken from the prompt: the host is told its name, and the
+ * editor and the keys of the library do not see it. */
+static void test_bound_keys_leave_the_prompt(void)
+{
+    static const char *const keys[] = { "Left", "Enter", "Ctrl-g", "1" };
+    struct harness h;
+    struct fytim_event ev;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_key_bindings(h.ft, keys, 4) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_keys(&h, "ab");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!strcmp(fytim_input(h.ft), "ab"));
+    /* Left does not move the cursor: the next letter lands at the end */
+    h_keys(&h, "\x1b[D");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(next_key_is(&h, "Left"));
+    CHECK(!fytim_next_event(h.ft, &ev));
+    h_keys(&h, "c");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!strcmp(fytim_input(h.ft), "abc"));
+    /* Enter does not submit, and ^G does not ask for the editor */
+    h_keys(&h, "\r");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(next_key_is(&h, "Enter"));
+    CHECK(!fytim_next_event(h.ft, &ev));
+    h_keys(&h, "\x07");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(next_key_is(&h, "Ctrl-g"));
+    CHECK(!fytim_next_event(h.ft, &ev));
+    CHECK(!strcmp(fytim_input(h.ft), "abc"));
+    /* a bound character is taken; another is typed */
+    h_keys(&h, "1");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(next_key_is(&h, "1"));
+    h_keys(&h, "2");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!fytim_next_event(h.ft, &ev));
+    CHECK(!strcmp(fytim_input(h.ft), "abc2"));
+    /* without bindings Enter submits again */
+    CHECK(fytim_set_key_bindings(h.ft, NULL, 0) == FYTIM_OK);
+    h_keys(&h, "\r");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_LINE &&
+          ev.text_len == 4 && !memcmp(ev.text, "abc2", 4));
+    h_close(&h);
+}
+
+/* A set with a reserved key or a name that is no key is refused whole, and
+ * the bindings before it stay. */
+static void test_key_bindings_are_checked(void)
+{
+    static const char *const down[] = { "Down" };
+    static const char *const bad[][2] = {
+        { "Down", "Ctrl-c" }, { "Down", "Ctrl-t" }, { "Down", "Ctrl-Tab" },
+        { "Down", "Hyper-x" }, { "Down", "ab" }, { "Down", "" },
+        { "Down", "Ctrl-" },
+    };
+    const char *many[FYTIM_KEY_BINDINGS_MAX + 1];
+    struct harness h;
+    size_t i;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_key_bindings(h.ft, down, 1) == FYTIM_OK);
+    for(i = 0; i < sizeof bad / sizeof bad[0]; i++)
+        CHECK(fytim_set_key_bindings(h.ft, bad[i], 2) == FYTIM_ERR_INVALID);
+    for(i = 0; i < sizeof many / sizeof many[0]; i++)
+        many[i] = "Down";
+    CHECK(fytim_set_key_bindings(h.ft, many, FYTIM_KEY_BINDINGS_MAX + 1) ==
+          FYTIM_ERR_INVALID);
+    CHECK(fytim_set_key_bindings(h.ft, NULL, 1) == FYTIM_ERR_INVALID);
+    CHECK(fytim_set_key_bindings(NULL, down, 1) == FYTIM_ERR_INVALID);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_keys(&h, "\x1b[B");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(next_key_is(&h, "Down"));
+    h_close(&h);
+}
+
+/* A surface that holds the keys gets a bound key as the bytes of its program. */
+static void test_a_surface_with_the_keys_ignores_bindings(void)
+{
+    static const char *const keys[] = { "Left" };
+    struct fytim_surface *sf;
+    struct fytim_event ev;
+    struct harness h;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_key_bindings(h.ft, keys, 1) == FYTIM_OK);
+    sf = fytim_surface_open(h.ft, 2, 10);
+    CHECK(sf != NULL && fytim_surface_set_keys(sf, true) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_keys(&h, "\x1b[D");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_SURFACE_KEYS &&
+          ev.text_len == 3 && !memcmp(ev.text, "\x1b[D", 3));
+    h_close(&h);
+}
+
 /* Kitty keyboard preserves Ctrl on Tab, so it can cycle focus too. */
 static void test_ctrl_tab_focus_next(void)
 {
@@ -955,6 +1064,10 @@ int main(int argc, char **argv)
           test_workband_defer_survives_empty_tail },
         { "workband_shed_oldest", test_workband_shed_oldest },
         { "ctrl_g_edit_and_suspend", test_ctrl_g_edit_and_suspend },
+        { "bound_keys_leave_the_prompt", test_bound_keys_leave_the_prompt },
+        { "key_bindings_are_checked", test_key_bindings_are_checked },
+        { "a_surface_with_the_keys_ignores_bindings",
+          test_a_surface_with_the_keys_ignores_bindings },
         { "ctrl_t_focus_next", test_ctrl_t_focus_next },
         { "ctrl_tab_focus_next", test_ctrl_tab_focus_next },
         { "ctrl_shift_t_cycles_zoom_rows",
