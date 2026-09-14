@@ -1408,6 +1408,29 @@ static void test_text_expands_tabs(void)
     CHECK(CELL(g, 1, 9).chars[0] == 'x');
 }
 
+/* An erase to the end of the row fills the rest of its box in the active
+ * style, as a card row of libfymd4c fills its background. */
+static void test_text_erases_to_its_edge(void)
+{
+    struct fytim_cell g[CG_ROWS * CG_COLS];
+    const char text[] = "\x1b[48;2;1;2;3mab\x1b[K\x1b[0m\n"
+                        "\x1b[48;2;1;2;3m\x1b[K\x1b[0m\ncd";
+    int c;
+
+    cells_fill(g, 'x');
+    CHECK(fytim_cells_draw_text(g, CG_ROWS, CG_COLS, 0, 1, 8, 3,
+                                text, sizeof text - 1) == 3);
+    CHECK(CELL(g, 0, 1).chars[0] == 'a' && CELL(g, 0, 2).chars[0] == 'b');
+    for(c = 3; c < 9; c++)
+        CHECK(CELL(g, 0, c).chars[0] == 0 && CELL(g, 0, c).bg == 0x010203);
+    for(c = 1; c < 9; c++)
+        CHECK(CELL(g, 1, c).chars[0] == 0 && CELL(g, 1, c).bg == 0x010203);
+    CHECK(CELL(g, 0, 0).chars[0] == 'x' && CELL(g, 0, 9).chars[0] == 'x');
+    CHECK(CELL(g, 1, 9).chars[0] == 'x');
+    CHECK(CELL(g, 2, 1).chars[0] == 'c' &&
+          CELL(g, 2, 1).bg == FYTIM_COLOR_DEFAULT);
+}
+
 /* A wide glyph takes two cells; a combining mark joins its base. */
 static void test_text_measures_glyphs(void)
 {
@@ -1697,6 +1720,7 @@ static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "text_carries_its_style", test_text_carries_its_style },
     { "text_is_cut_to_its_box", test_text_is_cut_to_its_box },
     { "text_expands_tabs", test_text_expands_tabs },
+    { "text_erases_to_its_edge", test_text_erases_to_its_edge },
     { "text_measures_glyphs", test_text_measures_glyphs },
     { "text_rejects_bad_input", test_text_rejects_bad_input },
     { "cells_take_a_ground", test_cells_take_a_ground },
