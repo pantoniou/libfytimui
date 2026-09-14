@@ -268,6 +268,185 @@ static void test_a_cleared_page_restores_the_stack(void)
     vth_close(&h);
 }
 
+/* The head and the foot of a tile page stand around the screen of the tile. */
+static void test_a_tile_page_frames_its_screen(void)
+{
+    struct vth h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *sf;
+    struct fytim_page_region r = {
+        .id = "screen", .kind = FYTIM_PAGE_SLOT,
+        .row = 1, .col = 0, .width = 80, .height = 1
+    };
+    int head, first, last;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    sf = fytim_surface_open_in(wp, 2, 80);
+    paint(sf, 'S', 2, 80);
+    CHECK(fytim_surface_set_top(sf, "OLD") == FYTIM_OK);
+    CHECK(fytim_surface_set_page(sf, "HHHH\n\nFFFF\n", 11, &r, 1) ==
+          FYTIM_OK);
+    vth_pump(&h);
+    head = find_char(&h, 'H', NULL);
+    CHECK(head >= 0);
+    run_of(&h, head + 1, 'S', &first, &last);
+    CHECK(first == 0);
+    run_of(&h, head + 2, 'S', &first, &last);
+    CHECK(first == 0);
+    CHECK(find_char(&h, 'F', NULL) == head + 3);
+    CHECK(find_char(&h, 'O', NULL) == -1);
+    vth_close(&h);
+}
+
+/* A tile page in an explicit grid frames its screen as in the automatic one. */
+static void test_a_tile_page_frames_its_screen_in_a_grid(void)
+{
+    struct vth h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *sf;
+    struct fytim_page_region r = {
+        .id = "screen", .kind = FYTIM_PAGE_SLOT,
+        .row = 2, .col = 0, .width = 80, .height = 1
+    };
+    int head, first, last;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_grid(wp, 1, 1) == FYTIM_OK);
+    sf = fytim_surface_open_in(wp, 3, 80);
+    CHECK(fytim_surface_set_cell(sf, 0, 0, 1, 1) == FYTIM_OK);
+    paint(sf, 'S', 3, 80);
+    CHECK(fytim_surface_set_page(sf, "HHHH\nCCCC\n\nFFFF\n", 16, &r, 1) ==
+          FYTIM_OK);
+    vth_pump(&h);
+    head = find_char(&h, 'H', NULL);
+    CHECK(head >= 0);
+    CHECK(find_char(&h, 'C', NULL) == head + 1);
+    run_of(&h, head + 2, 'S', &first, &last);
+    CHECK(first == 0);
+    CHECK(find_char(&h, 'F', NULL) == head + 5);
+    vth_close(&h);
+}
+
+/* The screen view draws the grid from the top of the tile; the head view
+ * draws the head and leaves the screen blank. */
+static void test_a_page_view_draws_its_part(void)
+{
+    struct vth h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *sf;
+    struct fytim_page_region r = {
+        .id = "screen", .kind = FYTIM_PAGE_SLOT,
+        .row = 1, .col = 0, .width = 80, .height = 1
+    };
+    int head, top;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_page_set(h.ft, "T\n", 2, NULL, 0) == FYTIM_OK);
+    wp = fytim_workpane_create(h.ft);
+    sf = fytim_surface_open_in(wp, 2, 80);
+    paint(sf, 'S', 2, 80);
+    CHECK(fytim_surface_set_page(sf, "HHHH\n\nFFFF\n", 11, &r, 1) ==
+          FYTIM_OK);
+    fytim_page_clear(h.ft);
+    vth_pump(&h);
+    head = find_char(&h, 'H', NULL);
+    CHECK(head >= 0 && find_char(&h, 'S', NULL) == head + 1);
+
+    CHECK(fytim_surface_set_page_view(sf, FYTIM_PAGE_VIEW_SCREEN) == FYTIM_OK);
+    vth_pump(&h);
+    top = find_char(&h, 'S', NULL);
+    CHECK(top == head);
+    CHECK(find_char(&h, 'H', NULL) == -1);
+    CHECK(find_char(&h, 'F', NULL) == -1);
+
+    CHECK(fytim_surface_set_page_view(sf, FYTIM_PAGE_VIEW_HEAD) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(find_char(&h, 'H', NULL) == head);
+    CHECK(find_char(&h, 'S', NULL) == -1);
+    CHECK(find_char(&h, 'F', NULL) == -1);
+    vth_close(&h);
+}
+
+/* Two tiles bound to slots stand where the page put them, each with its head
+ * and its screen, and no screen runs into the other. */
+static void test_bound_tiles_stand_in_their_slots(void)
+{
+    struct vth h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    struct fytim_page_region r[2] = {
+        { .id = "tile:a", .kind = FYTIM_PAGE_SLOT, .row = 1, .col = 0,
+          .width = 20, .height = 3 },
+        { .id = "tile:b", .kind = FYTIM_PAGE_SLOT, .row = 1, .col = 25,
+          .width = 30, .height = 3 },
+    };
+    int top, first, last;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 80);
+    b = fytim_surface_open_in(wp, 2, 80);
+    paint(a, 'a', 2, 80);
+    paint(b, 'b', 2, 80);
+    CHECK(fytim_surface_set_top(a, "HEADA") == FYTIM_OK);
+    CHECK(fytim_surface_bind(a, "tile:a") == FYTIM_OK);
+    CHECK(fytim_surface_bind(b, "tile:b") == FYTIM_OK);
+    CHECK(fytim_page_set(h.ft, "T\n\n\n\nF\n", 6, r, 2) == FYTIM_OK);
+    vth_pump(&h);
+    top = find_char(&h, 'T', NULL);
+    CHECK(top >= 0);
+    CHECK(find_char(&h, 'H', NULL) == top + 1);
+    run_of(&h, top + 2, 'a', &first, &last);
+    CHECK(first == 0 && last == 19);
+    run_of(&h, top + 1, 'b', &first, &last);
+    CHECK(first == 25 && last == 54);
+    CHECK(find_char(&h, 'F', NULL) == top + 4);
+    vth_close(&h);
+}
+
+/* Tiles whose slots start on one row reserve the tallest head among them, as
+ * the tiles of one grid row do: equal slots give equal screens, whatever head
+ * each tile carries. */
+static void test_tiles_of_a_row_share_their_head(void)
+{
+    struct vth h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    struct fytim_page_region r[2] = {
+        { .id = "tile:a", .kind = FYTIM_PAGE_SLOT, .row = 1, .col = 0,
+          .width = 20, .height = 5 },
+        { .id = "tile:b", .kind = FYTIM_PAGE_SLOT, .row = 1, .col = 25,
+          .width = 20, .height = 5 },
+    };
+    struct fytim_page_region screen = {
+        .id = "screen", .kind = FYTIM_PAGE_SLOT, .row = 2, .col = 0,
+        .width = 20, .height = 1
+    };
+    int ga = -1, gb = -1;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 6, 80);
+    b = fytim_surface_open_in(wp, 6, 80);
+    paint(a, 'a', 6, 80);
+    paint(b, 'b', 6, 80);
+    /* a has a head of two rows, b a head of one */
+    CHECK(fytim_surface_set_page(a, "HHHH\nCCCC\n\n", 12, &screen, 1) ==
+          FYTIM_OK);
+    screen.row = 1;
+    CHECK(fytim_surface_set_page(b, "GGGG\n\n", 6, &screen, 1) == FYTIM_OK);
+    CHECK(fytim_surface_bind(a, "tile:a") == FYTIM_OK);
+    CHECK(fytim_surface_bind(b, "tile:b") == FYTIM_OK);
+    CHECK(fytim_page_set(h.ft, "T\n\n\n\n\n\n", 7, r, 2) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(fytim_surface_granted_rows(a, &ga) == FYTIM_OK);
+    CHECK(fytim_surface_granted_rows(b, &gb) == FYTIM_OK);
+    CHECK(ga == 3 && gb == 3);
+    vth_close(&h);
+}
+
 /* A prompt on a card takes the middle rows of its slot; a slot too short
  * for the card is the editor alone. */
 static void test_a_prompt_card_frames_the_editor(void)
@@ -306,8 +485,16 @@ static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "an_unbound_slot_is_blank", test_an_unbound_slot_is_blank },
     { "a_cleared_page_restores_the_stack",
       test_a_cleared_page_restores_the_stack },
+    { "a_tile_page_frames_its_screen", test_a_tile_page_frames_its_screen },
     { "a_prompt_card_frames_the_editor",
       test_a_prompt_card_frames_the_editor },
+    { "a_tile_page_frames_its_screen_in_a_grid",
+      test_a_tile_page_frames_its_screen_in_a_grid },
+    { "a_page_view_draws_its_part", test_a_page_view_draws_its_part },
+    { "bound_tiles_stand_in_their_slots",
+      test_bound_tiles_stand_in_their_slots },
+    { "tiles_of_a_row_share_their_head",
+      test_tiles_of_a_row_share_their_head },
 };
 
 int main(int argc, char **argv)

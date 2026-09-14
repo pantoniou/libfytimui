@@ -244,7 +244,11 @@ foreach(t a_page_is_set_and_cleared a_page_replaces_the_band_stack
           the_tail_reports_its_rows the_prompt_reports_its_rows
           completion_reports_its_state the_pane_reports_its_rows
           sizes_are_null_safe
-          the_prompt_reports_its_card)
+          a_tile_page_takes_its_rows a_tile_act_names_its_tile
+          rejects_bad_tile_pages the_prompt_reports_its_card
+          a_page_view_keeps_the_grant a_committed_tile_page_keeps_its_head
+          bound_tiles_take_their_slots a_tile_reports_its_rows
+          an_unplaced_tile_is_granted_nothing)
     add_test(NAME fytim.page.${t} COMMAND test_fytim_page ${t})
 endforeach()
 
@@ -423,7 +427,10 @@ if(VTERM_FOUND)
     foreach(t the_rows_stand_in_order a_surface_stays_in_its_slot
               the_tail_shows_its_last_rows a_pane_tiles_inside_its_slot
               an_unbound_slot_is_blank a_cleared_page_restores_the_stack
-              a_prompt_card_frames_the_editor)
+              a_tile_page_frames_its_screen a_prompt_card_frames_the_editor
+              a_tile_page_frames_its_screen_in_a_grid
+              a_page_view_draws_its_part bound_tiles_stand_in_their_slots
+              tiles_of_a_row_share_their_head)
         add_test(NAME fytim.page.vt.${t} COMMAND test_fytim_page_vt ${t})
     endforeach()
 endif()

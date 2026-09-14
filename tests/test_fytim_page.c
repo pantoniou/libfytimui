@@ -509,7 +509,9 @@ static void test_rejects_bad_binds(void)
     wp = fytim_workpane_create(h.ft);
     tile = fytim_surface_open_in(wp, 3, 20);
     CHECK(tile != NULL);
-    CHECK(fytim_surface_bind(tile, "tile") == FYTIM_ERR_INVALID);
+    /* a tile of a pane can stand in a slot of its own */
+    CHECK(fytim_surface_bind(tile, "tile") == FYTIM_OK);
+    CHECK(fytim_surface_bind(tile, "prompt") == FYTIM_ERR_INVALID);
     CHECK(fytim_workpane_bind(wp, "pane") == FYTIM_OK);
     CHECK(fytim_workpane_bind(wp, "prompt") == FYTIM_ERR_INVALID);
     h_close(&h);
@@ -687,6 +689,318 @@ static void test_sizes_are_null_safe(void)
     CHECK(fytim_workpane_rows(NULL) == 0);
 }
 
+static void paint_tile(struct fytim_surface *sf, uint32_t ch)
+{
+    struct fytim_cell cells[8];
+    int rows = 0, cols = 0, r, c;
+
+    memset(cells, 0, sizeof cells);
+    for(c = 0; c < 8; c++){
+        cells[c].chars[0] = ch;
+        cells[c].fg = FYTIM_COLOR_DEFAULT;
+        cells[c].bg = FYTIM_COLOR_DEFAULT;
+    }
+    fytim_surface_size(sf, &rows, &cols);
+    for(r = 0; r < rows; r++)
+        (void)fytim_surface_put_row(sf, r, cells, cols < 8 ? cols : 8);
+}
+
+/* The head and the foot of a tile page are rows of the tile. */
+static void test_a_tile_page_takes_its_rows(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_page_region r = {
+        .id = "screen", .kind = FYTIM_PAGE_SLOT,
+        .row = 2, .col = 0, .width = 40, .height = 1
+    };
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 3, 80);
+    CHECK(fytim_surface_set_top(a, "OLD TOP") == FYTIM_OK);
+    CHECK(fytim_workpane_rows(wp) == 4);
+    /* two head rows and one foot row, where the chrome had one top row */
+    CHECK(fytim_surface_set_page(a, "HEAD\nCOMMAND\n\nFOOT\n", 19, &r, 1) ==
+          FYTIM_OK);
+    CHECK(fytim_workpane_rows(wp) == 6);
+    /* removing the page gives the chrome back */
+    CHECK(fytim_surface_set_page(a, NULL, 0, NULL, 0) == FYTIM_OK);
+    CHECK(fytim_workpane_rows(wp) == 4);
+    h_close(&h);
+}
+
+/* A click on an act of a tile page names the tile and the cell. */
+static void test_a_tile_act_names_its_tile(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_page_region r[2] = {
+        { .id = "tile:zoom", .kind = FYTIM_PAGE_ACT,
+          .row = 0, .col = 6, .width = 4, .height = 1 },
+        { .id = "screen", .kind = FYTIM_PAGE_SLOT,
+          .row = 1, .col = 0, .width = 80, .height = 1 },
+    };
+    struct fytim_event ev;
+    struct h_events evs;
+    char buf[16384];
+
+    if(!h_open_mouse(&h, true)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_controls(wp, FYTIM_WORKPANE_ZOOM |
+                                          FYTIM_WORKPANE_CLOSE) == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 3, 80);
+    paint_tile(a, 'A');
+    CHECK(fytim_surface_set_page(a, "HEAD  zoom\n\n", 12, r, 2) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    h_drain(&h, &evs);
+
+    h_click(&h, 7, 0);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_ACT, &ev));
+    CHECK(ev.surface == a && ev.row == 0 && ev.col == 7);
+    CHECK(ev.text && ev.text_len == 9 && !memcmp(ev.text, "tile:zoom", 9));
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_CLICK, NULL));
+
+    /* the library drew no marks: the right edge is not a control */
+    h_click(&h, 79, 0);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_ZOOM, NULL));
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_CLOSE, NULL));
+
+    /* the screen of the program is not an act */
+    h_click(&h, 7, 2);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(!h_event(&evs, FYTIM_EVENT_ACT, NULL));
+
+    /* a page with no head rows still takes the marks off the first row */
+    CHECK(fytim_surface_set_page(a, "\n", 1, &r[1], 0) == FYTIM_OK);
+    r[1].row = 0;
+    CHECK(fytim_surface_set_page(a, "\n", 1, &r[1], 1) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    h_drain(&h, &evs);
+    h_click(&h, 79, 0);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_ZOOM, NULL));
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_CLOSE, NULL));
+    h_close(&h);
+}
+
+/* A view changes what a tile draws, never the rows it was granted. */
+static void test_a_page_view_keeps_the_grant(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_page_region r = {
+        .id = "screen", .kind = FYTIM_PAGE_SLOT,
+        .row = 2, .col = 0, .width = 80, .height = 1
+    };
+    char buf[16384];
+    int full = -1, rows = -1, wanted;
+
+    CHECK(fytim_surface_set_page_view(NULL, FYTIM_PAGE_VIEW_FULL) ==
+          FYTIM_ERR_INVALID);
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 3, 80);
+    CHECK(fytim_surface_set_page(a, "HEAD\nCMD\n\nFOOT\n", 16, &r, 1) ==
+          FYTIM_OK);
+    wanted = fytim_workpane_rows(wp);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_surface_granted_rows(a, &full) == FYTIM_OK);
+    CHECK(full == 3);
+
+    CHECK(fytim_surface_set_page_view(a, FYTIM_PAGE_VIEW_SCREEN) == FYTIM_OK);
+    CHECK(fytim_workpane_rows(wp) == wanted);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_surface_granted_rows(a, &rows) == FYTIM_OK);
+    CHECK(rows == full);
+
+    CHECK(fytim_surface_set_page_view(a, FYTIM_PAGE_VIEW_HEAD) == FYTIM_OK);
+    CHECK(fytim_workpane_rows(wp) == wanted);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_surface_granted_rows(a, &rows) == FYTIM_OK);
+    CHECK(rows == full);
+
+    CHECK(fytim_surface_set_page_view(a, (enum fytim_page_view)9) ==
+          FYTIM_ERR_INVALID);
+    (void)h_out(&h, buf, sizeof buf);
+    h_close(&h);
+}
+
+/* A committed tile page keeps its head and its foot in the transcript, as a
+ * tile with chrome keeps its chrome. */
+static void test_a_committed_tile_page_keeps_its_head(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_page_region r = {
+        .id = "screen", .kind = FYTIM_PAGE_SLOT,
+        .row = 2, .col = 0, .width = 80, .height = 1
+    };
+    char buf[16384];
+    size_t n;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 2, 80);
+    paint_tile(a, 'G');
+    CHECK(fytim_surface_set_top(a, "OLDTOP") == FYTIM_OK);
+    CHECK(fytim_surface_set_page(a, "HEADROW\nCMDROW\n\nFOOTROW\n", 24, &r,
+                                 1) == FYTIM_OK);
+    /* the view does not decide what the transcript keeps */
+    CHECK(fytim_surface_set_page_view(a, FYTIM_PAGE_VIEW_SCREEN) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    CHECK(fytim_surface_commit(a) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "HEADROW"));
+    CHECK(contains(buf, n, "CMDROW"));
+    CHECK(contains(buf, n, "GGGGGGGG"));
+    CHECK(contains(buf, n, "FOOTROW"));
+    CHECK(!contains(buf, n, "OLDTOP"));
+    h_close(&h);
+}
+
+/* Tiles bound to slots of their own are granted their slots, and a pane
+ * that holds them is not drawn in a slot of its own as well. */
+static void test_bound_tiles_take_their_slots(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    struct fytim_page_region r[2] = {
+        { .id = "tile:a", .kind = FYTIM_PAGE_SLOT, .row = 0, .col = 0,
+          .width = 30, .height = 4 },
+        { .id = "tile:b", .kind = FYTIM_PAGE_SLOT, .row = 0, .col = 31,
+          .width = 40, .height = 2 },
+    };
+    int rows = -1, cols = -1;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 6, 80);
+    b = fytim_surface_open_in(wp, 6, 80);
+    CHECK(fytim_surface_bind(a, "tile:a") == FYTIM_OK);
+    CHECK(fytim_surface_bind(b, "tile:b") == FYTIM_OK);
+    CHECK(fytim_page_set(h.ft, "\n\n\n\n", 4, r, 2) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_surface_granted_rows(a, &rows) == FYTIM_OK && rows == 4);
+    CHECK(fytim_surface_granted_cols(a, &cols) == FYTIM_OK && cols == 30);
+    CHECK(fytim_surface_granted_rows(b, &rows) == FYTIM_OK && rows == 2);
+    CHECK(fytim_surface_granted_cols(b, &cols) == FYTIM_OK && cols == 40);
+    h_close(&h);
+}
+
+/* The rows a tile asks for count its head and its foot. */
+static void test_a_tile_reports_its_rows(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_workband *b;
+    struct fytim_page_region r = {
+        .id = "screen", .kind = FYTIM_PAGE_SLOT,
+        .row = 2, .col = 0, .width = 40, .height = 1
+    };
+
+    CHECK(fytim_surface_rows(NULL) == 0);
+    CHECK(fytim_workband_rows(NULL) == 0);
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 3, 80);
+    CHECK(fytim_surface_rows(a) == 3);
+    CHECK(fytim_surface_set_top(a, "TOP") == FYTIM_OK);
+    CHECK(fytim_surface_rows(a) == 4);
+    CHECK(fytim_surface_set_page(a, "HEAD\nCMD\n\nFOOT\n", 16, &r, 1) ==
+          FYTIM_OK);
+    CHECK(fytim_surface_rows(a) == 3 + 2 + 1);
+    b = fytim_workband_create_in(wp);
+    CHECK(fytim_workband_set(b, "one\ntwo\n", 8) == FYTIM_OK);
+    CHECK(fytim_workband_set_top(b, "HEAD") == FYTIM_OK);
+    CHECK(fytim_workband_rows(b) == 3);
+    h_close(&h);
+}
+
+/* A page that places some tiles of a pane grants the others nothing. */
+static void test_an_unplaced_tile_is_granted_nothing(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    struct fytim_page_region r = {
+        .id = "tile:a", .kind = FYTIM_PAGE_SLOT, .row = 0, .col = 0,
+        .width = 30, .height = 3
+    };
+    int rows = -1;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 3, 80);
+    b = fytim_surface_open_in(wp, 3, 80);
+    CHECK(fytim_workpane_bind(wp, "pane") == FYTIM_OK);
+    {
+        struct fytim_page_region pr = {
+            .id = "pane", .kind = FYTIM_PAGE_SLOT, .row = 0, .col = 0,
+            .width = 80, .height = 3
+        };
+        CHECK(fytim_page_set(h.ft, "\n\n\n", 3, &pr, 1) == FYTIM_OK);
+    }
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_surface_granted_rows(b, &rows) == FYTIM_OK && rows > 0);
+    /* the page now places a alone */
+    CHECK(fytim_workpane_bind(wp, NULL) == FYTIM_OK);
+    CHECK(fytim_surface_bind(a, "tile:a") == FYTIM_OK);
+    CHECK(fytim_page_set(h.ft, "\n\n\n", 3, &r, 1) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_surface_granted_rows(a, &rows) == FYTIM_OK && rows == 3);
+    CHECK(fytim_surface_granted_rows(b, &rows) == FYTIM_OK && rows == 0);
+    h_close(&h);
+}
+
+static void test_rejects_bad_tile_pages(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_page_region two[2] = {
+        { .id = "screen", .kind = FYTIM_PAGE_SLOT, .row = 0, .width = 1,
+          .height = 1 },
+        { .id = "screen", .kind = FYTIM_PAGE_SLOT, .row = 1, .width = 1,
+          .height = 1 },
+    };
+    const char bad[] = "HEAD\x1b[2J\n\n";
+
+    CHECK(fytim_surface_set_page(NULL, "x\n", 2, NULL, 0) ==
+          FYTIM_ERR_INVALID);
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 3, 80);
+    CHECK(fytim_surface_set_page(a, "HEAD\n\n", 6, two, 2) ==
+          FYTIM_ERR_INVALID);
+    CHECK(fytim_surface_set_page(a, "KEPT\n\n", 6, two, 1) == FYTIM_OK);
+    CHECK(fytim_workpane_rows(wp) == 4);
+    CHECK(fytim_surface_set_page(a, bad, sizeof bad - 1, NULL, 0) ==
+          FYTIM_ERR_INVALID);
+    CHECK(fytim_workpane_rows(wp) == 4);
+    CHECK(fytim_surface_set_page(a, "x\n", 2, NULL, 1) == FYTIM_ERR_INVALID);
+    /* a surface of its own is not a tile */
+    CHECK(fytim_surface_set_page(fytim_surface_open(h.ft, 2, 20), "x\n", 2,
+                                 NULL, 0) == FYTIM_ERR_INVALID);
+    h_close(&h);
+}
+
 static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "a_page_is_set_and_cleared", test_a_page_is_set_and_cleared },
     { "a_page_replaces_the_band_stack", test_a_page_replaces_the_band_stack },
@@ -713,6 +1027,16 @@ static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "the_pane_reports_its_rows", test_the_pane_reports_its_rows },
     { "sizes_are_null_safe", test_sizes_are_null_safe },
     { "the_prompt_reports_its_card", test_the_prompt_reports_its_card },
+    { "a_tile_page_takes_its_rows", test_a_tile_page_takes_its_rows },
+    { "a_tile_act_names_its_tile", test_a_tile_act_names_its_tile },
+    { "rejects_bad_tile_pages", test_rejects_bad_tile_pages },
+    { "a_page_view_keeps_the_grant", test_a_page_view_keeps_the_grant },
+    { "bound_tiles_take_their_slots", test_bound_tiles_take_their_slots },
+    { "a_tile_reports_its_rows", test_a_tile_reports_its_rows },
+    { "an_unplaced_tile_is_granted_nothing",
+      test_an_unplaced_tile_is_granted_nothing },
+    { "a_committed_tile_page_keeps_its_head",
+      test_a_committed_tile_page_keeps_its_head },
 };
 
 int main(int argc, char **argv)
