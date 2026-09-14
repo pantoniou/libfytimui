@@ -86,7 +86,8 @@ int fytim_page_rows(const struct fytim *ft) FYTIM_EXPORT;
 
 /*
  * Bind a component to the slot @id. NULL removes the binding. A built-in id
- * cannot be bound, and neither can a tile of a pane: the pane places it.
+ * cannot be bound. A tile of a pane can be bound, and is then drawn in its
+ * slot as its pane draws it: a page binds the pane or its tiles, not both.
  * Binding an id that another component holds takes it from that component.
  */
 enum fytim_result fytim_workband_bind(struct fytim_workband *wb,
@@ -95,6 +96,43 @@ enum fytim_result fytim_surface_bind(struct fytim_surface *sf,
                                      const char *id) FYTIM_EXPORT;
 enum fytim_result fytim_workpane_bind(struct fytim_workpane *wp,
                                       const char *id) FYTIM_EXPORT;
+
+/*
+ * Give the tile of @sf a page of its own: its head, its controls and any
+ * chrome, rendered by the host at the columns the tile was granted, with at
+ * most one slot named "screen" where the grid of the surface is drawn. The
+ * rows above the screen slot are the head of the tile and the rows below it
+ * its foot; they take the place of the set_top and set_bottom chrome, and a
+ * tile too short for them sheds the last rows of each first. The screen slot
+ * takes the rows the tile has left, whatever height it was rendered at.
+ *
+ * While a tile has a page the library draws no zoom or close mark on it: the
+ * host places its controls as acts. A click on an act of the page is
+ * FYTIM_EVENT_ACT with @surface set and @row and @col the cell of the page.
+ * Rows of NULL remove the page. The contract of the rows and the regions is
+ * that of fytim_page_set().
+ */
+enum fytim_result fytim_surface_set_page(struct fytim_surface *sf,
+                                         const char *rows, size_t len,
+                                         const struct fytim_page_region *regions,
+                                         size_t count) FYTIM_EXPORT;
+
+/*
+ * What a tile page shows of itself. The view changes what is drawn and
+ * nothing that is asked or granted: the rows a tile requests, the rows its
+ * grid row reserves and the rows its surface is granted are those of the
+ * whole page in every view. A host chooses a view from the grant, and a view
+ * that changed the request would change the grant it was chosen from.
+ */
+enum fytim_page_view {
+    FYTIM_PAGE_VIEW_FULL = 0,   /* the head, the screen and the foot */
+    FYTIM_PAGE_VIEW_SCREEN,     /* the screen alone, from the top of the tile */
+    FYTIM_PAGE_VIEW_HEAD        /* the head alone, and no screen */
+};
+
+enum fytim_result fytim_surface_set_page_view(struct fytim_surface *sf,
+                                              enum fytim_page_view view)
+    FYTIM_EXPORT;
 
 /*
  * What a page needs to size its slots. An inline page is as tall as its rows,
@@ -125,5 +163,13 @@ bool fytim_completion_active(const struct fytim *ft) FYTIM_EXPORT;
 /* Rows the tiles of @wp ask for, their heads included and the chrome of the
  * pane excluded; 0 when it holds no tile. */
 int fytim_workpane_rows(const struct fytim_workpane *wp) FYTIM_EXPORT;
+
+/*
+ * Rows a tile asks for: its screen or its text within its cap, and the rows of
+ * its head and foot, from its page or its chrome. A host that places tiles in
+ * a grid of its own sizes a fitted row from these. 0 for NULL.
+ */
+int fytim_surface_rows(const struct fytim_surface *sf) FYTIM_EXPORT;
+int fytim_workband_rows(const struct fytim_workband *wb) FYTIM_EXPORT;
 
 #endif /* LIBFYTIMUI_PAGE_H */

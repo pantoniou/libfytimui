@@ -97,6 +97,17 @@ struct fytim_surface {
     int rect_x, rect_y, rect_w, rect_h;
     int bar_x, zoom_x, close_x, ctl_y;
     int head_x, head_y, head_rows;  /* the head text at the last frame */
+    /*
+     * The page of the tile, or NULL rows: the lines the host rendered, its
+     * regions, and the rows above and below its screen slot. The last frame
+     * records where the rows above and below were drawn, for a click.
+     */
+    char *page_rows;
+    struct fytim_page_region *page_regions;
+    size_t page_nregions;
+    int page_above, page_screen_h, page_below;
+    int page_x, page_top_y, page_top_n, page_bottom_y, page_bottom_n;
+    enum fytim_page_view page_view; /* what the tile page draws of itself */
 };
 
 /*
@@ -344,16 +355,42 @@ static void comp_free_candidates(struct fytim *ft)
 }
 
 /* Release one surface. The band or the pane that held it has let it go. */
+static void regions_free(struct fytim_page_region *regions, size_t count)
+{
+    size_t i;
+
+    for(i = 0; i < count; i++)
+        free((char *)regions[i].id);
+    free(regions);
+}
+
+static void surface_page_free(struct fytim_surface *sf)
+{
+    regions_free(sf->page_regions, sf->page_nregions);
+    free(sf->page_rows);
+    sf->page_rows = NULL;
+    sf->page_regions = NULL;
+    sf->page_nregions = 0;
+    sf->page_above = sf->page_screen_h = sf->page_below = 0;
+}
+
 static void sf_free(struct fytim_surface *sf)
 {
     if(!sf) return;
     if(sf->owner->keys == sf) sf->owner->keys = NULL;
     free(sf->grid);
     free(sf->margin);
+    surface_page_free(sf);
     free(sf);
 }
 
 static void page_free(struct fytim *ft);
+static void surface_page_free(struct fytim_surface *sf);
+static int tile_top_rows(const struct fytim_workband *t);
+static int tile_bottom_rows(const struct fytim_workband *t);
+static const char *rows_after(const char *text, int n);
+static bool page_tile_act(struct fytim *ft, struct fytim_surface *sf, int x,
+                          int y);
 
 static void wb_free(struct fytim_workband *wb)
 {
@@ -1195,6 +1232,21 @@ static int surface_row_text(const struct fytim_surface *sf, int row,
     return 0;
 }
 
+/* Add the first @n rows of @text, without the newline after the last. */
+static int page_lines_add(struct response_text *out, const char *text, int n)
+{
+    const char *end = text;
+    int i;
+
+    if(n < 1) return 0;
+    for(i = 0; i < n && *end; i++){
+        const char *nl = strchr(end, '\n');
+        if(!nl){ end += strlen(end); break; }
+        end = i + 1 < n ? nl + 1 : nl;
+    }
+    return rt_add(out, text, (size_t)(end - text));
+}
+
 enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
 {
     struct response_text out;
@@ -1211,9 +1263,14 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
             if(sf->grid[(size_t)row * (size_t)sf->cols + (size_t)col].chars[0])
                 last = row;
     }
-    /* The chrome is part of the screen: a title says what the screen was. */
-    if(sf->wb->top && sf->wb->top[0] &&
-       rt_add(&out, sf->wb->top, strlen(sf->wb->top))) goto nomem;
+    /* The chrome is part of the screen: a title says what the screen was.
+     * A tile page's head is its chrome, whatever view it was drawn in. */
+    if(sf->page_rows){
+        if(page_lines_add(&out, sf->page_rows, sf->page_above)) goto nomem;
+    }else if(sf->wb->top && sf->wb->top[0] &&
+             rt_add(&out, sf->wb->top, strlen(sf->wb->top))){
+        goto nomem;
+    }
 
     for(row = 0; row <= last; row++){
         if(out.len && rt_add(&out, "\n", 1)) goto nomem;
@@ -1223,7 +1280,12 @@ enum fytim_result fytim_surface_commit(struct fytim_surface *sf)
         if(surface_row_text(sf, row, &out)) goto nomem;
     }
 
-    if(sf->wb->bottom && sf->wb->bottom[0]){
+    if(sf->page_rows && sf->page_below > 0){
+        if(out.len && rt_add(&out, "\n", 1)) goto nomem;
+        if(page_lines_add(&out, rows_after(sf->page_rows,
+                                           sf->page_above + sf->page_screen_h),
+                          sf->page_below)) goto nomem;
+    }else if(!sf->page_rows && sf->wb->bottom && sf->wb->bottom[0]){
         if(out.len && rt_add(&out, "\n", 1)) goto nomem;
         if(rt_add(&out, sf->wb->bottom, strlen(sf->wb->bottom))) goto nomem;
     }
@@ -2655,8 +2717,11 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
             if(content < 1)
                 content = (sf || !(t->top || t->bottom)) ? 1 : 0;
             if(content > t->max_rows) content = t->max_rows;
-            top = chrome_rows(t->top);
-            bottom = chrome_rows(t->bottom);
+            top = tile_top_rows(t);
+            bottom = tile_bottom_rows(t);
+            if(sf){
+                sf->page_top_n = sf->page_bottom_n = 0;
+            }
             /* A surface reserves the tallest chrome in its grid row, so all
              * equal-sized screens receive the same content height. */
             while((sf ? reserve_top + content + reserve_bottom
@@ -2672,7 +2737,20 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                 if(top > reserve_top) top = reserve_top;
                 if(bottom > reserve_bottom) bottom = reserve_bottom;
             }
-            if(top){
+            if(top && sf && sf->page_rows){
+                /* The head of the page, which places its own controls. The
+                 * screen view draws no head, and the screen takes its rows'
+                 * place at the top of the tile. */
+                if(sf->page_view != FYTIM_PAGE_VIEW_SCREEN){
+                    int n = draw_surface_chrome(f, buf, sf, tx, ty, tw,
+                                                sf->page_rows, chrome, top);
+                    int mw = sf->margin ? sgr_disp_width(sf->margin) : 0;
+                    sf->page_x = tx + (mw < tw ? mw : tw);
+                    sf->page_top_y = ty;
+                    sf->page_top_n = n;
+                    ty += n;
+                }
+            }else if(top){
                 if(sf && pane_controls_live(wp))
                     draw_tile_marks(buf, sf, wp->controls, chrome, tx, ty, tw);
                 if(sf){
@@ -2687,7 +2765,7 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                 else
                     ty += draw_chrome(f, buf, tx, ty, tw, t->top, chrome,
                                       top);
-            }else if(sf && pane_controls_live(wp)){
+            }else if(sf && !sf->page_rows && pane_controls_live(wp)){
                 /* With no chrome row of its own the tile carries the marks
                  * on its first row: a cell of the program is a smaller cost
                  * than a row taken from every tile. */
@@ -2698,7 +2776,9 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                  * is left, which is what the host is told it has. */
                 int bar = pane_bar_cols(wp);
                 if(bar >= tw) bar = 0;
-                if(content > 0)
+                /* The head view keeps the grant and draws no screen. */
+                if(content > 0 &&
+                   !(sf->page_rows && sf->page_view == FYTIM_PAGE_VIEW_HEAD))
                     draw_surface(f, buf, sf, chrome, tx, ty, tw - bar,
                                  content);
                 if(bar)
@@ -2729,7 +2809,18 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                 }
             }
             ty += content;
-            if(bottom){
+            if(bottom && sf && sf->page_rows){
+                /* Only the whole page has a foot. */
+                if(sf->page_view == FYTIM_PAGE_VIEW_FULL){
+                    int mw = sf->margin ? sgr_disp_width(sf->margin) : 0;
+                    sf->page_x = tx + (mw < tw ? mw : tw);
+                    sf->page_bottom_y = ty;
+                    sf->page_bottom_n = draw_surface_chrome(f, buf, sf, tx, ty,
+                            tw, rows_after(sf->page_rows,
+                                           sf->page_above + sf->page_screen_h),
+                            chrome, bottom);
+                }
+            }else if(bottom){
                 if(t->bottom[0] && sf)
                     (void)draw_surface_chrome(f, buf, sf, tx, ty, tw,
                                               t->bottom, chrome, 1);
@@ -2751,10 +2842,10 @@ static void row_chrome(struct fytim_workband **arr, int first, int last,
     *topp = *bottomp = 0;
     for(i = first; i < last; i++){
         if(!arr[i]->surface) continue;
-        if(chrome_rows(arr[i]->top) > *topp)
-            *topp = chrome_rows(arr[i]->top);
-        if(chrome_rows(arr[i]->bottom) > *bottomp)
-            *bottomp = chrome_rows(arr[i]->bottom);
+        if(tile_top_rows(arr[i]) > *topp)
+            *topp = tile_top_rows(arr[i]);
+        if(tile_bottom_rows(arr[i]) > *bottomp)
+            *bottomp = tile_bottom_rows(arr[i]);
     }
 }
 
@@ -2862,10 +2953,10 @@ static void draw_pane_grid(TimuiFrame *f, TimuiCellBuffer *buf,
             struct fytim_workband *rt = row_tiles[i][j].t;
 
             if(!rt->surface) continue;
-            if(chrome_rows(rt->top) > shared_top)
-                shared_top = chrome_rows(rt->top);
-            if(chrome_rows(rt->bottom) > shared_bottom)
-                shared_bottom = chrome_rows(rt->bottom);
+            if(tile_top_rows(rt) > shared_top)
+                shared_top = tile_top_rows(rt);
+            if(tile_bottom_rows(rt) > shared_bottom)
+                shared_bottom = tile_bottom_rows(rt);
         }
         for(j = 0; j < row_n[i]; j++){
             int c = row_tiles[i][j].col;
@@ -3005,7 +3096,7 @@ static int wb_rows(const struct fytim_workband *wb)
      * already says what it is. A screen always keeps a row of its own. */
     if(n < 1) n = (wb->surface || !(wb->top || wb->bottom)) ? 1 : 0;
     if(n > wb->max_rows) n = wb->max_rows;
-    return n + chrome_rows(wb->top) + chrome_rows(wb->bottom);
+    return n + tile_top_rows(wb) + tile_bottom_rows(wb);
 }
 
 /* Rows above the chrome: the transcript's live tail, then the work-bands;
@@ -3711,6 +3802,8 @@ static bool pane_mouse(struct fytim *ft, TimuiFrame *f)
                 ev_push_surface(ft, FYTIM_EVENT_SURFACE_CLOSE, sf, 0);
             }else if(y == sf->ctl_y && sf->zoom_x >= 0 && x == sf->zoom_x){
                 ev_push_surface(ft, FYTIM_EVENT_SURFACE_ZOOM, sf, 0);
+            }else if(sf->page_rows && page_tile_act(ft, sf, x, y)){
+                /* The host placed its controls: it said which one. */
             }else if(sf->head_rows > 0 && y >= sf->head_y &&
                      y < sf->head_y + sf->head_rows && x >= sf->head_x){
                 /* The head is the host's: say which of its cells it was. */
@@ -3773,11 +3866,7 @@ static bool page_id_builtin(const char *id)
 
 static void page_free(struct fytim *ft)
 {
-    size_t i;
-
-    for(i = 0; i < ft->page_nregions; i++)
-        free((char *)ft->page_regions[i].id);
-    free(ft->page_regions);
+    regions_free(ft->page_regions, ft->page_nregions);
     free(ft->page_rows);
     ft->page_regions = NULL;
     ft->page_rows = NULL;
@@ -3797,17 +3886,23 @@ static bool page_region_valid(const struct fytim_page_region *r)
     return r->kind == FYTIM_PAGE_SLOT;
 }
 
-enum fytim_result fytim_page_set(struct fytim *ft, const char *rows,
-                                 size_t len,
-                                 const struct fytim_page_region *regions,
-                                 size_t count)
+/*
+ * Check and copy the rows and the regions of a page. On success *@textp and
+ * *@copyp are owned by the caller, *@rowsp is the number of rows, the lowest
+ * region bottom included. Nothing is allocated on failure.
+ */
+static enum fytim_result page_copy(const char *rows, size_t len,
+                                   const struct fytim_page_region *regions,
+                                   size_t count, char **textp,
+                                   struct fytim_page_region **copyp,
+                                   int *rowsp)
 {
     struct fytim_page_region *copy = NULL;
     char *text;
     size_t i;
     int h;
 
-    if(!ft || (!rows && len) || (!regions && count) ||
+    if((!rows && len) || (!regions && count) ||
        count > FYTIM_PAGE_REGIONS_MAX)
         return FYTIM_ERR_INVALID;
     if(len && !rendered_only(rows, len)) return FYTIM_ERR_INVALID;
@@ -3830,15 +3925,32 @@ enum fytim_result fytim_page_set(struct fytim *ft, const char *rows,
         copy[i] = regions[i];
         copy[i].id = strdup(regions[i].id);
         if(!copy[i].id){
-            while(i--) free((char *)copy[i].id);
-            free(copy);
+            regions_free(copy, i);
             free(text);
             return FYTIM_ERR_NOMEM;
         }
         if(regions[i].row + regions[i].height > h)
             h = regions[i].row + regions[i].height;
     }
+    *textp = text;
+    *copyp = copy;
+    *rowsp = h;
+    return FYTIM_OK;
+}
 
+enum fytim_result fytim_page_set(struct fytim *ft, const char *rows,
+                                 size_t len,
+                                 const struct fytim_page_region *regions,
+                                 size_t count)
+{
+    struct fytim_page_region *copy;
+    enum fytim_result res;
+    char *text;
+    int h;
+
+    if(!ft) return FYTIM_ERR_INVALID;
+    res = page_copy(rows, len, regions, count, &text, &copy, &h);
+    if(res != FYTIM_OK) return res;
     page_free(ft);
     ft->page_rows = text;
     ft->page_regions = copy;
@@ -3884,6 +3996,16 @@ bool fytim_completion_active(const struct fytim *ft)
     return ft && ft->comp_active;
 }
 
+int fytim_surface_rows(const struct fytim_surface *sf)
+{
+    return sf ? wb_rows(sf->wb) : 0;
+}
+
+int fytim_workband_rows(const struct fytim_workband *wb)
+{
+    return wb ? wb_rows(wb) : 0;
+}
+
 int fytim_workpane_rows(const struct fytim_workpane *wp)
 {
     int rows;
@@ -3896,21 +4018,159 @@ int fytim_workpane_rows(const struct fytim_workpane *wp)
     return rows > 0 ? rows : 0;
 }
 
-/* An id is held by one band at a time: binding it takes it from another. */
+enum fytim_result fytim_surface_set_page(struct fytim_surface *sf,
+                                         const char *rows, size_t len,
+                                         const struct fytim_page_region *regions,
+                                         size_t count)
+{
+    const struct fytim_page_region *screen = NULL;
+    struct fytim_page_region *copy;
+    enum fytim_result res;
+    char *text;
+    size_t i;
+    int h, lines;
+
+    /* A page is a tile's: a pane places it, and only a pane draws one. */
+    if(!sf || !sf->wb || !sf->wb->in_pane) return FYTIM_ERR_INVALID;
+    if(!rows){
+        if(len || count) return FYTIM_ERR_INVALID;
+        surface_page_free(sf);
+        return FYTIM_OK;
+    }
+    for(i = 0; regions && i < count; i++){
+        if(regions[i].kind != FYTIM_PAGE_SLOT || !regions[i].id ||
+           strcmp(regions[i].id, "screen"))
+            continue;
+        if(screen) return FYTIM_ERR_INVALID;
+        screen = &regions[i];
+    }
+    res = page_copy(rows, len, regions, count, &text, &copy, &h);
+    if(res != FYTIM_OK) return res;
+    surface_page_free(sf);
+    lines = styled_rows(text);
+    sf->page_rows = text;
+    sf->page_regions = copy;
+    sf->page_nregions = count;
+    if(screen){
+        sf->page_above = screen->row < lines ? screen->row : lines;
+        sf->page_screen_h = screen->height;
+        sf->page_below = lines - screen->row - screen->height;
+        if(sf->page_below < 0) sf->page_below = 0;
+    }else{
+        sf->page_above = lines;
+        sf->page_screen_h = 0;
+        sf->page_below = 0;
+    }
+    (void)h;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_set_page_view(struct fytim_surface *sf,
+                                              enum fytim_page_view view)
+{
+    if(!sf) return FYTIM_ERR_INVALID;
+    if(view != FYTIM_PAGE_VIEW_FULL && view != FYTIM_PAGE_VIEW_SCREEN &&
+       view != FYTIM_PAGE_VIEW_HEAD)
+        return FYTIM_ERR_INVALID;
+    sf->page_view = view;
+    return FYTIM_OK;
+}
+
+/* The rows a tile takes above and below its content: its page, or its
+ * chrome. */
+static int tile_top_rows(const struct fytim_workband *t)
+{
+    if(t->surface && t->surface->page_rows) return t->surface->page_above;
+    return chrome_rows(t->top);
+}
+
+static int tile_bottom_rows(const struct fytim_workband *t)
+{
+    if(t->surface && t->surface->page_rows) return t->surface->page_below;
+    return chrome_rows(t->bottom);
+}
+
+/* The text after the first @n rows of @text. */
+static const char *rows_after(const char *text, int n)
+{
+    const char *p = text;
+
+    while(n-- > 0 && p && (p = strchr(p, '\n')) != NULL)
+        p++;
+    return p ? p : "";
+}
+
+/* A click on the rows of a tile page: report the act under it, if any. */
+static bool page_tile_act(struct fytim *ft, struct fytim_surface *sf, int x,
+                          int y)
+{
+    const struct fytim_page_region *r;
+    struct fytim_event *ev;
+    char *text;
+    size_t i;
+    int line, col;
+
+    if(!sf->page_rows) return false;
+    if(y >= sf->page_top_y && y < sf->page_top_y + sf->page_top_n)
+        line = y - sf->page_top_y;
+    else if(y >= sf->page_bottom_y &&
+            y < sf->page_bottom_y + sf->page_bottom_n)
+        line = sf->page_above + sf->page_screen_h + (y - sf->page_bottom_y);
+    else
+        return false;
+    col = x - sf->page_x;
+    for(i = 0; i < sf->page_nregions; i++){
+        r = &sf->page_regions[i];
+        if(r->kind != FYTIM_PAGE_ACT || r->row != line || col < r->col ||
+           col >= r->col + r->width)
+            continue;
+        text = strdup(r->id);
+        if(!text) return true;
+        ev_push(ft, FYTIM_EVENT_ACT, text, strlen(text), 0, 0);
+        ev = &ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP];
+        ev->surface = sf;
+        ev->row = line;
+        ev->col = col;
+        return true;
+    }
+    return false;
+}
+
+/*
+ * The band that holds slot @id, among the bands of @ft and the tiles of its
+ * panes, or NULL.
+ */
+static struct fytim_workband *slot_holder(const struct fytim *ft,
+                                          const char *id)
+{
+    struct fytim_workband *wb, *t;
+
+    for(wb = ft->wbands; wb; wb = wb->next){
+        if(wb->slot_id && !strcmp(wb->slot_id, id)) return wb;
+        if(!wb->pane) continue;
+        for(t = wb->pane->tiles; t; t = t->next)
+            if(t->slot_id && !strcmp(t->slot_id, id)) return t;
+    }
+    return NULL;
+}
+
+/*
+ * An id is held by one band at a time: binding it takes it from another. A
+ * tile of a pane can hold one too, so that a page places the tiles itself; a
+ * page binds the pane or its tiles, not both.
+ */
 static enum fytim_result wb_bind(struct fytim_workband *wb, const char *id)
 {
     struct fytim_workband *o;
     char *copy = NULL;
 
-    /* A tile is placed by its pane, not by the page. */
-    if(!wb || wb->in_pane) return FYTIM_ERR_INVALID;
+    if(!wb) return FYTIM_ERR_INVALID;
     if(id){
         if(!page_id_valid(id) || page_id_builtin(id))
             return FYTIM_ERR_INVALID;
         copy = strdup(id);
         if(!copy) return FYTIM_ERR_NOMEM;
-        for(o = wb->owner->wbands; o; o = o->next){
-            if(o == wb || !o->slot_id || strcmp(o->slot_id, id)) continue;
+        while((o = slot_holder(wb->owner, id)) != NULL && o != wb){
             free(o->slot_id);
             o->slot_id = NULL;
         }
@@ -3939,11 +4199,7 @@ enum fytim_result fytim_workpane_bind(struct fytim_workpane *wp,
 
 static struct fytim_workband *wb_bound(const struct fytim *ft, const char *id)
 {
-    struct fytim_workband *wb;
-
-    for(wb = ft->wbands; wb; wb = wb->next)
-        if(wb->slot_id && !strcmp(wb->slot_id, id)) return wb;
-    return NULL;
+    return slot_holder(ft, id);
 }
 
 /*
@@ -3974,6 +4230,25 @@ static void draw_rows_in(TimuiCellBuffer *buf, const char *text, int x, int y,
     ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT, TIMUI_COLOR_DEFAULT, 0);
     fytim_sgr_init(&sp);
     fytim_sgr_feed(&sp, p, (size_t)(end - p), draw_run_, &ctx);
+}
+
+/* The head and foot rows the tiles placed in slots on page row @row reserve. */
+static void slot_row_reserve(const struct fytim *ft, int row, int *topp,
+                             int *bottomp)
+{
+    const struct fytim_page_region *pr;
+    struct fytim_workband *t;
+    size_t i;
+
+    *topp = *bottomp = 0;
+    for(i = 0; i < ft->page_nregions; i++){
+        pr = &ft->page_regions[i];
+        if(pr->kind != FYTIM_PAGE_SLOT || pr->row != row) continue;
+        t = wb_bound(ft, pr->id);
+        if(!t || !t->in_pane || !t->surface) continue;
+        if(tile_top_rows(t) > *topp) *topp = tile_top_rows(t);
+        if(tile_bottom_rows(t) > *bottomp) *bottomp = tile_bottom_rows(t);
+    }
 }
 
 /*
@@ -4023,6 +4298,17 @@ static void draw_slot(struct fytim *ft, TimuiFrame *f,
     }
     wb = wb_bound(ft, r->id);
     if(!wb) return;
+    /* A tile the page placed is drawn as its pane draws it: head, marks,
+     * screen and foot, granted the slot. The tiles whose slots start on this
+     * row reserve the tallest head and foot among them, as the tiles of one
+     * grid row do, so their screens stand level. */
+    if(wb->in_pane){
+        int top = 0, bottom = 0;
+
+        slot_row_reserve(ft, r->row, &top, &bottom);
+        draw_tile(f, buf, wb->in_pane, wb, chrome, x, y, w, h, top, bottom);
+        return;
+    }
     if(wb->pane){
         draw_pane(f, buf, wb->pane, chrome, x, y, w, h);
         return;
@@ -4049,7 +4335,15 @@ static void draw_page(struct fytim *ft, TimuiFrame *f, bool *submitted)
     TimuiStyle dim = timui_style_make(TIMUI_COLOR_DEFAULT, TIMUI_COLOR_DEFAULT,
                                       TIMUI_ATTR_DIM);
     TimuiStyle wb_st, status_st;
+    struct fytim_workband *pb, *t;
     size_t i;
+
+    /* A tile is granted what a slot or its pane draws it in this frame, and
+     * nothing when the page placed it nowhere. */
+    for(pb = ft->wbands; pb; pb = pb->next)
+        if(pb->pane)
+            for(t = pb->pane->tiles; t; t = t->next)
+                tile_unplaced(t);
 
     wb_st = ft->chrome_style_set[FYTIM_CHROME_WORKBAND] ?
             timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_WORKBAND],
