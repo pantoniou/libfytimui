@@ -217,6 +217,61 @@ foreach(t two_tiles_share_the_width one_tile_takes_the_width
     add_test(NAME fytim.workpane.${t} COMMAND test_fytim_workpane ${t})
 endforeach()
 
+# A page of rows and slots that the host rendered: what is accepted, what a
+# slot grants, and which event a click makes.
+add_executable(test_fytim_page test_fytim_page.c
+               ${CMAKE_SOURCE_DIR}/src/libfytimui.c
+               ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c
+               ${CMAKE_SOURCE_DIR}/src/fytim_layout.c
+               $<TARGET_OBJECTS:fytimui-core>)
+target_include_directories(test_fytim_page PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/core/include)
+if(ASAN_C_FLAGS)
+    target_compile_options(test_fytim_page PRIVATE ${ASAN_C_FLAGS})
+    target_link_options(test_fytim_page PRIVATE ${ASAN_C_FLAGS})
+endif()
+
+foreach(t a_page_is_set_and_cleared a_page_replaces_the_band_stack
+          a_region_extends_the_page a_slot_grants_its_region
+          an_unbound_band_is_not_drawn a_bound_band_draws_in_its_slot
+          the_prompt_slot_edits no_prompt_slot_makes_no_line
+          a_click_on_an_act_reports_its_id a_bind_takes_the_id
+          rejects_disallowed_rows rejects_bad_regions regions_are_copied
+          no_act_without_the_grab rejects_bad_binds null_safety
+          a_retired_component_leaves_its_slot
+          the_tail_reports_its_rows the_prompt_reports_its_rows
+          completion_reports_its_state the_pane_reports_its_rows
+          sizes_are_null_safe
+          the_prompt_reports_its_card)
+    add_test(NAME fytim.page.${t} COMMAND test_fytim_page ${t})
+endforeach()
+
+# The cost of a page against the band stack. Not a test: the table it prints
+# is the measurement of decision 0006. The smoke run keeps it building and
+# working.
+find_package(libfymd4c CONFIG QUIET)
+find_package(Threads)
+if(libfymd4c_FOUND AND Threads_FOUND)
+    add_executable(bench_fytim_page bench_fytim_page.c
+                   ${CMAKE_SOURCE_DIR}/src/libfytimui.c
+                   ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c
+                   ${CMAKE_SOURCE_DIR}/src/fytim_layout.c
+                   $<TARGET_OBJECTS:fytimui-core>)
+    target_include_directories(bench_fytim_page PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/core/include)
+    target_link_libraries(bench_fytim_page PRIVATE
+        libfymd4c::fymd4c Threads::Threads util)
+    if(ASAN_C_FLAGS)
+        target_compile_options(bench_fytim_page PRIVATE ${ASAN_C_FLAGS})
+        target_link_options(bench_fytim_page PRIVATE ${ASAN_C_FLAGS})
+    endif()
+    add_test(NAME fytim.bench.page.smoke COMMAND bench_fytim_page smoke)
+endif()
+
 # Keys handed to a surface: the encoding, and the prompt standing aside.
 add_executable(test_fytim_surface_keys test_fytim_surface_keys.c
                ${CMAKE_SOURCE_DIR}/src/libfytimui.c
@@ -348,6 +403,28 @@ if(VTERM_FOUND)
               a_wash_is_removed)
         add_test(NAME fytim.workpane.vt.${t}
                  COMMAND test_fytim_workpane_vt ${t})
+    endforeach()
+
+    add_executable(test_fytim_page_vt test_fytim_page_vt.c
+                   ${CMAKE_SOURCE_DIR}/src/libfytimui.c
+                   ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c
+                   ${CMAKE_SOURCE_DIR}/src/fytim_layout.c
+                   $<TARGET_OBJECTS:fytimui-core>)
+    target_include_directories(test_fytim_page_vt PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/core/include)
+    target_link_libraries(test_fytim_page_vt PRIVATE libfyvterm::libfyvterm)
+    if(ASAN_C_FLAGS)
+        target_compile_options(test_fytim_page_vt PRIVATE ${ASAN_C_FLAGS})
+        target_link_options(test_fytim_page_vt PRIVATE ${ASAN_C_FLAGS})
+    endif()
+
+    foreach(t the_rows_stand_in_order a_surface_stays_in_its_slot
+              the_tail_shows_its_last_rows a_pane_tiles_inside_its_slot
+              an_unbound_slot_is_blank a_cleared_page_restores_the_stack
+              a_prompt_card_frames_the_editor)
+        add_test(NAME fytim.page.vt.${t} COMMAND test_fytim_page_vt ${t})
     endforeach()
 endif()
 
