@@ -2,16 +2,18 @@
 
 ## Decisions
 
-The five choices that shaped this API. Read `0001` and `0003` first; they
+The choices that shaped this API. Read `0001` and `0006` first; they
 constrain everything else.
 
 | | Decision | Why it matters |
 |---|---|---|
 | [0001](decisions/0001-vendor-timui-behind-an-opaque-api.md) | Vendor the timui core behind a fully opaque API | No `timui` symbol in the public surface, enforced at link time. The cost: the host cannot draw custom chrome. |
 | [0002](decisions/0002-cmake-with-shared-and-static.md) | CMake only, shared **and** static | Diverges from upstream's Makefile/nix/single-header model. |
-| [0003](decisions/0003-alt-screen-with-in-app-scrollback.md) | Alt-screen with in-app scrollback | Supersedes the inline live-region design in the fyai findings doc. Means **no new render mode in the core**. |
+| [0003](decisions/0003-alt-screen-with-in-app-scrollback.md) | Alt-screen with in-app scrollback (superseded by 0006) | Supersedes the inline live-region design in the fyai findings doc. Means **no new render mode in the core**. |
 | [0004](decisions/0004-host-owns-the-event-loop.md) | The host owns `poll()`; timui never blocks | The one change that required touching the core. |
 | [0005](decisions/0005-parse-styling-once-into-retained-cells.md) | Parse SGR once per append into retained cells | Keeps an immediate-mode renderer viable for a thousand-line transcript. |
+| [0006](decisions/0006-a-page-of-slots-in-two-screen-modes.md) | A page of slots, inline and full screen, beside the band stack | The host renders UI Markdown; the library composes its slots. The band stack stays. |
+| [0007](decisions/0007-render-the-page-for-each-frame.md) | Render the page again for each frame | Measured: a page of 16 tiles at 400x120 is below 1 ms a frame; the pump, not the Markdown, is the cost. |
 
 ## Vendored core
 

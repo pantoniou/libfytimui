@@ -147,10 +147,11 @@ committed **before** the fix, so the red→green transition is visible in
 
 ## Rendering model
 
-Alt-screen, full-repaint, cell-diff — the core's model. Scrollback is
-implemented **in-app** (`timui_scroll_*` over a transcript pane), with mouse
-wheel and OSC 52 clipboard for scrolling and copy. This is a deliberate choice
-over terminal-native scrollback, which flickers badly under a live region.
+Inline band on the normal screen, full-repaint, cell-diff. Committed rows go
+to the scrollback of the terminal; the live region under them is either the
+band stack of `draw_band()` or a page of slots that the host rendered
+(decision 0006). A full-screen page on the alternate screen, with the host's
+transcript in a slot and OSC 52 copy, is the second screen mode.
 
 The core is immediate-mode: everything redraws each frame. A coding transcript
 is thousands of lines, so **content is parsed to styled cells once, on append,

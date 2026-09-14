@@ -2,7 +2,7 @@
 type: Decision
 title: Alt-screen with in-app scrollback, not an inline live region
 date: 2026-07-21
-status: Accepted
+status: Superseded by 0006
 supersedes: ASYNC_MAIN_LOOP_FINDINGS.md "Progressive rendering API"
 ---
 
