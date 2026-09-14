@@ -284,6 +284,48 @@ static void test_the_rule_sits_between_the_tiles(void)
     vth_close(&h);
 }
 
+/* A tile that spans two columns covers the rule between them; the tiles
+ * that meet under it still have it. */
+static void test_a_span_covers_the_rule(void)
+{
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b, *c;
+    struct vth h;
+    int arow, brow, bf, bl, col;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    CHECK(fytim_workpane_set_grid(wp, 2, 2) == FYTIM_OK);
+    CHECK(fytim_workpane_set_tile_sep(wp, "|") == FYTIM_OK);
+    a = fytim_surface_open_in(wp, 2, 20);
+    b = fytim_surface_open_in(wp, 2, 20);
+    c = fytim_surface_open_in(wp, 2, 20);
+    CHECK(a != NULL && b != NULL && c != NULL);
+    paint(a, 'A', FYTIM_COLOR_DEFAULT);
+    paint(b, 'B', FYTIM_COLOR_DEFAULT);
+    paint(c, 'C', FYTIM_COLOR_DEFAULT);
+    CHECK(fytim_surface_set_cell(a, 0, 0, 1, 2) == FYTIM_OK);
+    CHECK(fytim_surface_set_cell(b, 1, 0, 1, 1) == FYTIM_OK);
+    CHECK(fytim_surface_set_cell(c, 1, 1, 1, 1) == FYTIM_OK);
+    vth_pump(&h);
+
+    arow = find_char(&h, 'A', NULL);
+    brow = find_char(&h, 'B', NULL);
+    CHECK(arow >= 0 && brow > arow);
+    if(arow < 0 || brow <= arow){ vth_close(&h); return; }
+    /* No rule anywhere on the rows of the spanning tile. */
+    for(col = 0; col < COLS; col++)
+        CHECK(cell_at(&h, arow, col).chars[0] != '|');
+    /* Under it, the rule still stands between the two tiles. */
+    run_of(&h, brow, 'B', &bf, &bl);
+    col = bl + 1;
+    while(col < COLS && cell_at(&h, brow, col).chars[0] != '|' &&
+          cell_at(&h, brow, col).chars[0] != 'C')
+        col++;
+    CHECK(col < COLS && cell_at(&h, brow, col).chars[0] == '|');
+    vth_close(&h);
+}
+
 /* A colour published into one tile is that tile's, and stops at its edge. */
 static void test_a_colour_stops_at_the_tile_edge(void)
 {
@@ -1449,6 +1491,8 @@ static const struct case_ent cases[] = {
       test_a_wide_screen_is_clipped_to_its_tile },
     { "the_rule_sits_between_the_tiles",
       test_the_rule_sits_between_the_tiles },
+    { "a_span_covers_the_rule",
+      test_a_span_covers_the_rule },
     { "a_colour_stops_at_the_tile_edge",
       test_a_colour_stops_at_the_tile_edge },
     { "the_grid_puts_the_third_below", test_the_grid_puts_the_third_below },

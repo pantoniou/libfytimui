@@ -377,6 +377,7 @@ if(VTERM_FOUND)
     foreach(t two_tiles_stand_side_by_side the_tiles_share_every_row
               a_wide_screen_is_clipped_to_its_tile
               the_rule_sits_between_the_tiles
+              a_span_covers_the_rule
               a_colour_stops_at_the_tile_edge
               the_grid_puts_the_third_below a_zoomed_tile_owns_the_rows
               a_title_stays_over_its_tile
