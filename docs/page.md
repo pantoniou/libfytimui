@@ -49,3 +49,10 @@ uses, so the two do not drift apart.
   `fytim_workband_max_rows()` read back a band. The host then draws them as
   the library would. The texts and the cells belong to the component and stay
   valid until it changes them.
+
+## The rule between columns
+
+A pane that places its tiles in columns draws the rule between two columns for
+each row of its grid, after it places the tiles. A tile that spans both columns
+covers the rule on its rows, and the tiles in the rows under it keep the rule
+between them.
