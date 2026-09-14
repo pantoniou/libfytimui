@@ -49,7 +49,10 @@ enum fytim_event_type {
      * the cell of the head text that was clicked, from the first cell after
      * the margin of the tile: the host that wrote the head knows what is
      * there. */
-    FYTIM_EVENT_SURFACE_CLICK
+    FYTIM_EVENT_SURFACE_CLICK,
+    /* A click on an act region of the page. The id is in text/text_len,
+     * with the lifetime of FYTIM_EVENT_LINE text. */
+    FYTIM_EVENT_ACT
 };
 
 struct fytim_event {

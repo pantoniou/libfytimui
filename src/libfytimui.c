@@ -68,6 +68,8 @@ struct fytim_workband {
     /* Where the tile sits in an explicit grid. A row of -1 means the host
      * placed nothing and the pane gives it the next free cell. */
     int cell_row, cell_col, cell_row_span, cell_col_span;
+    /* The page slot the band is drawn in, or NULL. */
+    char *slot_id;
 };
 
 /*
@@ -196,6 +198,14 @@ struct fytim {
     int pending_commit_rows;       /* rows committed since the last pump */
     /* running SGR state of the transcript stream, carried across commits */
     struct fytim_sgr_parser commit_sgr;
+
+    /* The page the host rendered. While it is set it is the live region, and
+     * the band stack is not drawn. The rows and the region ids are owned. */
+    bool   page_set;
+    char  *page_rows;
+    struct fytim_page_region *page_regions;
+    size_t page_nregions;
+    int    page_h;                 /* rows, or the lowest region bottom */
 };
 
 const char *fytim_version_string(void)
@@ -343,6 +353,8 @@ static void sf_free(struct fytim_surface *sf)
     free(sf);
 }
 
+static void page_free(struct fytim *ft);
+
 static void wb_free(struct fytim_workband *wb)
 {
     if(!wb) return;
@@ -368,6 +380,7 @@ static void wb_free(struct fytim_workband *wb)
     free(wb->commit);
     free(wb->top);
     free(wb->bottom);
+    free(wb->slot_id);
     free(wb);
 }
 
@@ -386,6 +399,7 @@ void fytim_destroy(struct fytim *ft)
         wb_free(wb);
     }
     if(ft->ui) timui_close(ft->ui);
+    page_free(ft);
     free(ft->header);
     free(ft->status[0]);
     free(ft->status[1]);
@@ -3193,33 +3207,26 @@ static int draw_pane_band(TimuiFrame *f, TimuiCellBuffer *buf,
     return rows;
 }
 
-static void draw_band(struct fytim *ft, TimuiFrame *f,
-                      const struct fytim_layout *lay, bool *submitted)
+/*
+ * The styles of the prompt block. The prompt is one filled card of three
+ * rows, rather than an editor between two rules, when it was given a style or
+ * a ground of its own.
+ */
+struct prompt_style {
+    TimuiStyle in;
+    TimuiStyle sep;
+    TimuiStyle marker;
+    bool card;
+};
+
+static struct prompt_style prompt_style_(const struct fytim *ft)
 {
-    TimuiCellBuffer *buf = timui_frame_buffer(f);
-    const struct fytim_rect *r;
     TimuiStyle in_st  = timui_slot_style(ft->ui, TIMUI_SLOT_INPUT_FOCUSED);
     TimuiStyle sep_st = timui_style_make(in_st.fg, in_st.bg, TIMUI_ATTR_DIM);
-    TimuiStyle dim    = timui_style_make(TIMUI_COLOR_DEFAULT, TIMUI_COLOR_DEFAULT,
-                                         TIMUI_ATTR_DIM);
-    TimuiStyle bold   = timui_style_make(TIMUI_COLOR_DEFAULT, TIMUI_COLOR_DEFAULT,
-                                         TIMUI_ATTR_BOLD);
-    TimuiStyle wb_st, header_st, status_st, marker_st;
-    const char *marker = ft->marker ? ft->marker : "> ";
-    /* The prompt is one filled card of three rows, rather than an editor
-     * between two rules, when it was given a style or a ground of its own. */
+    TimuiStyle marker_st;
+    struct prompt_style ps;
     bool card = ft->prompt_style_set;
-    int marker_w;
 
-    wb_st = ft->chrome_style_set[FYTIM_CHROME_WORKBAND] ?
-            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_WORKBAND],
-                                  dim) : dim;
-    header_st = ft->chrome_style_set[FYTIM_CHROME_HEADER] ?
-            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_HEADER],
-                                  bold) : bold;
-    status_st = ft->chrome_style_set[FYTIM_CHROME_STATUS] ?
-            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_STATUS],
-                                  dim) : dim;
     if(ft->prompt_style_set){
         in_st.fg = sgr_color_(ft->prompt_style.fg);
         in_st.bg = sgr_color_(ft->prompt_style.bg);
@@ -3245,7 +3252,7 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
      * keeps what it says, as the head of a tile does.
      */
     if(ft->prompt_bg != FYTIM_COLOR_DEFAULT && !ft->keys){
-        struct ground g = { ft, ft->prompt_bg, 100 };
+        struct ground g = { (struct fytim *)ft, ft->prompt_bg, 100 };
 
         in_st = ground_style_(&g, in_st);
         sep_st = in_st;
@@ -3256,6 +3263,77 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                     timui_style_make(in_st.fg, in_st.bg,
                                      in_st.attrs | TIMUI_ATTR_BOLD)) :
             timui_style_make(in_st.fg, in_st.bg, in_st.attrs | TIMUI_ATTR_BOLD);
+
+
+    ps.in = in_st;
+    ps.sep = sep_st;
+    ps.marker = marker_st;
+    ps.card = card;
+    return ps;
+}
+
+/*
+ * The marker and the editor in a region of @h rows. The editor is drawn only
+ * when the prompt has the keys: a focused text area would eat the text the
+ * surface was just given. The row still shows what was typed, so the user
+ * sees the line waiting for them.
+ */
+static void draw_prompt(struct fytim *ft, TimuiFrame *f,
+                        const struct prompt_style *ps, int x, int y, int w,
+                        int h, bool *submitted)
+{
+    TimuiCellBuffer *buf = timui_frame_buffer(f);
+    const char *marker = ft->marker ? ft->marker : "> ";
+    TimuiId id = TIMUI_ID("fytim.prompt");
+    TimuiTextAreaResult res;
+    int marker_w;
+
+    if(w < 1 || h < 1) return;
+    timui_draw_fill(buf, TIMUI_RECT(x, y, w, h), ps->in);
+    /* the marker may carry SGR (a colored activity dot): draw it through the
+     * styled path, width from visible glyphs only */
+    draw_row_styled(f, buf, x, y, w, marker, ps->marker);
+    marker_w = sgr_disp_width(marker);
+    if(marker_w > w) marker_w = w;
+    if(ft->keys && ft->input[0])
+        draw_row_styled(f, buf, x + marker_w, y, w - marker_w, ft->input,
+                        ps->in);
+    if(ft->keys) return;
+    timui_set_focus(f, id);   /* no focus model: the prompt owns keys */
+    if(ps->card)
+        res = timui_text_area_mut_styled(
+            f, id, TIMUI_RECT(x + marker_w, y, w - marker_w, h),
+            &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS, ps->in);
+    else
+        res = timui_text_area_mut(
+            f, id, TIMUI_RECT(x + marker_w, y, w - marker_w, h),
+            &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS);
+    if(res.submitted) *submitted = true;
+}
+
+static void draw_band(struct fytim *ft, TimuiFrame *f,
+                      const struct fytim_layout *lay, bool *submitted)
+{
+    TimuiCellBuffer *buf = timui_frame_buffer(f);
+    const struct fytim_rect *r;
+    struct prompt_style ps = prompt_style_(ft);
+    TimuiStyle sep_st = ps.sep;
+    TimuiStyle dim    = timui_style_make(TIMUI_COLOR_DEFAULT, TIMUI_COLOR_DEFAULT,
+                                         TIMUI_ATTR_DIM);
+    TimuiStyle bold   = timui_style_make(TIMUI_COLOR_DEFAULT, TIMUI_COLOR_DEFAULT,
+                                         TIMUI_ATTR_BOLD);
+    TimuiStyle wb_st, header_st, status_st;
+    bool card = ps.card;
+
+    wb_st = ft->chrome_style_set[FYTIM_CHROME_WORKBAND] ?
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_WORKBAND],
+                                  dim) : dim;
+    header_st = ft->chrome_style_set[FYTIM_CHROME_HEADER] ?
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_HEADER],
+                                  bold) : bold;
+    status_st = ft->chrome_style_set[FYTIM_CHROME_STATUS] ?
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_STATUS],
+                                  dim) : dim;
 
     r = &lay->band[FYTIM_BAND_TRANSCRIPT];
     if(r->h > 0 && (ft->wbands || ft->tail)){
@@ -3384,38 +3462,8 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
             timui_draw_hline(buf, r->x, r->y, r->w, sep_st);
     }
     r = &lay->band[FYTIM_BAND_PROMPT];
-    if(r->h > 0){
-        TimuiId id = TIMUI_ID("fytim.prompt");
-        TimuiTextAreaResult res;
-        timui_draw_fill(buf, TIMUI_RECT(r->x, r->y, r->w, r->h), in_st);
-        /* the marker may carry SGR (a colored activity dot): draw it
-         * through the styled path, width from visible glyphs only */
-        draw_row_styled(f, buf, r->x, r->y, r->w, marker, marker_st);
-        marker_w = sgr_disp_width(marker);
-        /*
-         * The editor is drawn only when the prompt has the keys: a focused
-         * text area would eat the text the surface was just given. The row
-         * still shows what was typed, so the user sees the line waiting for
-         * them.
-         */
-        if(ft->keys && ft->input[0])
-            draw_row_styled(f, buf, r->x + sgr_disp_width(marker), r->y,
-                            r->w - sgr_disp_width(marker), ft->input, in_st);
-        if(!ft->keys){
-            timui_set_focus(f, id);   /* no focus model: the prompt owns keys */
-            if(card)
-                res = timui_text_area_mut_styled(
-                    f, id, TIMUI_RECT(r->x + marker_w, r->y,
-                                      r->w - marker_w, r->h),
-                    &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS, in_st);
-            else
-                res = timui_text_area_mut(
-                    f, id, TIMUI_RECT(r->x + marker_w, r->y,
-                                      r->w - marker_w, r->h),
-                    &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS);
-            if(res.submitted) *submitted = true;
-        }
-    }
+    if(r->h > 0)
+        draw_prompt(ft, f, &ps, r->x, r->y, r->w, r->h, submitted);
     r = &lay->band[FYTIM_BAND_SEP_BOTTOM];
     if(r->h > 0){
         if(card)
@@ -3697,12 +3745,370 @@ static bool pane_mouse(struct fytim *ft, TimuiFrame *f)
     return took;
 }
 
+/* ---- the page ----------------------------------------------------------- */
+
+static bool page_id_valid(const char *id)
+{
+    size_t n;
+
+    if(!id) return false;
+    for(n = 0; id[n]; n++){
+        char c = id[n];
+
+        if(n >= FYTIM_PAGE_ID_MAX) return false;
+        if(!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+             (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' ||
+             c == ':' || c == '/'))
+            return false;
+    }
+    return n > 0;
+}
+
+/* The ids the library draws itself; no component can be bound to them. */
+static bool page_id_builtin(const char *id)
+{
+    return !strcmp(id, "tail") || !strcmp(id, "prompt") ||
+           !strcmp(id, "completion");
+}
+
+static void page_free(struct fytim *ft)
+{
+    size_t i;
+
+    for(i = 0; i < ft->page_nregions; i++)
+        free((char *)ft->page_regions[i].id);
+    free(ft->page_regions);
+    free(ft->page_rows);
+    ft->page_regions = NULL;
+    ft->page_rows = NULL;
+    ft->page_nregions = 0;
+    ft->page_h = 0;
+    ft->page_set = false;
+}
+
+static bool page_region_valid(const struct fytim_page_region *r)
+{
+    if(!page_id_valid(r->id)) return false;
+    if(r->row < 0 || r->col < 0 || r->width < 0 || r->height < 0)
+        return false;
+    if(r->height > INT_MAX - r->row || r->width > INT_MAX - r->col)
+        return false;
+    if(r->kind == FYTIM_PAGE_ACT) return r->height == 1;
+    return r->kind == FYTIM_PAGE_SLOT;
+}
+
+enum fytim_result fytim_page_set(struct fytim *ft, const char *rows,
+                                 size_t len,
+                                 const struct fytim_page_region *regions,
+                                 size_t count)
+{
+    struct fytim_page_region *copy = NULL;
+    char *text;
+    size_t i;
+    int h;
+
+    if(!ft || (!rows && len) || (!regions && count) ||
+       count > FYTIM_PAGE_REGIONS_MAX)
+        return FYTIM_ERR_INVALID;
+    if(len && !rendered_only(rows, len)) return FYTIM_ERR_INVALID;
+    for(i = 0; i < count; i++)
+        if(!page_region_valid(&regions[i])) return FYTIM_ERR_INVALID;
+
+    text = malloc(len + 1);
+    if(!text) return FYTIM_ERR_NOMEM;
+    if(len) memcpy(text, rows, len);
+    text[len] = '\0';
+    if(count){
+        copy = calloc(count, sizeof *copy);
+        if(!copy){
+            free(text);
+            return FYTIM_ERR_NOMEM;
+        }
+    }
+    h = styled_rows(text);
+    for(i = 0; i < count; i++){
+        copy[i] = regions[i];
+        copy[i].id = strdup(regions[i].id);
+        if(!copy[i].id){
+            while(i--) free((char *)copy[i].id);
+            free(copy);
+            free(text);
+            return FYTIM_ERR_NOMEM;
+        }
+        if(regions[i].row + regions[i].height > h)
+            h = regions[i].row + regions[i].height;
+    }
+
+    page_free(ft);
+    ft->page_rows = text;
+    ft->page_regions = copy;
+    ft->page_nregions = count;
+    ft->page_h = h;
+    ft->page_set = true;
+    return FYTIM_OK;
+}
+
+void fytim_page_clear(struct fytim *ft)
+{
+    if(!ft) return;
+    page_free(ft);
+}
+
+bool fytim_page_active(const struct fytim *ft)
+{
+    return ft && ft->page_set;
+}
+
+int fytim_page_rows(const struct fytim *ft)
+{
+    return ft && ft->page_set ? ft->page_h : 0;
+}
+
+bool fytim_prompt_card(const struct fytim *ft)
+{
+    return ft && ft->ui && prompt_style_(ft).card;
+}
+
+int fytim_tail_rows(const struct fytim *ft)
+{
+    return ft ? styled_rows(ft->tail) : 0;
+}
+
+int fytim_prompt_rows(const struct fytim *ft)
+{
+    return ft ? prompt_lines(ft) : 0;
+}
+
+bool fytim_completion_active(const struct fytim *ft)
+{
+    return ft && ft->comp_active;
+}
+
+int fytim_workpane_rows(const struct fytim_workpane *wp)
+{
+    int rows;
+
+    if(!wp) return 0;
+    rows = pane_rows(wp);
+    if(rows < 1) return 0;
+    /* A slot draws no chrome of the pane: the page states the chrome. */
+    rows -= chrome_rows(wp->wb->top) + chrome_rows(wp->wb->bottom);
+    return rows > 0 ? rows : 0;
+}
+
+/* An id is held by one band at a time: binding it takes it from another. */
+static enum fytim_result wb_bind(struct fytim_workband *wb, const char *id)
+{
+    struct fytim_workband *o;
+    char *copy = NULL;
+
+    /* A tile is placed by its pane, not by the page. */
+    if(!wb || wb->in_pane) return FYTIM_ERR_INVALID;
+    if(id){
+        if(!page_id_valid(id) || page_id_builtin(id))
+            return FYTIM_ERR_INVALID;
+        copy = strdup(id);
+        if(!copy) return FYTIM_ERR_NOMEM;
+        for(o = wb->owner->wbands; o; o = o->next){
+            if(o == wb || !o->slot_id || strcmp(o->slot_id, id)) continue;
+            free(o->slot_id);
+            o->slot_id = NULL;
+        }
+    }
+    free(wb->slot_id);
+    wb->slot_id = copy;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_workband_bind(struct fytim_workband *wb,
+                                      const char *id)
+{
+    return wb_bind(wb, id);
+}
+
+enum fytim_result fytim_surface_bind(struct fytim_surface *sf, const char *id)
+{
+    return sf ? wb_bind(sf->wb, id) : FYTIM_ERR_INVALID;
+}
+
+enum fytim_result fytim_workpane_bind(struct fytim_workpane *wp,
+                                      const char *id)
+{
+    return wp ? wb_bind(wp->wb, id) : FYTIM_ERR_INVALID;
+}
+
+static struct fytim_workband *wb_bound(const struct fytim *ft, const char *id)
+{
+    struct fytim_workband *wb;
+
+    for(wb = ft->wbands; wb; wb = wb->next)
+        if(wb->slot_id && !strcmp(wb->slot_id, id)) return wb;
+    return NULL;
+}
+
+/*
+ * Draw styled rows into a region of @h rows: the first rows, or the last rows
+ * when @last is set, which is what a band or the tail shows. Nothing is drawn
+ * below the region.
+ */
+static void draw_rows_in(TimuiCellBuffer *buf, const char *text, int x, int y,
+                         int w, int h, bool last)
+{
+    struct draw_run_ctx ctx;
+    struct fytim_sgr_parser sp;
+    const char *p = text, *end;
+    int skip, n;
+
+    if(!text || !*text || w < 1 || h < 1) return;
+    skip = last ? styled_rows(text) - h : 0;
+    while(skip > 0 && (p = strchr(p, '\n')) != NULL){ p++; skip--; }
+    if(!p) return;
+    for(end = p, n = 0; *end && n < h; end++)
+        if(*end == '\n') n++;
+    ctx.buf = buf;
+    ctx.x = x;
+    ctx.y = y;
+    ctx.max_x = x + w;
+    ctx.origin_x = x;
+    ctx.ground = (struct ground){ NULL, FYTIM_COLOR_DEFAULT, 0 };
+    ctx.base = timui_style_make(TIMUI_COLOR_DEFAULT, TIMUI_COLOR_DEFAULT, 0);
+    fytim_sgr_init(&sp);
+    fytim_sgr_feed(&sp, p, (size_t)(end - p), draw_run_, &ctx);
+}
+
+/*
+ * One slot: the component bound to its id draws in the region, and a surface
+ * there is granted the region. Chrome that a band or a pane was given with
+ * set_top or set_bottom is not drawn in a slot: the page states the chrome.
+ */
+static void draw_slot(struct fytim *ft, TimuiFrame *f,
+                      const struct fytim_page_region *r, TimuiStyle chrome,
+                      TimuiStyle status_st, bool *submitted)
+{
+    TimuiCellBuffer *buf = timui_frame_buffer(f);
+    int fw = timui_width(f), fh = timui_height(f);
+    int x = r->col, y = r->row, w = r->width, h = r->height;
+    struct fytim_workband *wb;
+    struct fytim_surface *sf;
+    int rows;
+
+    if(x >= fw || y >= fh) return;
+    if(w > fw - x) w = fw - x;
+    if(h > fh - y) h = fh - y;
+    if(w < 1 || h < 1) return;
+
+    if(!strcmp(r->id, "tail")){
+        draw_rows_in(buf, ft->tail, x, y, w, h, true);
+        return;
+    }
+    if(!strcmp(r->id, "prompt")){
+        struct prompt_style ps = prompt_style_(ft);
+
+        /* On a card the slot is the card: its first and last rows frame the
+         * editor, as the band stack frames it. */
+        if(ps.card && h >= 3){
+            timui_draw_fill(buf, TIMUI_RECT(x, y, w, h), ps.in);
+            draw_prompt(ft, f, &ps, x, y + 1, w, h - 2, submitted);
+        }else{
+            draw_prompt(ft, f, &ps, x, y, w, h, submitted);
+        }
+        return;
+    }
+    if(!strcmp(r->id, "completion")){
+        struct fytim_rect rect = { x, y, w, h };
+
+        if(ft->comp_active)
+            draw_completion_ribbon(ft, f, &rect, status_st);
+        return;
+    }
+    wb = wb_bound(ft, r->id);
+    if(!wb) return;
+    if(wb->pane){
+        draw_pane(f, buf, wb->pane, chrome, x, y, w, h);
+        return;
+    }
+    sf = wb->surface;
+    if(!sf){
+        draw_rows_in(buf, wb->content, x, y, w, h, true);
+        wb->granted_cols = w;
+        return;
+    }
+    rows = surface_content_rows(sf);
+    if(rows > h) rows = h;
+    if(rows < 1) rows = 1;
+    sf->rect_x = x; sf->rect_y = y;
+    sf->rect_w = w; sf->rect_h = h;
+    sf->bar_x = sf->zoom_x = sf->close_x = sf->ctl_y = -1;
+    sf->head_rows = 0;
+    draw_surface(f, buf, sf, chrome, x, y, w, rows);
+    sf->granted = rows;
+}
+
+static void draw_page(struct fytim *ft, TimuiFrame *f, bool *submitted)
+{
+    TimuiStyle dim = timui_style_make(TIMUI_COLOR_DEFAULT, TIMUI_COLOR_DEFAULT,
+                                      TIMUI_ATTR_DIM);
+    TimuiStyle wb_st, status_st;
+    size_t i;
+
+    wb_st = ft->chrome_style_set[FYTIM_CHROME_WORKBAND] ?
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_WORKBAND],
+                                  dim) : dim;
+    status_st = ft->chrome_style_set[FYTIM_CHROME_STATUS] ?
+            timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_STATUS],
+                                  dim) : dim;
+    draw_rows_in(timui_frame_buffer(f), ft->page_rows, 0, 0, timui_width(f),
+                 timui_height(f), false);
+    for(i = 0; i < ft->page_nregions; i++)
+        if(ft->page_regions[i].kind == FYTIM_PAGE_SLOT)
+            draw_slot(ft, f, &ft->page_regions[i], wb_st, status_st,
+                      submitted);
+}
+
+/* The page when one is set, else the band stack. */
+static void draw_screen(struct fytim *ft, TimuiFrame *f, bool *submitted)
+{
+    struct fytim_layout lay;
+
+    if(ft->page_set){
+        draw_page(ft, f, submitted);
+        return;
+    }
+    if(fytim_layout_compute_ex(timui_width(f),
+                               layout_height(ft, timui_height(f)),
+                               prompt_lines(ft), &lay)){
+        layout_drop_empty_chrome(ft, &lay);
+        draw_band(ft, f, &lay, submitted);
+    }
+}
+
+/* A click on an act region of the page. The library acts on nothing. */
+static void page_mouse(struct fytim *ft, TimuiFrame *f)
+{
+    const struct fytim_page_region *r;
+    int x = 0, y = 0;
+    char *text;
+    size_t i;
+
+    if(!ft->mouse || !ft->page_set || !timui_mouse_clicked(f, &x, &y))
+        return;
+    for(i = 0; i < ft->page_nregions; i++){
+        r = &ft->page_regions[i];
+        if(r->kind != FYTIM_PAGE_ACT || y != r->row || x < r->col ||
+           x >= r->col + r->width)
+            continue;
+        text = strdup(r->id);
+        if(text)
+            ev_push(ft, FYTIM_EVENT_ACT, text, strlen(text), 0, 0);
+        return;
+    }
+}
+
 /* ---- the pump ----------------------------------------------------------- */
 
 enum fytim_result fytim_pump(struct fytim *ft)
 {
     TimuiFrame *f = NULL;
-    struct fytim_layout lay;
     bool submitted = false;
     bool resized = false;
     TimuiResult tr;
@@ -3733,12 +4139,15 @@ enum fytim_result fytim_pump(struct fytim *ft)
          * asks only for what is left: the header, the status and the work
          * bands. The layout drops an empty header or status after that.
          */
-        if(prompt_lines(ft) > 0)
+        if(ft->page_set)
+            want = ft->page_h > 0 ? ft->page_h : 1;
+        else if(prompt_lines(ft) > 0)
             want = FYTIM_CHROME_ROWS + wb_rows_total(ft) +
                    (prompt_lines(ft) - 1);
         else
             want = FYTIM_HEADER_ROWS + FYTIM_STATUS_ROWS + wb_rows_total(ft);
-        want += wb_footer_rows(ft);
+        if(!ft->page_set)
+            want += wb_footer_rows(ft);
         /* Growth is immediate; a shrink is allowed only up to the rows
          * COMMITTED in this same pump, so shrink and scroll cancel and the
          * bubble never moves -- all motion is text scrolling. An
@@ -3783,12 +4192,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
      */
     if(ft->keys){
         surface_keys_collect(ft, f);
-        if(fytim_layout_compute_ex(timui_width(f),
-                                   layout_height(ft, timui_height(f)),
-                                   prompt_lines(ft), &lay)){
-            layout_drop_empty_chrome(ft, &lay);
-            draw_band(ft, f, &lay, &submitted);
-        }
+        draw_screen(ft, f, &submitted);
         timui_end(f);
         /* The host applies FYTIM_EVENT_RESIZE after this pump. The frame just
          * drawn still used its old surfaces, and can itself have wrapped on
@@ -3799,6 +4203,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
 
     if(timui_key_pressed(f, TIMUI_KEY_ESCAPE))
         ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
+    page_mouse(ft, f);
     if(!pane_mouse(ft, f) &&
        (timui_mouse_wheel(f) ||
         timui_key_pressed(f, TIMUI_KEY_PAGE_UP) ||
@@ -3839,12 +4244,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
             hist_next(ft);
     }
 
-    if(fytim_layout_compute_ex(timui_width(f),
-                               layout_height(ft, timui_height(f)),
-                               prompt_lines(ft), &lay)){
-        layout_drop_empty_chrome(ft, &lay);
-        draw_band(ft, f, &lay, &submitted);
-    }
+    draw_screen(ft, f, &submitted);
 
     if(submitted){
         char *text = strdup(ft->input);
