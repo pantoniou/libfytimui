@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "test_pty.h"
@@ -559,6 +561,78 @@ static void test_copy_needs_the_clipboard(void)
     CHECK(fytim_copy(h.ft, NULL, 0) == FYTIM_ERR_INVALID);
     CHECK(fytim_copy(h.ft, "", 0) == FYTIM_ERR_INVALID);
     CHECK(fytim_copy(NULL, "x", 1) == FYTIM_ERR_INVALID);
+    h_close(&h);
+}
+
+/* The first @m bytes of @needle in the @n bytes of @hay, or NULL. */
+static const char *find_bytes(const char *hay, size_t n, const char *needle,
+                              size_t m)
+{
+    size_t i;
+
+    for(i = 0; m <= n && i <= n - m; i++)
+        if(!memcmp(hay + i, needle, m))
+            return hay + i;
+    return NULL;
+}
+
+/* A copy reaches a terminal that is slow to read whole. The output is
+ * non-blocking and full, and the terminal reads a small piece at a time while
+ * a child copies far more than the output holds, so a write of the copy meets
+ * a full output again and again. */
+#define COPY_TEXT (256 * 1024)
+#define COPY_BASE64 (((COPY_TEXT + 2) / 3) * 4)
+static void test_copy_is_written_whole_under_backpressure(void)
+{
+    static char seen[COPY_BASE64 + 512 * 1024];
+    static char text[COPY_TEXT];
+    char chunk[4096];
+    struct harness h;
+    struct pollfd pfd;
+    size_t len = 0;
+    const char *osc, *st;
+    ssize_t r;
+    pid_t pid;
+    int fl, status = 0, done = 0, polls = 0;
+
+    if(!h_open_alt(&h, true)){ CHECK(0); return; }
+    fl = fcntl(h.out[1], F_GETFL, 0);
+    CHECK(fl >= 0 && fcntl(h.out[1], F_SETFL, fl | O_NONBLOCK) == 0);
+    memset(chunk, 'x', sizeof chunk);
+    while(write(h.out[1], chunk, sizeof chunk) > 0)
+        ;
+    memset(text, 'a', sizeof text);
+    pid = fork();
+    if(pid == 0)
+        _exit(fytim_copy(h.ft, text, sizeof text) == FYTIM_OK ? 0 : 1);
+    CHECK(pid > 0);
+    pfd.fd = h.out[0];
+    pfd.events = POLLIN;
+    while(pid > 0 && len < sizeof seen){
+        r = read(h.out[0], seen + len,
+                 sizeof seen - len < 256 ? sizeof seen - len : 256);
+        if(r > 0){
+            len += (size_t)r;
+            continue;
+        }
+        if(done)
+            break;
+        if(waitpid(pid, &status, WNOHANG) == pid){
+            done = 1;
+            continue;
+        }
+        if(++polls > 30)
+            break;
+        (void)poll(&pfd, 1, 1000);
+    }
+    CHECK(done && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    osc = find_bytes(seen, len, "\x1b]52;c;", 7);
+    CHECK(osc != NULL);
+    if(osc){
+        st = find_bytes(osc, len - (size_t)(osc - seen), "\x1b\\", 2);
+        CHECK(st != NULL);
+        CHECK(st && st - (osc + 7) == COPY_BASE64);
+    }
     h_close(&h);
 }
 
@@ -1763,6 +1837,8 @@ static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "a_click_or_a_drag_outside_selects_nothing",
       test_a_click_or_a_drag_outside_selects_nothing },
     { "copy_needs_the_clipboard", test_copy_needs_the_clipboard },
+    { "copy_is_written_whole_under_backpressure",
+      test_copy_is_written_whole_under_backpressure },
     { "a_text_region_is_accepted", test_a_text_region_is_accepted },
     { "the_alt_screen_is_left_and_taken_again",
       test_the_alt_screen_is_left_and_taken_again },

@@ -261,7 +261,8 @@ foreach(t a_page_is_set_and_cleared a_page_replaces_the_band_stack
           regression_a_stray_cursor_report_is_ignored
           the_alt_screen_takes_the_terminal a_drag_selects_text
           a_click_or_a_drag_outside_selects_nothing
-          copy_needs_the_clipboard a_text_region_is_accepted
+          copy_needs_the_clipboard copy_is_written_whole_under_backpressure
+          a_text_region_is_accepted
           the_alt_screen_is_left_and_taken_again
           a_wheel_names_the_region_under_it)
     add_test(NAME fytim.page.${t} COMMAND test_fytim_page ${t})
