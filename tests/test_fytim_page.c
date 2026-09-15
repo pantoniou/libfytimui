@@ -939,6 +939,26 @@ static void test_the_tail_reports_its_rows(void)
     h_close(&h);
 }
 
+/* The tail gives its rows back to a host that draws it. */
+static void test_the_tail_reports_its_content(void)
+{
+    struct harness h;
+    const char *p;
+    int rows = -1;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    p = fytim_tail_content(h.ft, &rows);
+    CHECK((!p || !*p) && rows == 0);
+    CHECK(fytim_tail_set(h.ft, "one\ntwo\n", 8) == FYTIM_OK);
+    p = fytim_tail_content(h.ft, &rows);
+    CHECK(p && !strcmp(p, "one\ntwo\n") && rows == 2);
+    CHECK(fytim_tail_content(h.ft, NULL) == p);
+    CHECK(fytim_tail_set(h.ft, NULL, 0) == FYTIM_OK);
+    p = fytim_tail_content(h.ft, &rows);
+    CHECK((!p || !*p) && rows == 0);
+    h_close(&h);
+}
+
 /* The prompt rows follow the lines edited, keep one row while a surface holds
  * the keys, and are 0 without a prompt. */
 static void test_the_prompt_reports_its_rows(void)
@@ -1033,6 +1053,7 @@ static void test_the_pane_reports_its_rows(void)
 static void test_sizes_are_null_safe(void)
 {
     CHECK(fytim_tail_rows(NULL) == 0);
+    CHECK(fytim_tail_content(NULL, NULL) == NULL);
     CHECK(fytim_prompt_rows(NULL) == 0);
     CHECK(!fytim_completion_active(NULL));
     CHECK(fytim_workpane_rows(NULL) == 0);
@@ -1703,6 +1724,7 @@ static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "a_retired_component_leaves_its_slot",
       test_a_retired_component_leaves_its_slot },
     { "the_tail_reports_its_rows", test_the_tail_reports_its_rows },
+    { "the_tail_reports_its_content", test_the_tail_reports_its_content },
     { "the_prompt_reports_its_rows", test_the_prompt_reports_its_rows },
     { "completion_reports_its_state", test_completion_reports_its_state },
     { "the_pane_reports_its_rows", test_the_pane_reports_its_rows },

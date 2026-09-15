@@ -242,7 +242,8 @@ foreach(t a_page_is_set_and_cleared a_page_replaces_the_band_stack
           rejects_disallowed_rows rejects_bad_regions regions_are_copied
           no_act_without_the_grab rejects_bad_binds null_safety
           a_retired_component_leaves_its_slot
-          the_tail_reports_its_rows the_prompt_reports_its_rows
+          the_tail_reports_its_rows the_tail_reports_its_content
+          the_prompt_reports_its_rows
           completion_reports_its_state the_pane_reports_its_rows
           sizes_are_null_safe
           a_tile_page_takes_its_rows a_tile_act_names_its_tile
