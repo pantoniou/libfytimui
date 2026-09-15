@@ -4464,21 +4464,19 @@ void fytim_selection_clear(struct fytim *ft)
     ft->sel_id[0] = '\0';
 }
 
-/* The transport of fytim_copy(): the output of the terminal, written whole. */
+/* Write all @n bytes to @fd, and wait for writability; in timui_core.c. */
+int timui_write_all_(int fd, const void *d, size_t n);
+
+/* The transport of fytim_copy(): the output of the terminal, written whole.
+ * The output shares the non-blocking description of the input, so a terminal
+ * that has not read what it was sent makes a write return EAGAIN. A copy that
+ * stopped there would leave an OSC 52 with no end, which no terminal acts on. */
 static int copy_write_(TimuiTransport *t, const void *data, size_t len)
 {
     const int *fd = t->ctx;
-    const char *p = data;
-    ssize_t n;
 
-    while(len > 0){
-        n = write(*fd, p, len);
-        if(n < 0 && errno == EINTR) continue;
-        if(n <= 0) return -1;
-        p += n;
-        len -= (size_t)n;
-    }
-    return 0;
+    if(len > INT_MAX) return -1;
+    return timui_write_all_(*fd, data, len) == (int)len ? 0 : -1;
 }
 
 enum fytim_result fytim_copy(struct fytim *ft, const char *text, size_t len)
