@@ -171,6 +171,10 @@ void fytim_workband_destroy(struct fytim_workband *wb) FYTIM_EXPORT;
  * rejected with FYTIM_ERR_INVALID. Plain text draws in the default chrome
  * style (bold header, dim status). */
 enum fytim_result fytim_set_header(struct fytim *ft, const char *text) FYTIM_EXPORT;
+/* The rows of the header band, 1 by default. The header text goes on the last
+ * row, so the rows above it stand blank between the transcript and the header.
+ * rows must be 1 to 4. */
+enum fytim_result fytim_set_header_rows(struct fytim *ft, int rows) FYTIM_EXPORT;
 /* Status rows under the prompt; row is 0 or 1. */
 enum fytim_result fytim_set_status_row(struct fytim *ft, int row, const char *text) FYTIM_EXPORT;
 /* The prompt marker drawn ahead of the input ("> " by default). May

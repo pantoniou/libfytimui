@@ -87,4 +87,12 @@ bool fytim_layout_compute_ex(int w, int h, int prompt_rows,
                              struct fytim_layout *out)
     FYTIM_EXPORT;
 
+/* As fytim_layout_compute_ex(), with a header band of `header_rows` rows.
+ * The header text goes on the last of them, so the rows above it are blank.
+ * A negative count keeps FYTIM_HEADER_ROWS. The header band is given up as a
+ * whole when the terminal is too short for it. */
+bool fytim_layout_compute_chrome(int w, int h, int prompt_rows,
+                                 int header_rows, struct fytim_layout *out)
+    FYTIM_EXPORT;
+
 #endif /* LIBFYTIMUI_LAYOUT_H */

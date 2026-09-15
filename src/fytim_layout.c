@@ -24,6 +24,13 @@ static const enum fytim_band shed_order[] = {
 bool fytim_layout_compute_ex(int w, int h, int prompt_rows,
                              struct fytim_layout *out)
 {
+    return fytim_layout_compute_chrome(w, h, prompt_rows, FYTIM_HEADER_ROWS,
+                                       out);
+}
+
+bool fytim_layout_compute_chrome(int w, int h, int prompt_rows,
+                                 int header_rows, struct fytim_layout *out)
+{
     int heights[FYTIM_BAND_COUNT];
     int chrome, deficit, y;
     size_t i;
@@ -31,6 +38,8 @@ bool fytim_layout_compute_ex(int w, int h, int prompt_rows,
     if(!out) return false;
     memset(out, 0, sizeof *out);
     if(w <= 0 || h <= 0) return false;
+    if(header_rows < 0) header_rows = FYTIM_HEADER_ROWS;
+    if(header_rows > h) header_rows = h;
     /*
      * Zero asks for no prompt at all: a host whose keys belong to something
      * else - a program on a surface - has nothing to type into one. Removing
@@ -44,7 +53,7 @@ bool fytim_layout_compute_ex(int w, int h, int prompt_rows,
                                               screen (UBSan-found) */
 
     heights[FYTIM_BAND_TRANSCRIPT] = 0;   /* solved for last, from the slack */
-    heights[FYTIM_BAND_HEADER]     = FYTIM_HEADER_ROWS;
+    heights[FYTIM_BAND_HEADER]     = header_rows;
     heights[FYTIM_BAND_SEP_TOP]    = FYTIM_SEP_ROWS;
     heights[FYTIM_BAND_PROMPT]     = prompt_rows;
     heights[FYTIM_BAND_SEP_BOTTOM] = FYTIM_SEP_ROWS;

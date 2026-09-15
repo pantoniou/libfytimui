@@ -165,6 +165,7 @@ struct fytim {
 
     /* band chrome */
     char *header;
+    int header_rows;               /* rows of the header band, text on the last */
     char *status[2];
     char *marker;
     struct fytim_sgr_style prompt_style;
@@ -361,6 +362,7 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
     ft->term_h = 24;
     (void)timui_term_size(tcfg.output_fd, &ft->term_w, &ft->term_h);
     ft->prompt_bg = FYTIM_COLOR_DEFAULT;
+    ft->header_rows = FYTIM_HEADER_ROWS;
     ft->band_rows = FYTIM_CHROME_ROWS + 1;   /* no work-bands yet: one spare
                                                 transcript row keeps the full
                                                 chrome (see wb_rows_total) */
@@ -2162,6 +2164,13 @@ enum fytim_result fytim_set_header(struct fytim *ft, const char *text)
 {
     if(!ft) return FYTIM_ERR_INVALID;
     return set_dup_sgr(&ft->header, text);
+}
+
+enum fytim_result fytim_set_header_rows(struct fytim *ft, int rows)
+{
+    if(!ft || rows < 1 || rows > 4) return FYTIM_ERR_INVALID;
+    ft->header_rows = rows;
+    return FYTIM_OK;
 }
 
 enum fytim_result fytim_set_status_row(struct fytim *ft, int row, const char *text)
@@ -4003,8 +4012,10 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
         }
     }
     r = &lay->band[FYTIM_BAND_HEADER];
+    /* The text goes on the last row; the rows above it stand blank. */
     if(r->h > 0 && ft->header)
-        draw_row_styled(f, buf, r->x, r->y, r->w, ft->header, header_st);
+        draw_row_styled(f, buf, r->x, r->y + r->h - 1, r->w, ft->header,
+                        header_st);
     r = &lay->band[FYTIM_BAND_SEP_TOP];
     if(r->h > 0){
         if(card)
@@ -4924,9 +4935,9 @@ static void draw_screen(struct fytim *ft, TimuiFrame *f, bool *submitted)
         draw_page(ft, f, submitted);
         return;
     }
-    if(fytim_layout_compute_ex(timui_width(f),
-                               layout_height(ft, timui_height(f)),
-                               prompt_lines(ft), &lay)){
+    if(fytim_layout_compute_chrome(timui_width(f),
+                                   layout_height(ft, timui_height(f)),
+                                   prompt_lines(ft), ft->header_rows, &lay)){
         layout_drop_empty_chrome(ft, &lay);
         draw_band(ft, f, &lay, submitted);
     }
@@ -5084,9 +5095,10 @@ enum fytim_result fytim_pump(struct fytim *ft)
             want = ft->page_h > 0 ? ft->page_h : 1;
         else if(prompt_lines(ft) > 0)
             want = FYTIM_CHROME_ROWS + wb_rows_total(ft) +
-                   (prompt_lines(ft) - 1);
+                   (prompt_lines(ft) - 1) +
+                   (ft->header_rows - FYTIM_HEADER_ROWS);
         else
-            want = FYTIM_HEADER_ROWS + FYTIM_STATUS_ROWS + wb_rows_total(ft);
+            want = ft->header_rows + FYTIM_STATUS_ROWS + wb_rows_total(ft);
         if(!ft->page_set)
             want += wb_footer_rows(ft);
         /* Growth is immediate; a shrink is allowed only up to the rows
