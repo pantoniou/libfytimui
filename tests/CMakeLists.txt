@@ -99,7 +99,7 @@ endif()
 
 foreach(t full_size no_prompt_frees_its_rows no_prompt_degenerate_heights
           prompt_survives_when_asked_for only_transcript_grows width_propagates
-          multirow_prompt_grows multirow_prompt_sheds_last
+          multirow_prompt_grows multirow_prompt_sheds_last header_rows_grow
           minimum_untruncated degrades_in_priority_order
           no_trailing_separator prompt_always_present degenerate_geometry_rejected
           null_out_safe extreme_dimensions_safe deterministic)

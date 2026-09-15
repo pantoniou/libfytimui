@@ -301,6 +301,32 @@ static void test_multirow_prompt_grows(void)
     CHECK(memcmp(&one, &plain, sizeof one) == 0);
 }
 
+/* A taller header band (fytim_layout_compute_chrome) takes its rows from the
+ * transcript, and one header row reproduces fytim_layout_compute_ex. */
+static void test_header_rows_grow(void)
+{
+    struct fytim_layout l, one, plain;
+
+    CHECK(fytim_layout_compute_chrome(80, 24, 1, 2, &l));
+    CHECK(band(&l, FYTIM_BAND_HEADER)->h == 2);
+    CHECK(band(&l, FYTIM_BAND_TRANSCRIPT)->h == 24 - (FYTIM_CHROME_ROWS + 1));
+    CHECK(band(&l, FYTIM_BAND_PROMPT)->h == FYTIM_PROMPT_ROWS);
+    check_tiles(&l, 80, 24);
+
+    CHECK(fytim_layout_compute_chrome(80, 24, 1, FYTIM_HEADER_ROWS, &one));
+    CHECK(fytim_layout_compute_ex(80, 24, 1, &plain));
+    CHECK(memcmp(&one, &plain, sizeof one) == 0);
+
+    /* A negative count keeps the natural header. */
+    CHECK(fytim_layout_compute_chrome(80, 24, 1, -1, &one));
+    CHECK(memcmp(&one, &plain, sizeof one) == 0);
+
+    /* A short terminal gives up the header before the prompt. */
+    CHECK(fytim_layout_compute_chrome(80, 3, 1, 2, &l));
+    CHECK(band(&l, FYTIM_BAND_PROMPT)->h == 1);
+    check_tiles(&l, 80, 3);
+}
+
 /* Extra prompt rows are shed only after all other chrome is gone, and the
  * prompt never drops below one row; the transcript keeps its final row
  * against even an outsized request. */
@@ -369,6 +395,7 @@ int main(int argc, char **argv)
         { "deterministic", test_deterministic },
         { "multirow_prompt_grows", test_multirow_prompt_grows },
         { "multirow_prompt_sheds_last", test_multirow_prompt_sheds_last },
+        { "header_rows_grow", test_header_rows_grow },
     };
     size_t i, n = sizeof(tests) / sizeof(tests[0]);
 
