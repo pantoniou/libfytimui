@@ -4506,6 +4506,12 @@ int fytim_tail_rows(const struct fytim *ft)
     return ft ? styled_rows(ft->tail) : 0;
 }
 
+const char *fytim_tail_content(const struct fytim *ft, int *rows)
+{
+    if(rows) *rows = ft ? styled_rows(ft->tail) : 0;
+    return ft ? ft->tail : NULL;
+}
+
 int fytim_prompt_rows(const struct fytim *ft)
 {
     return ft ? prompt_lines(ft) : 0;

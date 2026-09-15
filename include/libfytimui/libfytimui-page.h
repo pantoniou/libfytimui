@@ -145,6 +145,14 @@ enum fytim_result fytim_surface_set_page_view(struct fytim_surface *sf,
 /* Rows the transcript tail holds. */
 int fytim_tail_rows(const struct fytim *ft) FYTIM_EXPORT;
 
+/*
+ * The rendered rows of the transcript tail, for a host that draws the tail
+ * itself, and their count in *@rows. The text belongs to the library and is
+ * valid until the next fytim_tail_set() or fytim_tail_apply(). NULL when the
+ * tail is empty.
+ */
+const char *fytim_tail_content(const struct fytim *ft, int *rows) FYTIM_EXPORT;
+
 /* Rows the prompt asks for: the lines being edited, one row while a surface
  * holds the keys, and 0 when the host asked for no prompt. */
 int fytim_prompt_rows(const struct fytim *ft) FYTIM_EXPORT;
