@@ -197,7 +197,15 @@ TIMUI_TEST(test_render_stream_chat_like){
          * be cleared when a shorter line later replaces the row. */
         if(nmsg < 64){ snprintf(msgs[nmsg], 64, "%s", canned[phase % 4]); nmsg++; }
         if(phase % 3 == 2 && nmsg < 64){
-            snprintf(msgs[nmsg], 64, "you: %s a long reply that exceeds the width #%d", compose, phase);
+            /* formatted whole, then cut to the row: the reply has to overrun */
+            char line[128];
+            size_t n;
+
+            snprintf(line, sizeof line, "you: %s a long reply that exceeds the width #%d", compose, phase);
+            n = strlen(line);
+            if(n > sizeof msgs[nmsg] - 1) n = sizeof msgs[nmsg] - 1;
+            memcpy(msgs[nmsg], line, n);
+            msgs[nmsg][n] = '\0';
             nmsg++; }
         /* grow the compose text so the input scrolls horizontally */
         { size_t cl = strlen(compose);

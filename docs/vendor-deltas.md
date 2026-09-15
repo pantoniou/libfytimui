@@ -38,6 +38,7 @@ Not upstream. **A re-vendor overwrites these — reapply them.**
 
 | `TIMUI_COLOR_ANSI` indexed colours (`timui.h`, `timui_render.c`: `emit_indexed`) | `TIMUI_COLOR_ANSI \| n` in a style colour selects palette entry n: 0..15 emit the classic 30-37/90-97 (40-47/100-107) codes and 16..255 emit `38;5;n`, so the terminal's own theme palette applies instead of a hard-coded RGB approximation. Used by the SGR run-to-cell conversion for indexed input colours. Test `fytim.vt.regression_indexed_colors_mapped`. |
 | Buffered fd transport, one flush per frame (`timui_int.h`: `TimuiFdCtx.obuf`, `timui_core.c`: `fd_write`/`fd_flush`) | A frame emitted as dozens of small `write()`s renders partially on terminals without DEC 2026 (VTE): the chrome visibly shifts between the commit scroll and the repaint. Output is buffered (32 KiB, flush-then-spill for oversized writes, order preserved) and flushed once per frame in `timui_end`, plus at open/suspend/resume/close so nothing lingers. Note `timui_write_all_` returns bytes written, not 0. Test `fytim.band.large_commit_spills_intact` counts exact row occurrences across the boundary. |
+| `tests/test_render_stream.c`: format the long reply whole, then cut it to the row, in `test_render_stream_chat_like` | The reply is meant to overrun the 64-byte row; a direct `snprintf` into it trips gcc's `-Wformat-truncation` at `-O0`/`-Os`. The row holds the same 63 bytes as before. |
 
 Tests for these live in `tests/test_mouse_drag.c` and `tests/test_inline.c`,
 deliberately outside the
