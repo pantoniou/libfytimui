@@ -3345,7 +3345,7 @@ static void draw_pane_grid(TimuiFrame *f, TimuiCellBuffer *buf,
     if(nc > 1 && w - (nc - 1) * sep_w < nc) sep_w = 0;
 
     {
-        int nat[FYTIM_GRID_MAX];
+        int nat[FYTIM_GRID_MAX] = { 0 };
 
         for(i = 0; i < nr; i++) nat[i] = grid_row_rows(wp, i);
         tracks_solve(wp->col_size, NULL, nc, w - (nc - 1) * sep_w, cw);
