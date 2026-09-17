@@ -98,6 +98,7 @@ struct fytim_surface {
     int rect_x, rect_y, rect_w, rect_h;
     unsigned long rect_seq;         /* the frame that drew the rectangle */
     int bar_x, zoom_x, close_x, ctl_y;
+    int bar_y, bar_h;               /* the rows of the bar, arrows included */
     int head_x, head_y, head_rows;  /* the head text at the last frame */
     /*
      * The page of the tile, or NULL rows: the lines the host rendered, its
@@ -3052,6 +3053,11 @@ static int draw_surface_chrome(TimuiFrame *f, TimuiCellBuffer *buf,
 #define FYTIM_TILE_BAR_TRACK   "\xe2\x94\x82"   /* U+2502 */
 #define FYTIM_TILE_BAR_THUMB   "\xe2\x96\x88"   /* U+2588 */
 
+/* A bar drawn into cells is at most this tall; a style takes 120 bytes. */
+#define FYTIM_BAR_ROWS_MAX     512
+#define FYTIM_BAR_STYLE_MAX    120
+#define FYTIM_BAR_TEXT_MAX     (FYTIM_BAR_ROWS_MAX * (FYTIM_BAR_STYLE_MAX + 16))
+
 static bool pane_controls_live(const struct fytim_workpane *wp)
 {
     return wp->controls && wp->owner->mouse;
@@ -3065,46 +3071,110 @@ static int pane_bar_cols(const struct fytim_workpane *wp)
 }
 
 /*
- * Draw the bar for @sf down the column at @x, @h rows tall. The thumb says
- * where the host's scrollback is: with nothing behind the screen it fills the
+ * Where the parts of a bar of @h rows for @sf go: the track starts @track_off
+ * rows down and is @track_h rows, with the thumb @thumb_y rows into it and
+ * @thumb_h rows tall. With nothing behind the screen the thumb fills the
  * track, which is how a bar says there is nowhere to go.
  */
-static void draw_tile_bar(TimuiCellBuffer *buf, struct fytim_surface *sf,
-                          unsigned int controls, TimuiStyle st, int x, int y,
-                          int h)
+static void bar_layout(const struct fytim_surface *sf, int h, bool arrows,
+                       int *track_off, int *track_h, int *thumb_y,
+                       int *thumb_h)
 {
-    int track_y = y, track_h = h, thumb_h, thumb_y, i, total, top;
+    int total, top, rows = sf->rows > 0 ? sf->rows : 1;
+
+    *track_off = 0;
+    *track_h = h;
+    if(arrows && h >= 3){
+        *track_off = 1;
+        *track_h = h - 2;
+    }
+    total = sf->scroll_total > 0 ? sf->scroll_total : rows;
+    if(total < rows) total = rows;
+    top = sf->scroll_top;
+    if(top > total - rows) top = total - rows;
+    if(top < 0) top = 0;
+
+    *thumb_h = (int)(((long)*track_h * rows + total - 1) / total);
+    if(*thumb_h < 1) *thumb_h = 1;
+    if(*thumb_h > *track_h) *thumb_h = *track_h;
+    *thumb_y = total > rows
+             ? (int)(((long)(*track_h - *thumb_h) * top) / (total - rows))
+             : 0;
+}
+
+/* The glyph of row @i of a bar of @h rows; *@track says it is the track and
+ * not a part the user acts on. */
+static const char *bar_glyph(const struct fytim_surface *sf, int h,
+                             bool arrows, int i, bool *track)
+{
+    int off, track_h, thumb_y, thumb_h;
+
+    *track = false;
+    bar_layout(sf, h, arrows, &off, &track_h, &thumb_y, &thumb_h);
+    if(off && i == 0) return FYTIM_TILE_ARROW_UP;
+    if(off && i == h - 1) return FYTIM_TILE_ARROW_DOWN;
+    i -= off;
+    if(i >= thumb_y && i < thumb_y + thumb_h) return FYTIM_TILE_BAR_THUMB;
+    *track = true;
+    return FYTIM_TILE_BAR_TRACK;
+}
+
+/* Draw the bar for @sf down the column at @x, @h rows tall: the track in
+ * @track, and the arrows and the thumb, which the user acts on, in @ctl. */
+static void draw_tile_bar(TimuiCellBuffer *buf, struct fytim_surface *sf,
+                          unsigned int controls, TimuiStyle track,
+                          TimuiStyle ctl, int x, int y, int h)
+{
+    bool arrows = (controls & FYTIM_WORKPANE_ARROWS) != 0;
+    bool is_track;
     TimuiStr s;
+    int i;
 
     if(h < 1) return;
     sf->bar_x = x;
-    if((controls & FYTIM_WORKPANE_ARROWS) && h >= 3){
-        s.ptr = FYTIM_TILE_ARROW_UP; s.len = strlen(s.ptr);
-        timui_draw_text(buf, x, y, s, st);
-        s.ptr = FYTIM_TILE_ARROW_DOWN; s.len = strlen(s.ptr);
-        timui_draw_text(buf, x, y + h - 1, s, st);
-        track_y = y + 1;
-        track_h = h - 2;
-    }
-    total = sf->scroll_total > 0 ? sf->scroll_total : sf->rows;
-    if(total < sf->rows) total = sf->rows;
-    top = sf->scroll_top;
-    if(top > total - sf->rows) top = total - sf->rows;
-    if(top < 0) top = 0;
-
-    thumb_h = (int)(((long)track_h * sf->rows + total - 1) / total);
-    if(thumb_h < 1) thumb_h = 1;
-    if(thumb_h > track_h) thumb_h = track_h;
-    thumb_y = total > sf->rows
-            ? (int)(((long)(track_h - thumb_h) * top) / (total - sf->rows))
-            : 0;
-
-    for(i = 0; i < track_h; i++){
-        bool on = i >= thumb_y && i < thumb_y + thumb_h;
-        s.ptr = on ? FYTIM_TILE_BAR_THUMB : FYTIM_TILE_BAR_TRACK;
+    sf->bar_y = y;
+    sf->bar_h = h;
+    for(i = 0; i < h; i++){
+        s.ptr = bar_glyph(sf, h, arrows, i, &is_track);
         s.len = strlen(s.ptr);
-        timui_draw_text(buf, x, track_y + i, s, st);
+        timui_draw_text(buf, x, y + i, s, is_track ? track : ctl);
     }
+}
+
+int fytim_cells_draw_scroll_bar(struct fytim_cell *grid, int grid_rows,
+                                int grid_cols, int row, int col, int height,
+                                const struct fytim_surface *sf, bool arrows,
+                                const char *track, const char *control)
+{
+    char text[FYTIM_BAR_TEXT_MAX];
+    const char *glyph, *style;
+    bool is_track;
+    size_t len = 0;
+    int i, n;
+
+    if(!grid || !sf || grid_rows < 0 || grid_cols < 0 || row < 0 || col < 0)
+        return -1;
+    if(height < 1) return 0;
+    if(height > FYTIM_BAR_ROWS_MAX) height = FYTIM_BAR_ROWS_MAX;
+    for(i = 0; i < height; i++){
+        glyph = bar_glyph(sf, height, arrows, i, &is_track);
+        style = is_track ? track : control;
+        n = snprintf(text + len, sizeof text - len, "%s%s%s\n",
+                     style ? style : "", glyph, style ? "\x1b[0m" : "");
+        if(n < 0 || (size_t)n >= sizeof text - len) return -1;
+        len += (size_t)n;
+    }
+    return fytim_cells_draw_text(grid, grid_rows, grid_cols, row, col, 1,
+                                 height, text, len);
+}
+
+enum fytim_result fytim_surface_scroll_extent(const struct fytim_surface *sf,
+                                              int *total_rows, int *top_row)
+{
+    if(!sf) return FYTIM_ERR_INVALID;
+    if(total_rows) *total_rows = sf->scroll_total;
+    if(top_row) *top_row = sf->scroll_top;
+    return FYTIM_OK;
 }
 
 /*
@@ -3112,6 +3182,23 @@ static void draw_tile_bar(TimuiCellBuffer *buf, struct fytim_surface *sf,
  * record where they went. They sit on the tile's own chrome row when it has
  * one, so that they cost the program nothing.
  */
+/*
+ * The style of what the user acts on in the chrome of a tile: the zoom and
+ * close marks, the arrows and the thumb. They stand on @chrome without its
+ * dim, in FYTIM_CHROME_CONTROL, else bold: a dim control is hard to find.
+ */
+static TimuiStyle control_style(const struct fytim *ft, TimuiStyle chrome)
+{
+    TimuiStyle base = chrome;
+
+    base.attrs &= ~TIMUI_ATTR_DIM;
+    if(ft->chrome_style_set[FYTIM_CHROME_CONTROL])
+        return timui_style_from_sgr_(&ft->chrome_style[FYTIM_CHROME_CONTROL],
+                                     base);
+    base.attrs |= TIMUI_ATTR_BOLD;
+    return base;
+}
+
 static void draw_tile_marks(TimuiCellBuffer *buf, struct fytim_surface *sf,
                             unsigned int controls, TimuiStyle st, int x,
                             int y, int w)
@@ -3210,7 +3297,9 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                 }
             }else if(top){
                 if(sf && pane_controls_live(wp))
-                    draw_tile_marks(buf, sf, wp->controls, chrome, tx, ty, tw);
+                    draw_tile_marks(buf, sf, wp->controls,
+                                    control_style(wp->owner, chrome), tx, ty,
+                                    tw);
                 if(sf){
                     int n = draw_surface_chrome(f, buf, sf, tx, ty, tw,
                                                 t->top, chrome, top);
@@ -3227,7 +3316,8 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                 /* With no chrome row of its own the tile carries the marks
                  * on its first row: a cell of the program is a smaller cost
                  * than a row taken from every tile. */
-                draw_tile_marks(buf, sf, wp->controls, chrome, tx, ty, tw);
+                draw_tile_marks(buf, sf, wp->controls,
+                                control_style(wp->owner, chrome), tx, ty, tw);
             }
             if(sf){
                 /* The bar is chrome down the right edge: the grid gets what
@@ -3241,6 +3331,7 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                                  content);
                 if(bar)
                     draw_tile_bar(buf, sf, wp->controls, chrome,
+                                  control_style(wp->owner, chrome),
                                   tx + tw - bar, ty, content);
                 sf->granted = content > 0 ? content : 0;
             }else{
@@ -4296,13 +4387,15 @@ static bool pane_mouse(struct fytim *ft, TimuiFrame *f, bool page_took)
             }else if(sf->bar_x >= 0 && x == sf->bar_x){
                 /* On the bar: the ends step a row when they are arrows, and
                  * the track pages toward where the user pointed. */
-                int top = sf->rect_y, bot = sf->rect_y + sf->rect_h - 1;
+                /* The bar stands under the head, not at the top of the
+                 * tile. */
+                int top = sf->bar_y, bot = sf->bar_y + sf->bar_h - 1;
                 int page = sf->granted > 0 ? sf->granted : 1;
                 if((ctl & FYTIM_WORKPANE_ARROWS) && y == top)
                     ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, 1);
                 else if((ctl & FYTIM_WORKPANE_ARROWS) && y == bot)
                     ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, -1);
-                else if(y < top + sf->rect_h / 2)
+                else if(y < top + sf->bar_h / 2)
                     ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, page);
                 else
                     ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, -page);
@@ -4325,7 +4418,8 @@ static bool pane_mouse(struct fytim *ft, TimuiFrame *f, bool page_took)
         /* A pane without controls leaves the wheel to the transcript. */
         sf = tile_at(ft, x, y, true);
         if(sf){
-            ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, wheel);
+            /* A turn of the wheel is three rows, as over the transcript. */
+            ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, wheel * 3);
             took = true;
         }
     }

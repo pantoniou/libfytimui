@@ -213,10 +213,12 @@ enum fytim_chrome_style {
     FYTIM_CHROME_STATUS,
     FYTIM_CHROME_WORKBAND,
     FYTIM_CHROME_MARKER,
+    FYTIM_CHROME_CONTROL,    /* the marks, arrows and thumb of a tile */
     FYTIM_CHROME_STYLE_COUNT
 };
 /* Override a chrome slot's base style with an SGR-only string. NULL restores
- * the built-in fallback (bold header/marker, dim status/workband). */
+ * the built-in fallback (bold header/marker/control, dim status/workband). A
+ * control stands on the chrome of its tile without its dim. */
 enum fytim_result fytim_set_chrome_style(struct fytim *ft,
         enum fytim_chrome_style slot, const char *sgr) FYTIM_EXPORT;
 

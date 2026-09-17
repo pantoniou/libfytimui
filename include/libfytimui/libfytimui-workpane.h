@@ -198,4 +198,24 @@ enum fytim_result fytim_surface_set_scroll_extent(struct fytim_surface *sf,
                                                   int total_rows, int top_row)
     FYTIM_EXPORT;
 
+/* The extent fytim_surface_set_scroll_extent last gave @sf. */
+enum fytim_result fytim_surface_scroll_extent(const struct fytim_surface *sf,
+                                              int *total_rows, int *top_row)
+    FYTIM_EXPORT;
+
+/*
+ * Draw the scroll bar of @sf into a grid of cells, as the library draws it on
+ * a tile: @height rows down the column @col from @row, with an arrow at each
+ * end when @arrows and the bar is three rows or more, and the thumb where the
+ * extent of @sf stands. @track is SGR for the track and @control for the
+ * arrows and the thumb, each at most 120 bytes, or NULL. A host that draws a
+ * surface itself draws its bar with this. Returns the rows drawn, or -1 for a
+ * bad argument.
+ */
+int fytim_cells_draw_scroll_bar(struct fytim_cell *grid, int grid_rows,
+                                int grid_cols, int row, int col, int height,
+                                const struct fytim_surface *sf, bool arrows,
+                                const char *track, const char *control)
+    FYTIM_EXPORT;
+
 #endif /* LIBFYTIMUI_WORKPANE_H */
