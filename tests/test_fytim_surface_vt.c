@@ -213,6 +213,43 @@ static void test_prompt_stays_while_a_surface_holds_keys(void)
 }
 
 /*
+ * The edge of the prompt stands in front of the marker while the prompt holds
+ * the keys, and its column stays blank while a surface holds them: the marker
+ * does not move when the keys do.
+ */
+static void test_the_prompt_edge_follows_the_keys(void)
+{
+    struct fytim_surface *s;
+    struct vth h;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "PROMPTMARK ") == FYTIM_OK);
+    CHECK(fytim_set_prompt_edge(h.ft, "E") == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(row_with_text(&h, "EPROMPTMARK") >= 0);
+
+    s = fytim_surface_open(h.ft, 4, 8);
+    CHECK(s != NULL);
+    CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(row_with_text(&h, "EPROMPTMARK") < 0);
+    CHECK(row_with_text(&h, " PROMPTMARK") >= 0);
+
+    CHECK(fytim_surface_set_keys(s, false) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(row_with_text(&h, "EPROMPTMARK") >= 0);
+
+    /* No edge, no column. */
+    CHECK(fytim_set_prompt_edge(h.ft, NULL) == FYTIM_OK);
+    vth_pump(&h);
+    CHECK(row_with_text(&h, "EPROMPTMARK") < 0);
+    CHECK(fytim_set_prompt_edge(NULL, "E") == FYTIM_ERR_INVALID);
+
+    fytim_surface_close(s);
+    vth_close(&h);
+}
+
+/*
  * A host that nobody types into asks for no prompt, and there is none - and
  * with it go the separators that framed it, so a surface reaches the row the
  * prompt would have taken.
@@ -505,6 +542,7 @@ static const struct case_ent cases[] = {
     { "cursor_is_a_reverse_cell",       test_cursor_is_a_reverse_cell },
     { "short_region_keeps_the_last_rows", test_short_region_keeps_the_last_rows },
     { "two_surfaces_stack_in_order",    test_two_surfaces_stack_in_order },
+    { "the_prompt_edge_follows_the_keys", test_the_prompt_edge_follows_the_keys },
 };
 
 int main(int argc, char **argv)
