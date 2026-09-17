@@ -96,6 +96,7 @@ struct fytim_surface {
      * given to the thing under it. A column of -1 means the control was not
      * drawn, and a click there is a click on nothing. */
     int rect_x, rect_y, rect_w, rect_h;
+    unsigned long rect_seq;         /* the frame that drew the rectangle */
     int bar_x, zoom_x, close_x, ctl_y;
     int head_x, head_y, head_rows;  /* the head text at the last frame */
     /*
@@ -161,6 +162,7 @@ struct fytim {
     bool               closed;
     bool               suspended;  /* terminal released to a child process */
     bool               mouse;      /* the grab the host asked for */
+    unsigned long      draw_seq;   /* the frame drawn last */
     int                out_fd;
 
     /* band chrome */
@@ -433,6 +435,7 @@ static int tile_bottom_rows(const struct fytim_workband *t);
 static const char *rows_after(const char *text, int n);
 static bool page_tile_act(struct fytim *ft, struct fytim_surface *sf, int x,
                           int y);
+static const char *page_region_at(const struct fytim *ft, int x, int y);
 
 static void wb_free(struct fytim_workband *wb)
 {
@@ -3163,6 +3166,7 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                 /* Last frame's placement says nothing about this one. */
                 sf->rect_x = tx; sf->rect_y = y;
                 sf->rect_w = tw; sf->rect_h = th;
+                sf->rect_seq = wp->owner->draw_seq;
                 sf->bar_x = sf->zoom_x = sf->close_x = sf->ctl_y = -1;
     sf->head_rows = 0;
             }
@@ -4233,17 +4237,22 @@ static void ev_push_click(struct fytim *ft, struct fytim_surface *sf, int row,
     ev->col = col;
 }
 
-/* The tile drawn over (@x, @y) at the last frame, or NULL. */
-static struct fytim_surface *tile_at(struct fytim *ft, int x, int y)
+/* The tile drawn over (@x, @y) at the last frame, or NULL. With @controls,
+ * only a tile of a pane that draws its controls. */
+static struct fytim_surface *tile_at(struct fytim *ft, int x, int y,
+                                     bool controls)
 {
     struct fytim_workband *wb, *t;
     struct fytim_surface *sf;
 
     for(wb = ft->wbands; wb; wb = wb->next){
-        if(!wb->pane || !pane_controls_live(wb->pane)) continue;
+        if(!wb->pane || (controls && !pane_controls_live(wb->pane)))
+            continue;
         for(t = wb->pane->tiles; t; t = t->next){
             sf = t->surface;
-            if(!sf || sf->rect_w < 1 || sf->rect_h < 1) continue;
+            if(!sf || sf->rect_w < 1 || sf->rect_h < 1 ||
+               sf->rect_seq != ft->draw_seq)
+                continue;
             if(x >= sf->rect_x && x < sf->rect_x + sf->rect_w &&
                y >= sf->rect_y && y < sf->rect_y + sf->rect_h)
                 return sf;
@@ -4257,7 +4266,7 @@ static struct fytim_surface *tile_at(struct fytim *ft, int x, int y)
  * wheel was a tile's, so that it does not also reach the transcript: the
  * user was pointing at one screen and meant that one.
  */
-static bool pane_mouse(struct fytim *ft, TimuiFrame *f)
+static bool pane_mouse(struct fytim *ft, TimuiFrame *f, bool page_took)
 {
     struct fytim_surface *sf;
     int x = 0, y = 0, wheel;
@@ -4266,8 +4275,17 @@ static bool pane_mouse(struct fytim *ft, TimuiFrame *f)
     if(!ft->mouse) return false;
 
     if(timui_mouse_clicked(f, &x, &y)){
-        sf = tile_at(ft, x, y);
-        if(sf){
+        sf = tile_at(ft, x, y, false);
+        if(!sf && !page_took){
+            /* Off every tile the library drew. A page names the region
+             * under the click: a host that draws its tiles on the page
+             * finds them there. */
+            const char *region = page_region_at(ft, x, y);
+            char *text = region ? strdup(region) : NULL;
+
+            ev_push(ft, FYTIM_EVENT_FOCUS_PROMPT, text,
+                    text ? strlen(text) : 0, 0, 0);
+        }else if(sf){
             unsigned int ctl = sf->wb->in_pane->controls;
             if(y == sf->ctl_y && sf->close_x >= 0 && x == sf->close_x){
                 ev_push_surface(ft, FYTIM_EVENT_SURFACE_CLOSE, sf, 0);
@@ -4275,10 +4293,6 @@ static bool pane_mouse(struct fytim *ft, TimuiFrame *f)
                 ev_push_surface(ft, FYTIM_EVENT_SURFACE_ZOOM, sf, 0);
             }else if(sf->page_rows && page_tile_act(ft, sf, x, y)){
                 /* The host placed its controls: it said which one. */
-            }else if(sf->head_rows > 0 && y >= sf->head_y &&
-                     y < sf->head_y + sf->head_rows && x >= sf->head_x){
-                /* The head is the host's: say which of its cells it was. */
-                ev_push_click(ft, sf, y - sf->head_y, x - sf->head_x);
             }else if(sf->bar_x >= 0 && x == sf->bar_x){
                 /* On the bar: the ends step a row when they are arrows, and
                  * the track pages toward where the user pointed. */
@@ -4292,6 +4306,14 @@ static bool pane_mouse(struct fytim *ft, TimuiFrame *f)
                     ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, page);
                 else
                     ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, -page);
+            }else{
+                /* Anywhere else on the tile gives it the keys. */
+                ev_push_surface(ft, FYTIM_EVENT_SURFACE_FOCUS, sf, 0);
+                if(sf->head_rows > 0 && y >= sf->head_y &&
+                   y < sf->head_y + sf->head_rows && x >= sf->head_x)
+                    /* The head is the host's: say which of its cells it
+                     * was. */
+                    ev_push_click(ft, sf, y - sf->head_y, x - sf->head_x);
             }
         }
     }
@@ -4300,7 +4322,8 @@ static bool pane_mouse(struct fytim *ft, TimuiFrame *f)
     if(wheel){
         int down = 0;
         timui_mouse_state(f, &x, &y, &down);
-        sf = tile_at(ft, x, y);
+        /* A pane without controls leaves the wheel to the transcript. */
+        sf = tile_at(ft, x, y, true);
         if(sf){
             ev_push_surface(ft, FYTIM_EVENT_SURFACE_SCROLL, sf, wheel);
             took = true;
@@ -4859,6 +4882,7 @@ static void draw_slot(struct fytim *ft, TimuiFrame *f,
     if(rows < 1) rows = 1;
     sf->rect_x = x; sf->rect_y = y;
     sf->rect_w = w; sf->rect_h = h;
+    sf->rect_seq = ft->draw_seq;
     sf->bar_x = sf->zoom_x = sf->close_x = sf->ctl_y = -1;
     sf->head_rows = 0;
     draw_surface(f, buf, sf, chrome, x, y, w, rows);
@@ -4929,6 +4953,9 @@ static void draw_screen(struct fytim *ft, TimuiFrame *f, bool *submitted)
 {
     struct fytim_layout lay;
 
+    /* A tile that this frame does not draw keeps the rectangle of an older
+     * one: the sequence says which rectangles are on the screen. */
+    ft->draw_seq++;
     if(ft->page_set){
         draw_page(ft, f, submitted);
         return;
@@ -5009,7 +5036,8 @@ static void page_select(struct fytim *ft, TimuiFrame *f, bool pressed,
 
 /* A click on an act region of the page, and a drag over a text region. The
  * library acts on nothing. */
-static void page_mouse(struct fytim *ft, TimuiFrame *f)
+/* Returns true when a click was on an act of the page. */
+static bool page_mouse(struct fytim *ft, TimuiFrame *f)
 {
     const struct fytim_page_region *r;
     int x = 0, y = 0;
@@ -5017,10 +5045,10 @@ static void page_mouse(struct fytim *ft, TimuiFrame *f)
     char *text;
     size_t i;
 
-    if(!ft->mouse || !ft->page_set) return;
+    if(!ft->mouse || !ft->page_set) return false;
     pressed = timui_mouse_clicked(f, &x, &y) != 0;
     page_select(ft, f, pressed, x, y);
-    if(!pressed) return;
+    if(!pressed) return false;
     for(i = 0; i < ft->page_nregions; i++){
         r = &ft->page_regions[i];
         if(r->kind != FYTIM_PAGE_ACT || y != r->row || x < r->col ||
@@ -5029,8 +5057,9 @@ static void page_mouse(struct fytim *ft, TimuiFrame *f)
         text = strdup(r->id);
         if(text)
             ev_push(ft, FYTIM_EVENT_ACT, text, strlen(text), 0, 0);
-        return;
+        return true;
     }
+    return false;
 }
 
 /* The id of the last region of the page that holds the cell @x, @y, or NULL.
@@ -5050,6 +5079,47 @@ static const char *page_region_at(const struct fytim *ft, int x, int y)
             return r->id;
     }
     return NULL;
+}
+
+/*
+ * The mouse of one frame: the acts of the page, the tiles, and the wheel over
+ * the rest. It runs whether the prompt or a tile holds the keys, so a click
+ * can move the keys either way. PageUp and PageDown scroll only when @paging:
+ * a tile that holds the keys takes them.
+ */
+static void pump_mouse(struct fytim *ft, TimuiFrame *f, bool paging)
+{
+    bool page_took;
+
+    page_took = page_mouse(ft, f);
+    if(!pane_mouse(ft, f, page_took) &&
+       (timui_mouse_wheel(f) ||
+        (paging && (timui_key_pressed(f, TIMUI_KEY_PAGE_UP) ||
+                    timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN))))){
+        struct fytim_event *sev;
+        int page = ft->term_h > 1 ? ft->term_h - 1 : 1;
+        int delta = timui_mouse_wheel(f) * 3;
+        int mx = 0, my = 0, down = 0;
+        const char *region = NULL;
+        char *text;
+
+        if(timui_mouse_wheel(f)){
+            (void)timui_mouse_state(f, &mx, &my, &down);
+            region = page_region_at(ft, mx, my);
+        }
+        if(paging && timui_key_pressed(f, TIMUI_KEY_PAGE_UP)) delta += page;
+        if(paging && timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN))
+            delta -= page;
+        /* The host moves the text of the region: a selection there would
+         * stand on other text. A key moves whatever the host chooses. */
+        if(!region || !strcmp(region, ft->sel_id))
+            fytim_selection_clear(ft);
+        text = region ? strdup(region) : NULL;
+        ev_push(ft, FYTIM_EVENT_SCROLLBACK, text, text ? strlen(text) : 0,
+                0, 0);
+        sev = &ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP];
+        if(sev->type == FYTIM_EVENT_SCROLLBACK) sev->delta = delta;
+    }
 }
 
 /* ---- the pump ----------------------------------------------------------- */
@@ -5144,6 +5214,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
      * key of its own and finds it in the bytes it is given.
      */
     if(ft->keys){
+        pump_mouse(ft, f, false);
         surface_keys_collect(ft, f);
         draw_screen(ft, f, &submitted);
         timui_end(f);
@@ -5156,34 +5227,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
 
     if(timui_key_pressed(f, TIMUI_KEY_ESCAPE))
         ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
-    page_mouse(ft, f);
-    if(!pane_mouse(ft, f) &&
-       (timui_mouse_wheel(f) ||
-        timui_key_pressed(f, TIMUI_KEY_PAGE_UP) ||
-        timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN))){
-        struct fytim_event *sev;
-        int page = ft->term_h > 1 ? ft->term_h - 1 : 1;
-        int delta = timui_mouse_wheel(f) * 3;
-        int mx = 0, my = 0, down = 0;
-        const char *region = NULL;
-        char *text;
-
-        if(timui_mouse_wheel(f)){
-            (void)timui_mouse_state(f, &mx, &my, &down);
-            region = page_region_at(ft, mx, my);
-        }
-        if(timui_key_pressed(f, TIMUI_KEY_PAGE_UP)) delta += page;
-        if(timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN)) delta -= page;
-        /* The host moves the text of the region: a selection there would
-         * stand on other text. A key moves whatever the host chooses. */
-        if(!region || !strcmp(region, ft->sel_id))
-            fytim_selection_clear(ft);
-        text = region ? strdup(region) : NULL;
-        ev_push(ft, FYTIM_EVENT_SCROLLBACK, text, text ? strlen(text) : 0,
-                0, 0);
-        sev = &ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP];
-        if(sev->type == FYTIM_EVENT_SCROLLBACK) sev->delta = delta;
-    }
+    pump_mouse(ft, f, true);
     {
         int ctrl = timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN, TIMUI_MOD_CTRL);
         uint32_t cp = timui_key_codepoint(f);

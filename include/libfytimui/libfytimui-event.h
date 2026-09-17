@@ -66,7 +66,19 @@ enum fytim_event_type {
      * @col are the cell it started on and @end_row and @end_col the cell it
      * ended on, counted from the region. The host knows the text there and
      * copies it with fytim_copy(). */
-    FYTIM_EVENT_SELECT
+    FYTIM_EVENT_SELECT,
+    /* A click on a tile of a work pane, off its zoom, close and bar
+     * controls, names the tile in @surface: the user asked to give it the
+     * keys. A click on the head is also FYTIM_EVENT_SURFACE_CLICK. The host
+     * decides; the library moves no keys itself. */
+    FYTIM_EVENT_SURFACE_FOCUS,
+    /* A click off every tile the library drew and every act of the page:
+     * on the transcript, the prompt or the chrome. The user asked to give
+     * the keys back to the prompt. It is reported whoever holds the keys.
+     * On a page, the id of the region under the click is in text/text_len,
+     * with the lifetime of FYTIM_EVENT_LINE text, or text is NULL: a host
+     * that draws its own tiles in slots of the page finds them by it. */
+    FYTIM_EVENT_FOCUS_PROMPT
 };
 
 struct fytim_event {
