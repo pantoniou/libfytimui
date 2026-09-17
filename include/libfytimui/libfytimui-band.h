@@ -175,6 +175,27 @@ enum fytim_result fytim_set_header(struct fytim *ft, const char *text) FYTIM_EXP
  * row, so the rows above it stand blank between the transcript and the header.
  * rows must be 1 to 4. */
 enum fytim_result fytim_set_header_rows(struct fytim *ft, int rows) FYTIM_EXPORT;
+
+/* A clickable part of the right side of the header: @width cells from column
+ * @col of its text. @id follows the rules of a page region id. */
+struct fytim_header_act {
+    const char *id;
+    int col;
+    int width;
+};
+
+/*
+ * Draw @text, SGR-only, at the right edge of the header row, with the header
+ * text cut short of it. A click on one of @acts, which are copied, is
+ * FYTIM_EVENT_ACT with its id, and not a click off the tiles. NULL or an
+ * empty text clears it. A page draws its own header: a host that sets a page
+ * places this there itself.
+ */
+enum fytim_result fytim_set_header_right(struct fytim *ft, const char *text,
+                                         const struct fytim_header_act *acts,
+                                         size_t nacts) FYTIM_EXPORT;
+/* The right part of the header, or NULL. Valid until it is set again. */
+const char *fytim_header_right(const struct fytim *ft) FYTIM_EXPORT;
 /* Status rows under the prompt; row is 0 or 1. */
 enum fytim_result fytim_set_status_row(struct fytim *ft, int row, const char *text) FYTIM_EXPORT;
 /* The prompt marker drawn ahead of the input ("> " by default). May

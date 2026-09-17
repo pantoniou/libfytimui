@@ -139,6 +139,7 @@ struct fytim_workpane {
     int grid_rows, grid_cols;
     int row_size[FYTIM_GRID_MAX];  /* cells, or 0 for an equal share */
     int col_size[FYTIM_GRID_MAX];
+    bool hidden;                   /* no rows and no tiles drawn */
 };
 
 struct fytim_completions {
@@ -164,6 +165,14 @@ struct fytim {
     bool               closed;
     bool               suspended;  /* terminal released to a child process */
     bool               mouse;      /* the grab the host asked for */
+    /* The right part of the header and its acts, from the first column of
+     * the text; the acts are drawn at @header_right_x on @header_right_y of
+     * the frame @header_right_seq. */
+    char              *header_right;
+    struct fytim_header_act *header_acts;
+    size_t             header_nacts;
+    int                header_right_x, header_right_y;
+    unsigned long      header_right_seq;
     unsigned long      draw_seq;   /* the frame drawn last */
     int                out_fd;
 
@@ -437,6 +446,8 @@ static int tile_bottom_rows(const struct fytim_workband *t);
 static const char *rows_after(const char *text, int n);
 static bool page_tile_act(struct fytim *ft, struct fytim_surface *sf, int x,
                           int y);
+static bool page_id_valid(const char *id);
+static void header_acts_free(struct fytim *ft);
 static const char *page_region_at(const struct fytim *ft, int x, int y);
 
 static void wb_free(struct fytim_workband *wb)
@@ -485,6 +496,8 @@ void fytim_destroy(struct fytim *ft)
     if(ft->ui) timui_close(ft->ui);
     page_free(ft);
     free(ft->header);
+    free(ft->header_right);
+    header_acts_free(ft);
     free(ft->status[0]);
     free(ft->status[1]);
     free(ft->marker);
@@ -1822,6 +1835,7 @@ static int pane_rows(const struct fytim_workpane *wp)
     const struct fytim_workband *t;
     int n, cols, rows, tall = 0, want;
 
+    if(wp->hidden) return 0;
     n = wp->zoom ? 1 : fytim_workpane_count(wp);
     if(n < 1) return 0;
     /* An explicit grid asks for the sum of its rows: a sized track for its
@@ -2086,6 +2100,19 @@ struct fytim_surface *fytim_surface_open_in(struct fytim_workpane *wp,
     return sf;
 }
 
+enum fytim_result fytim_workpane_set_hidden(struct fytim_workpane *wp,
+                                           bool hidden)
+{
+    if(!wp) return FYTIM_ERR_INVALID;
+    wp->hidden = hidden;
+    return FYTIM_OK;
+}
+
+bool fytim_workpane_hidden(const struct fytim_workpane *wp)
+{
+    return wp && wp->hidden;
+}
+
 enum fytim_result fytim_surface_set_scroll_extent(struct fytim_surface *sf,
                                                   int total_rows, int top_row)
 {
@@ -2184,6 +2211,83 @@ enum fytim_result fytim_set_header(struct fytim *ft, const char *text)
 {
     if(!ft) return FYTIM_ERR_INVALID;
     return set_dup_sgr(&ft->header, text);
+}
+
+static void header_acts_free(struct fytim *ft)
+{
+    size_t i;
+
+    for(i = 0; i < ft->header_nacts; i++)
+        free((char *)ft->header_acts[i].id);
+    free(ft->header_acts);
+    ft->header_acts = NULL;
+    ft->header_nacts = 0;
+}
+
+enum fytim_result fytim_set_header_right(struct fytim *ft, const char *text,
+                                         const struct fytim_header_act *acts,
+                                         size_t nacts)
+{
+    struct fytim_header_act *copy = NULL;
+    enum fytim_result res;
+    size_t i;
+
+    if(!ft || (nacts && !acts)) return FYTIM_ERR_INVALID;
+    for(i = 0; i < nacts; i++)
+        if(!page_id_valid(acts[i].id) || acts[i].col < 0 || acts[i].width < 1)
+            return FYTIM_ERR_INVALID;
+    if(nacts){
+        copy = calloc(nacts, sizeof(*copy));
+        if(!copy) return FYTIM_ERR_NOMEM;
+        for(i = 0; i < nacts; i++){
+            copy[i] = acts[i];
+            copy[i].id = strdup(acts[i].id);
+            if(!copy[i].id){
+                while(i--) free((char *)copy[i].id);
+                free(copy);
+                return FYTIM_ERR_NOMEM;
+            }
+        }
+    }
+    res = set_dup_sgr(&ft->header_right, text && *text ? text : NULL);
+    if(res != FYTIM_OK){
+        for(i = 0; i < nacts; i++) free((char *)copy[i].id);
+        free(copy);
+        return res;
+    }
+    header_acts_free(ft);
+    ft->header_acts = copy;
+    ft->header_nacts = nacts;
+    return FYTIM_OK;
+}
+
+const char *fytim_header_right(const struct fytim *ft)
+{
+    return ft ? ft->header_right : NULL;
+}
+
+/* Push the act of the right part of the header under the click at (@x, @y)
+ * of the last frame. Returns true when there was one. */
+static bool header_act_click(struct fytim *ft, int x, int y)
+{
+    const struct fytim_header_act *a;
+    char *text;
+    size_t i;
+
+    if(!ft->header_right || ft->header_right_seq != ft->draw_seq ||
+       y != ft->header_right_y)
+        return false;
+    for(i = 0; i < ft->header_nacts; i++){
+        a = &ft->header_acts[i];
+        if(x < ft->header_right_x + a->col ||
+           x >= ft->header_right_x + a->col + a->width)
+            continue;
+        text = strdup(a->id);
+        if(text)
+            ev_push(ft, FYTIM_EVENT_ACT, text, strlen(text), 0, 0);
+        return true;
+    }
+    return false;
 }
 
 enum fytim_result fytim_set_header_rows(struct fytim *ft, int rows)
@@ -3571,6 +3675,9 @@ static void draw_pane(TimuiFrame *f, TimuiCellBuffer *buf,
     int n = 0, cols, grows, sep_w, i, gr, gc;
     int base_h, extra_h, base_w, extra_w;
 
+    /* A hidden pane draws no tile, so no tile takes a click either. */
+    if(wp->hidden) return;
+
     if(wp->zoom){
         arr[n++] = wp->zoom;
     }else{
@@ -3841,7 +3948,7 @@ static void layout_drop_empty_chrome(const struct fytim *ft,
      */
     if(!ft->no_prompt) return;
 
-    if(!ft->header && lay->band[FYTIM_BAND_HEADER].h){
+    if(!ft->header && !ft->header_right && lay->band[FYTIM_BAND_HEADER].h){
         freed += lay->band[FYTIM_BAND_HEADER].h;
         lay->band[FYTIM_BAND_HEADER].h = 0;
     }
@@ -4133,10 +4240,32 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
         }
     }
     r = &lay->band[FYTIM_BAND_HEADER];
-    /* The text goes on the last row; the rows above it stand blank. */
-    if(r->h > 0 && ft->header)
-        draw_row_styled(f, buf, r->x, r->y + r->h - 1, r->w, ft->header,
-                        header_st);
+    /* The text goes on the last row; the rows above it stand blank. The
+     * right part stands at the right edge, and the text is cut short of
+     * it by a blank. */
+    if(r->h > 0 && (ft->header || ft->header_right)){
+        int rw = ft->header_right ? sgr_disp_width(ft->header_right) : 0;
+        int lw = r->w;
+
+        if(rw > r->w) rw = r->w;
+        if(rw > 0) lw = r->w - rw - 1;
+        if(ft->header && lw > 0)
+            draw_row_styled(f, buf, r->x, r->y + r->h - 1, lw, ft->header,
+                            header_st);
+        if(rw > 0){
+            ft->header_right_x = r->x + r->w - rw;
+            ft->header_right_y = r->y + r->h - 1;
+            ft->header_right_seq = ft->draw_seq;
+            /* A plain header is not cut at its width: the blank before the
+             * right part is drawn over what ran into it. */
+            if(rw < r->w)
+                timui_draw_text(buf, ft->header_right_x - 1,
+                                ft->header_right_y, (TimuiStr){ " ", 1 },
+                                header_st);
+            draw_row_styled(f, buf, ft->header_right_x, ft->header_right_y,
+                            rw, ft->header_right, header_st);
+        }
+    }
     r = &lay->band[FYTIM_BAND_SEP_TOP];
     if(r->h > 0){
         if(card)
@@ -5212,6 +5341,12 @@ static void pump_mouse(struct fytim *ft, TimuiFrame *f, bool paging)
     bool page_took;
 
     page_took = page_mouse(ft, f);
+    if(!page_took && ft->mouse){
+        int cx = 0, cy = 0;
+
+        if(timui_mouse_clicked(f, &cx, &cy) && header_act_click(ft, cx, cy))
+            page_took = true;
+    }
     if(!pane_mouse(ft, f, page_took) &&
        (timui_mouse_wheel(f) ||
         (paging && (timui_key_pressed(f, TIMUI_KEY_PAGE_UP) ||

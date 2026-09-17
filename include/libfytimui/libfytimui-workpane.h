@@ -154,6 +154,15 @@ struct fytim_surface *fytim_surface_open_in(struct fytim_workpane *wp,
 enum fytim_result fytim_workpane_set_zoom(struct fytim_workpane *wp,
                                           struct fytim_surface *sf)
     FYTIM_EXPORT;
+/*
+ * Take the pane off the screen, or put it back. A hidden pane asks for no rows
+ * and draws no tile; its tiles stay, keep their grids and are granted what
+ * they had, so the programs behind them go on unchanged.
+ */
+enum fytim_result fytim_workpane_set_hidden(struct fytim_workpane *wp,
+                                           bool hidden) FYTIM_EXPORT;
+bool fytim_workpane_hidden(const struct fytim_workpane *wp) FYTIM_EXPORT;
+
 struct fytim_surface *fytim_workpane_zoomed(const struct fytim_workpane *wp)
     FYTIM_EXPORT;
 
