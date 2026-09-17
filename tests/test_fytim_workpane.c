@@ -1191,6 +1191,47 @@ static void test_a_bar_draws_into_cells(void)
     h_close(&h);
 }
 
+/*
+ * A collapsed surface is its chrome alone: it asks for no rows of content and
+ * is granted none, keeps its width for the host to make its head at, and asks
+ * for its rows again when it expands.
+ */
+static void test_a_collapsed_tile_is_its_head(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 6, 80);
+    fytim_surface_set_top(a, "TILE");
+    paint(a, 'A', 6);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(granted_rows(a) == 6);
+    CHECK(fytim_surface_rows(a) == 7);
+
+    CHECK(!fytim_surface_collapsed(a));
+    CHECK(fytim_surface_set_collapsed(a, true) == FYTIM_OK);
+    CHECK(fytim_surface_collapsed(a));
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_surface_rows(a) == 1);
+    CHECK(granted_rows(a) == 0);
+    CHECK(granted_cols(a) == 80);
+    /* Its grid keeps its size: the program is coming back. */
+    {
+        int rows = 0, cols = 0;
+        CHECK(fytim_surface_size(a, &rows, &cols) == FYTIM_OK);
+        CHECK(rows == 6 && cols == 80);
+    }
+
+    CHECK(fytim_surface_set_collapsed(a, false) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(granted_rows(a) == 6);
+    CHECK(fytim_surface_set_collapsed(NULL, true) == FYTIM_ERR_INVALID);
+    h_close(&h);
+}
+
 /* The bar shows where the host's scrollback stands. */
 static void test_the_bar_follows_the_extent(void)
 {
@@ -1615,6 +1656,7 @@ static const struct case_ent cases[] = {
     { "the_wheel_stays_with_the_transcript",
       test_the_wheel_stays_with_the_transcript },
     { "a_bar_draws_into_cells",      test_a_bar_draws_into_cells },
+    { "a_collapsed_tile_is_its_head", test_a_collapsed_tile_is_its_head },
     { "the_wheel_scrolls_three_rows", test_the_wheel_scrolls_three_rows },
     { "the_arrows_step_under_a_head", test_the_arrows_step_under_a_head },
     { "a_click_on_a_tile_asks_for_the_keys",

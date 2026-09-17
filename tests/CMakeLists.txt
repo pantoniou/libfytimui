@@ -210,6 +210,7 @@ foreach(t two_tiles_share_the_width one_tile_takes_the_width
           the_bar_follows_the_extent
           the_wheel_scrolls_three_rows the_arrows_step_under_a_head
           a_bar_draws_into_cells
+          a_collapsed_tile_is_its_head
           a_click_on_a_tile_asks_for_the_keys
           a_click_off_the_tiles_asks_for_the_prompt
           focus_clicks_need_the_grab
