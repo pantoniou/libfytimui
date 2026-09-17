@@ -1075,6 +1075,122 @@ static void test_a_hidden_tile_takes_no_click(void)
     h_close(&h);
 }
 
+/* A turn of the wheel over a tile is three rows, as over the transcript. */
+static void test_the_wheel_scrolls_three_rows(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_event ev;
+    struct h_events evs;
+    char buf[16384];
+
+    if(!h_open_mouse(&h, true)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    fytim_workpane_set_controls(wp, FYTIM_WORKPANE_SCROLLBAR);
+    a = fytim_surface_open_in(wp, 3, 80);
+    paint(a, 'A', 6);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    h_drain(&h, &evs);
+    h_wheel(&h, 10, 1);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SURFACE_SCROLL, &ev));
+    CHECK(ev.surface == a && ev.delta == 3);
+    h_close(&h);
+}
+
+/*
+ * The arrows stand at the ends of the bar, under the head of the tile: each
+ * steps one row, and the track between them pages.
+ */
+static void test_the_arrows_step_under_a_head(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_event ev;
+    struct h_events evs;
+    char buf[16384];
+
+    if(!h_open_mouse(&h, true)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    fytim_workpane_set_controls(wp, FYTIM_WORKPANE_SCROLLBAR |
+                                    FYTIM_WORKPANE_ARROWS);
+    a = fytim_surface_open_in(wp, 6, 80);
+    fytim_surface_set_top(a, "TILE");
+    paint(a, 'A', 6);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    h_drain(&h, &evs);
+
+    /* The head is row 0; the bar runs down rows 1 to 6 of the last column. */
+    h_click(&h, 79, 1);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SURFACE_SCROLL, &ev));
+    CHECK(ev.delta == 1);
+
+    h_click(&h, 79, 6);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SURFACE_SCROLL, &ev));
+    CHECK(ev.delta == -1);
+
+    h_click(&h, 79, 2);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SURFACE_SCROLL, &ev));
+    CHECK(ev.delta == 6);
+    h_close(&h);
+}
+
+/*
+ * A host that draws a surface itself draws the bar the library draws: the
+ * arrows at the ends and the thumb where the extent stands.
+ */
+static void test_a_bar_draws_into_cells(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a;
+    struct fytim_cell grid[10];
+    int total = -1, top = -1, i, thumb = -1;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    wp = fytim_workpane_create(h.ft);
+    a = fytim_surface_open_in(wp, 10, 40);
+    CHECK(fytim_surface_set_scroll_extent(a, 110, 0) == FYTIM_OK);
+    CHECK(fytim_surface_scroll_extent(a, &total, &top) == FYTIM_OK);
+    CHECK(total == 110 && top == 0);
+
+    memset(grid, 0, sizeof grid);
+    CHECK(fytim_cells_draw_scroll_bar(grid, 10, 1, 0, 0, 10, a, true,
+                                      "\x1b[2m", "\x1b[1m") == 10);
+    CHECK(grid[0].chars[0] == 0x25B4);
+    CHECK(grid[9].chars[0] == 0x25BE);
+    /* What the user acts on is not dim; the track is. */
+    CHECK((grid[0].attrs & FYTIM_ATTR_BOLD) && !(grid[0].attrs & FYTIM_ATTR_DIM));
+    CHECK(grid[5].chars[0] == 0x2502 && (grid[5].attrs & FYTIM_ATTR_DIM));
+    /* At the top of a long history the thumb stands at the top of the
+     * track, one row tall. */
+    for(i = 1; i < 9; i++)
+        if(grid[i].chars[0] == 0x2588){ CHECK(thumb < 0); thumb = i; }
+    CHECK(thumb == 1);
+
+    /* At the live screen it stands at the bottom. */
+    CHECK(fytim_surface_set_scroll_extent(a, 110, 100) == FYTIM_OK);
+    memset(grid, 0, sizeof grid);
+    CHECK(fytim_cells_draw_scroll_bar(grid, 10, 1, 0, 0, 10, a, false,
+                                      NULL, NULL) == 10);
+    CHECK(grid[9].chars[0] == 0x2588);
+    CHECK(grid[0].chars[0] == 0x2502);
+    CHECK(fytim_cells_draw_scroll_bar(grid, 10, 1, 0, 0, 10, NULL, false,
+                                      NULL, NULL) == -1);
+    h_close(&h);
+}
+
 /* The bar shows where the host's scrollback stands. */
 static void test_the_bar_follows_the_extent(void)
 {
@@ -1498,6 +1614,9 @@ static const struct case_ent cases[] = {
     { "the_wheel_belongs_to_the_tile", test_the_wheel_belongs_to_the_tile },
     { "the_wheel_stays_with_the_transcript",
       test_the_wheel_stays_with_the_transcript },
+    { "a_bar_draws_into_cells",      test_a_bar_draws_into_cells },
+    { "the_wheel_scrolls_three_rows", test_the_wheel_scrolls_three_rows },
+    { "the_arrows_step_under_a_head", test_the_arrows_step_under_a_head },
     { "a_click_on_a_tile_asks_for_the_keys",
       test_a_click_on_a_tile_asks_for_the_keys },
     { "a_click_off_the_tiles_asks_for_the_prompt",
