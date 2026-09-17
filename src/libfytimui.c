@@ -181,6 +181,7 @@ struct fytim {
     int header_rows;               /* rows of the header band, text on the last */
     char *status[2];
     char *marker;
+    char *prompt_edge;             /* column 0 of the prompt rows, or NULL */
     struct fytim_sgr_style prompt_style;
     bool prompt_style_set;
     uint32_t prompt_bg;            /* the prompt's ground, or DEFAULT */
@@ -501,6 +502,7 @@ void fytim_destroy(struct fytim *ft)
     free(ft->status[0]);
     free(ft->status[1]);
     free(ft->marker);
+    free(ft->prompt_edge);
     free(ft->tail);
     for(i = 0; i < ft->hist_n; i++) free(ft->hist[i]);
     free(ft->hist);
@@ -2303,6 +2305,18 @@ enum fytim_result fytim_set_status_row(struct fytim *ft, int row, const char *te
     return set_dup_sgr(&ft->status[row], text);
 }
 
+enum fytim_result fytim_set_prompt_edge(struct fytim *ft, const char *edge)
+{
+    if(!ft) return FYTIM_ERR_INVALID;
+    return set_dup_sgr(&ft->prompt_edge, edge && *edge ? edge : NULL);
+}
+
+/* The columns the edge of the prompt takes, whoever holds the keys. */
+static int prompt_edge_cols(const struct fytim *ft)
+{
+    return ft->prompt_edge ? sgr_disp_width(ft->prompt_edge) : 0;
+}
+
 enum fytim_result fytim_set_marker(struct fytim *ft, const char *marker)
 {
     if(!ft) return FYTIM_ERR_INVALID;
@@ -3861,7 +3875,7 @@ static int prompt_lines(const struct fytim *ft)
     if(ft->keys) return 1;
     const char *p = ft->input;
     size_t len = strlen(p), i = 0, next;
-    int width = ft->term_w - sgr_disp_width(marker);
+    int width = ft->term_w - sgr_disp_width(marker) - prompt_edge_cols(ft);
     int n = 1, col = 0, gw;
     if(width < 1) width = 1;
     while(i < len && n < FYTIM_PROMPT_MAX){
@@ -4077,6 +4091,18 @@ static void draw_prompt(struct fytim *ft, TimuiFrame *f,
 
     if(w < 1 || h < 1) return;
     timui_draw_fill(buf, TIMUI_RECT(x, y, w, h), ps->in);
+    /* The edge stands at the start of every row while the prompt holds the
+     * keys, and its columns stay blank while a tile holds them, so nothing
+     * moves when the keys do. */
+    if(ft->prompt_edge){
+        int ew = prompt_edge_cols(ft), row;
+
+        if(ew >= w) return;
+        for(row = 0; row < h && !ft->keys; row++)
+            draw_row_styled(f, buf, x, y + row, ew, ft->prompt_edge, ps->in);
+        x += ew;
+        w -= ew;
+    }
     /* the marker may carry SGR (a colored activity dot): draw it through the
      * styled path, width from visible glyphs only */
     draw_row_styled(f, buf, x, y, w, marker, ps->marker);
