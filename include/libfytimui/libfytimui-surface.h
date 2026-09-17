@@ -70,6 +70,16 @@ enum fytim_result fytim_surface_granted_rows(const struct fytim_surface *s,
 enum fytim_result fytim_surface_request_rows(struct fytim_surface *s, int rows)
     FYTIM_EXPORT;
 
+/*
+ * Draw @s as its chrome alone: the top and bottom rows and no screen. A
+ * collapsed surface asks for no rows of content and is granted none; its grid
+ * keeps its size, so a host that keeps a program at the size it had does not
+ * resize it. Expanding it asks for the rows it asked for before.
+ */
+enum fytim_result fytim_surface_set_collapsed(struct fytim_surface *s,
+                                              bool collapsed) FYTIM_EXPORT;
+bool fytim_surface_collapsed(const struct fytim_surface *s) FYTIM_EXPORT;
+
 /* Never grant more than @rows, whatever the terminal has. 0 lifts the cap. */
 enum fytim_result fytim_surface_set_max_rows(struct fytim_surface *s, int rows)
     FYTIM_EXPORT;

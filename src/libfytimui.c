@@ -111,6 +111,7 @@ struct fytim_surface {
     int page_above, page_screen_h, page_below;
     int page_x, page_top_y, page_top_n, page_bottom_y, page_bottom_n;
     enum fytim_page_view page_view; /* what the tile page draws of itself */
+    bool collapsed;                 /* the chrome alone, no screen rows */
 };
 
 /*
@@ -1106,6 +1107,8 @@ static int rt_add(struct response_text *t, const char *data, size_t n)
 static int surface_content_rows(const struct fytim_surface *sf)
 {
     int n = sf->requested_rows > 0 ? sf->requested_rows : sf->rows;
+
+    if(sf->collapsed) return 0;
     if(n < 1) n = 1;
     if(n > sf->wb->max_rows) n = sf->wb->max_rows;
     return n;
@@ -1202,6 +1205,19 @@ enum fytim_result fytim_surface_granted_rows(const struct fytim_surface *sf,
     if(!sf || !rows) return FYTIM_ERR_INVALID;
     *rows = sf->granted;
     return FYTIM_OK;
+}
+
+enum fytim_result fytim_surface_set_collapsed(struct fytim_surface *sf,
+                                              bool collapsed)
+{
+    if(!sf) return FYTIM_ERR_INVALID;
+    sf->collapsed = collapsed;
+    return FYTIM_OK;
+}
+
+bool fytim_surface_collapsed(const struct fytim_surface *sf)
+{
+    return sf && sf->collapsed;
 }
 
 enum fytim_result fytim_surface_set_max_rows(struct fytim_surface *sf, int rows)
@@ -3260,7 +3276,8 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
             lines = sf ? surface_content_rows(sf) : styled_rows(t->content);
             content = lines;
             if(content < 1)
-                content = (sf || !(t->top || t->bottom)) ? 1 : 0;
+                content = ((sf && !sf->collapsed) ||
+                           !(t->top || t->bottom)) ? 1 : 0;
             if(content > t->max_rows) content = t->max_rows;
             top = tile_top_rows(t);
             bottom = tile_bottom_rows(t);
@@ -3334,6 +3351,13 @@ static void draw_tile(TimuiFrame *f, TimuiCellBuffer *buf,
                                   control_style(wp->owner, chrome),
                                   tx + tw - bar, ty, content);
                 sf->granted = content > 0 ? content : 0;
+                /* A tile that draws no screen still has its width: the host
+                 * makes its head at it. */
+                if(content <= 0){
+                    int mw = sf->margin ? sgr_disp_width(sf->margin) : 0;
+                    sf->granted_cols = tw - bar - (mw < tw ? mw : tw);
+                    if(sf->granted_cols < 0) sf->granted_cols = 0;
+                }
             }else{
                 t->granted_cols = tw;
             }
@@ -3658,7 +3682,8 @@ static int wb_rows(const struct fytim_workband *wb)
                     : styled_rows(wb->content);
     /* An idle band still shows: one row for it, unless it has chrome that
      * already says what it is. A screen always keeps a row of its own. */
-    if(n < 1) n = (wb->surface || !(wb->top || wb->bottom)) ? 1 : 0;
+    if(n < 1) n = ((wb->surface && !wb->surface->collapsed) ||
+                   !(wb->top || wb->bottom)) ? 1 : 0;
     if(n > wb->max_rows) n = wb->max_rows;
     return n + tile_top_rows(wb) + tile_bottom_rows(wb);
 }
@@ -4052,7 +4077,8 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
                  * chrome: top rule first, bottom status next, content last. */
                 content = lines;
                 if(content < 1)
-                    content = (wb->surface || !(wb->top || wb->bottom)) ?
+                    content = ((wb->surface && !wb->surface->collapsed) ||
+                               !(wb->top || wb->bottom)) ?
                               1 : 0;
                 if(content > wb->max_rows) content = wb->max_rows;
                 top = chrome_rows(wb->top);
