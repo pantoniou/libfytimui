@@ -1232,6 +1232,82 @@ static void test_a_collapsed_tile_is_its_head(void)
     h_close(&h);
 }
 
+/* A hidden pane asks for no rows and draws no tile, and its tiles keep what
+ * they were granted. */
+static void test_a_hidden_pane_takes_no_rows(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    struct h_events evs;
+
+    if(!h_open_mouse(&h, true)){ CHECK(0); return; }
+    h_pair(&h, &wp, &a, &b);
+    CHECK(fytim_workpane_rows(wp) > 0);
+    CHECK(granted_rows(a) == 3);
+
+    CHECK(fytim_workpane_set_hidden(wp, true) == FYTIM_OK);
+    CHECK(fytim_workpane_hidden(wp));
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_workpane_rows(wp) == 0);
+    CHECK(granted_rows(a) == 3);
+    /* A click where a tile stood is a click off the tiles. */
+    h_drain(&h, &evs);
+    h_click(&h, 10, 1);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_FOCUS, NULL));
+
+    CHECK(fytim_workpane_set_hidden(wp, false) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_workpane_rows(wp) > 0);
+    CHECK(fytim_workpane_set_hidden(NULL, true) == FYTIM_ERR_INVALID);
+    h_close(&h);
+}
+
+/* The right part of the header stands at the edge, and a click on one of its
+ * acts is that act, not a click off the tiles. */
+static void test_the_header_right_takes_a_click(void)
+{
+    static const struct fytim_header_act act = { "panel:pane", 0, 1 };
+    struct harness h;
+    struct fytim_event ev;
+    struct h_events evs;
+    char buf[16384];
+    size_t n;
+    int cols = 0, rows = 0, y;
+
+    if(!h_open_mouse(&h, true)){ CHECK(0); return; }
+    CHECK(fytim_set_header(h.ft, "left") == FYTIM_OK);
+    CHECK(fytim_set_header_right(h.ft, "B !1", &act, 1) == FYTIM_OK);
+    CHECK(!strcmp(fytim_header_right(h.ft), "B !1"));
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "B !1"));
+    h_drain(&h, &evs);
+    (void)fytim_size(h.ft, &cols, &rows);
+
+    /* The header is the first row of the band; find the act on it. */
+    for(y = 0; y < rows; y++){
+        h_click(&h, cols - 4, y);
+        CHECK(fytim_pump(h.ft) == FYTIM_OK);
+        h_drain(&h, &evs);
+        if(h_event(&evs, FYTIM_EVENT_ACT, &ev)) break;
+    }
+    CHECK(y < rows);
+    CHECK(ev.text && !strcmp(ev.text, "panel:pane"));
+    CHECK(!h_event(&evs, FYTIM_EVENT_FOCUS_PROMPT, NULL));
+
+    /* A bad id is refused, and an empty text clears it. */
+    {
+        static const struct fytim_header_act bad = { "a b", 0, 1 };
+        CHECK(fytim_set_header_right(h.ft, "x", &bad, 1) == FYTIM_ERR_INVALID);
+    }
+    CHECK(fytim_set_header_right(h.ft, "", NULL, 0) == FYTIM_OK);
+    CHECK(fytim_header_right(h.ft) == NULL);
+    h_close(&h);
+}
+
 /* The bar shows where the host's scrollback stands. */
 static void test_the_bar_follows_the_extent(void)
 {
@@ -1657,6 +1733,8 @@ static const struct case_ent cases[] = {
       test_the_wheel_stays_with_the_transcript },
     { "a_bar_draws_into_cells",      test_a_bar_draws_into_cells },
     { "a_collapsed_tile_is_its_head", test_a_collapsed_tile_is_its_head },
+    { "a_hidden_pane_takes_no_rows", test_a_hidden_pane_takes_no_rows },
+    { "the_header_right_takes_a_click", test_the_header_right_takes_a_click },
     { "the_wheel_scrolls_three_rows", test_the_wheel_scrolls_three_rows },
     { "the_arrows_step_under_a_head", test_the_arrows_step_under_a_head },
     { "a_click_on_a_tile_asks_for_the_keys",
