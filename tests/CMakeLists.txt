@@ -208,6 +208,11 @@ foreach(t two_tiles_share_the_width one_tile_takes_the_width
           a_click_on_the_head_reports_its_cell
           the_wheel_belongs_to_the_tile the_wheel_stays_with_the_transcript
           the_bar_follows_the_extent
+          a_click_on_a_tile_asks_for_the_keys
+          a_click_off_the_tiles_asks_for_the_prompt
+          focus_clicks_need_the_grab
+          clicks_reach_past_a_tile_with_the_keys
+          a_hidden_tile_takes_no_click
           a_band_is_a_tile_too two_bands_tile a_band_tile_commits
           a_band_tile_keeps_its_cap
           an_explicit_grid_places_tiles a_tile_spans_columns

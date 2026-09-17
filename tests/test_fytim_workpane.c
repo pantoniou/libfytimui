@@ -933,6 +933,148 @@ static void test_the_wheel_stays_with_the_transcript(void)
     h_close(&h);
 }
 
+/* Two tiles side by side on the top rows, each half of eighty columns. */
+static void h_pair(struct harness *h, struct fytim_workpane **wpp,
+                   struct fytim_surface **ap, struct fytim_surface **bp)
+{
+    char buf[16384];
+    struct h_events evs;
+
+    *wpp = fytim_workpane_create(h->ft);
+    CHECK(fytim_workpane_set_grid(*wpp, 1, 2) == FYTIM_OK);
+    *ap = fytim_surface_open_in(*wpp, 3, 40);
+    *bp = fytim_surface_open_in(*wpp, 3, 40);
+    paint(*ap, 'A', 6);
+    paint(*bp, 'B', 6);
+    CHECK(fytim_pump(h->ft) == FYTIM_OK);
+    (void)h_out(h, buf, sizeof buf);
+    h_drain(h, &evs);
+}
+
+/* A click anywhere on a tile asks for the keys, controls or none. */
+static void test_a_click_on_a_tile_asks_for_the_keys(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    struct fytim_event ev;
+    struct h_events evs;
+
+    if(!h_open_mouse(&h, true)){ CHECK(0); return; }
+    h_pair(&h, &wp, &a, &b);
+    h_click(&h, 50, 1);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SURFACE_FOCUS, &ev));
+    CHECK(ev.surface == b);
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_CLICK, NULL));
+    CHECK(!h_event(&evs, FYTIM_EVENT_FOCUS_PROMPT, NULL));
+
+    h_click(&h, 10, 1);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SURFACE_FOCUS, &ev));
+    CHECK(ev.surface == a);
+    h_close(&h);
+}
+
+/* A click off every tile asks for the prompt. */
+static void test_a_click_off_the_tiles_asks_for_the_prompt(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    struct h_events evs;
+
+    if(!h_open_mouse(&h, true)){ CHECK(0); return; }
+    h_pair(&h, &wp, &a, &b);
+    h_click(&h, 10, 20);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_FOCUS_PROMPT, NULL));
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_FOCUS, NULL));
+    h_close(&h);
+}
+
+/* Without the grab the terminal keeps the mouse, and nothing is reported. */
+static void test_focus_clicks_need_the_grab(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    struct h_events evs;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    h_pair(&h, &wp, &a, &b);
+    h_click(&h, 50, 1);
+    h_click(&h, 10, 20);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_FOCUS, NULL));
+    CHECK(!h_event(&evs, FYTIM_EVENT_FOCUS_PROMPT, NULL));
+    h_close(&h);
+}
+
+/*
+ * A tile that holds the keys takes every key, but not the mouse: a click
+ * still moves the keys to another tile or back to the prompt, and is not
+ * given to the program as bytes.
+ */
+static void test_clicks_reach_past_a_tile_with_the_keys(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    struct fytim_event ev;
+    struct h_events evs;
+
+    if(!h_open_mouse(&h, true)){ CHECK(0); return; }
+    h_pair(&h, &wp, &a, &b);
+    CHECK(fytim_surface_set_keys(a, true) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+
+    h_click(&h, 50, 1);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SURFACE_FOCUS, &ev));
+    CHECK(ev.surface == b);
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_KEYS, NULL));
+
+    h_click(&h, 10, 20);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_FOCUS_PROMPT, NULL));
+    CHECK(!h_event(&evs, FYTIM_EVENT_SURFACE_KEYS, NULL));
+    h_close(&h);
+}
+
+/* A tile the last frame did not draw keeps an old rectangle, and takes no
+ * click there: the zoomed tile is under the mouse. */
+static void test_a_hidden_tile_takes_no_click(void)
+{
+    struct harness h;
+    struct fytim_workpane *wp;
+    struct fytim_surface *a, *b;
+    struct fytim_event ev;
+    struct h_events evs;
+    char buf[16384];
+
+    if(!h_open_mouse(&h, true)){ CHECK(0); return; }
+    h_pair(&h, &wp, &a, &b);
+    CHECK(fytim_workpane_set_zoom(wp, b) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    h_drain(&h, &evs);
+
+    h_click(&h, 10, 1);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h, &evs);
+    CHECK(h_event(&evs, FYTIM_EVENT_SURFACE_FOCUS, &ev));
+    CHECK(ev.surface == b);
+    h_close(&h);
+}
+
 /* The bar shows where the host's scrollback stands. */
 static void test_the_bar_follows_the_extent(void)
 {
@@ -1356,6 +1498,14 @@ static const struct case_ent cases[] = {
     { "the_wheel_belongs_to_the_tile", test_the_wheel_belongs_to_the_tile },
     { "the_wheel_stays_with_the_transcript",
       test_the_wheel_stays_with_the_transcript },
+    { "a_click_on_a_tile_asks_for_the_keys",
+      test_a_click_on_a_tile_asks_for_the_keys },
+    { "a_click_off_the_tiles_asks_for_the_prompt",
+      test_a_click_off_the_tiles_asks_for_the_prompt },
+    { "focus_clicks_need_the_grab",  test_focus_clicks_need_the_grab },
+    { "clicks_reach_past_a_tile_with_the_keys",
+      test_clicks_reach_past_a_tile_with_the_keys },
+    { "a_hidden_tile_takes_no_click", test_a_hidden_tile_takes_no_click },
     { "the_bar_follows_the_extent",  test_the_bar_follows_the_extent },
     { "an_explicit_grid_places_tiles", test_an_explicit_grid_places_tiles },
     { "a_tile_spans_columns",        test_a_tile_spans_columns },
