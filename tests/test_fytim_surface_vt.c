@@ -250,6 +250,40 @@ static void test_the_prompt_edge_follows_the_keys(void)
 }
 
 /*
+ * A ground under the prompt makes it a card of three rows, and the edge
+ * stands at the start of all of them: the rows above and below the editor
+ * belong to the prompt, so what says where the keys are covers the block.
+ */
+static void test_the_prompt_edge_covers_the_card(void)
+{
+    char line[COLS + 1];
+    struct fyvt_rect rect;
+    struct vth h;
+    int row, r;
+
+    if(!vth_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_marker(h.ft, "PROMPTMARK ") == FYTIM_OK);
+    CHECK(fytim_set_prompt_edge(h.ft, "E") == FYTIM_OK);
+    /* A ground under the prompt is what makes the card. */
+    CHECK(fytim_set_prompt_bg(h.ft, 0x202020) == FYTIM_OK);
+    vth_pump(&h);
+    row = row_with_text(&h, "EPROMPTMARK");
+    CHECK(row >= 1);
+    if(row < 1){ vth_close(&h); return; }
+
+    for(r = row - 1; r <= row + 1; r++){
+        rect.start_row = r;
+        rect.end_row = r + 1;
+        rect.start_col = 0;
+        rect.end_col = COLS;
+        memset(line, 0, sizeof line);
+        fyvt_screen_get_text(h.vs, line, sizeof line - 1, rect);
+        CHECK(line[0] == 'E');
+    }
+    vth_close(&h);
+}
+
+/*
  * A host that nobody types into asks for no prompt, and there is none - and
  * with it go the separators that framed it, so a surface reaches the row the
  * prompt would have taken.
@@ -543,6 +577,7 @@ static const struct case_ent cases[] = {
     { "short_region_keeps_the_last_rows", test_short_region_keeps_the_last_rows },
     { "two_surfaces_stack_in_order",    test_two_surfaces_stack_in_order },
     { "the_prompt_edge_follows_the_keys", test_the_prompt_edge_follows_the_keys },
+    { "the_prompt_edge_covers_the_card", test_the_prompt_edge_covers_the_card },
 };
 
 int main(int argc, char **argv)

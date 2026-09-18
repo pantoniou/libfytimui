@@ -374,7 +374,8 @@ if(VTERM_FOUND)
               wide_glyph_keeps_the_row
               combining_stays_one_cell cursor_is_a_reverse_cell
               short_region_keeps_the_last_rows two_surfaces_stack_in_order
-              the_prompt_edge_follows_the_keys)
+              the_prompt_edge_follows_the_keys
+              the_prompt_edge_covers_the_card)
         add_test(NAME fytim.surface.vt.${t}
                  COMMAND test_fytim_surface_vt ${t})
     endforeach()
