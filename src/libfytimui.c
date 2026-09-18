@@ -4079,6 +4079,26 @@ static struct prompt_style prompt_style_(const struct fytim *ft)
  * surface was just given. The row still shows what was typed, so the user
  * sees the line waiting for them.
  */
+/*
+ * The edge of the prompt over @h rows from @y. The card rows above and below
+ * the editor belong to the prompt, so the keys are marked on the whole block
+ * and not on the editor row alone. Blank while a tile holds the keys, so
+ * nothing moves when the keys do.
+ */
+static void draw_prompt_edge(struct fytim *ft, TimuiFrame *f,
+                             const struct prompt_style *ps, int x, int y,
+                             int w, int h)
+{
+    TimuiCellBuffer *buf = timui_frame_buffer(f);
+    int ew, row;
+
+    if(!ft->prompt_edge || ft->keys) return;
+    ew = prompt_edge_cols(ft);
+    if(ew < 1 || ew >= w) return;
+    for(row = 0; row < h; row++)
+        draw_row_styled(f, buf, x, y + row, ew, ft->prompt_edge, ps->in);
+}
+
 static void draw_prompt(struct fytim *ft, TimuiFrame *f,
                         const struct prompt_style *ps, int x, int y, int w,
                         int h, bool *submitted)
@@ -4095,11 +4115,10 @@ static void draw_prompt(struct fytim *ft, TimuiFrame *f,
      * keys, and its columns stay blank while a tile holds them, so nothing
      * moves when the keys do. */
     if(ft->prompt_edge){
-        int ew = prompt_edge_cols(ft), row;
+        int ew = prompt_edge_cols(ft);
 
         if(ew >= w) return;
-        for(row = 0; row < h && !ft->keys; row++)
-            draw_row_styled(f, buf, x, y + row, ew, ft->prompt_edge, ps->in);
+        draw_prompt_edge(ft, f, ps, x, y, w, h);
         x += ew;
         w -= ew;
     }
@@ -4294,9 +4313,10 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
     }
     r = &lay->band[FYTIM_BAND_SEP_TOP];
     if(r->h > 0){
-        if(card)
+        if(card){
             timui_draw_fill(buf, TIMUI_RECT(r->x, r->y, r->w, r->h), sep_st);
-        else
+            draw_prompt_edge(ft, f, &ps, r->x, r->y, r->w, r->h);
+        }else
             timui_draw_hline(buf, r->x, r->y, r->w, sep_st);
     }
     r = &lay->band[FYTIM_BAND_PROMPT];
@@ -4304,9 +4324,10 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
         draw_prompt(ft, f, &ps, r->x, r->y, r->w, r->h, submitted);
     r = &lay->band[FYTIM_BAND_SEP_BOTTOM];
     if(r->h > 0){
-        if(card)
+        if(card){
             timui_draw_fill(buf, TIMUI_RECT(r->x, r->y, r->w, r->h), sep_st);
-        else
+            draw_prompt_edge(ft, f, &ps, r->x, r->y, r->w, r->h);
+        }else
             timui_draw_hline(buf, r->x, r->y, r->w, sep_st);
     }
     r = &lay->band[FYTIM_BAND_STATUS];
@@ -5116,6 +5137,7 @@ static void draw_slot(struct fytim *ft, TimuiFrame *f,
          * editor, as the band stack frames it. */
         if(ps.card && h >= 3){
             timui_draw_fill(buf, TIMUI_RECT(x, y, w, h), ps.in);
+            draw_prompt_edge(ft, f, &ps, x, y, w, h);
             draw_prompt(ft, f, &ps, x, y + 1, w, h - 2, submitted);
         }else{
             draw_prompt(ft, f, &ps, x, y, w, h, submitted);
