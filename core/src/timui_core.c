@@ -1236,6 +1236,9 @@ TIMUI_API int timui_events_dropped(Timui *ui){
 TIMUI_API void timui_quit(Timui *ui){ if(ui) ui->should_quit = 1; }
 TIMUI_API bool timui_should_quit(const Timui *ui){ return ui ? (bool)ui->should_quit : false; }
 TIMUI_API const TimuiCaps *timui_caps(const Timui *ui){ return ui ? &ui->caps : NULL; }
+TIMUI_API void timui_set_caps(Timui *ui, uint32_t force_on, uint32_t force_off){
+    if(ui) timui_caps_apply_force(&ui->caps, force_on, force_off);
+}
 TIMUI_API TimuiImageProtocol timui_image_protocol(const Timui *ui){
     return ui ? timui_caps_image_protocol(&ui->caps) : TIMUI_IMAGE_PROTOCOL_NONE;
 }

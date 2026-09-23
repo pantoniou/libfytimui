@@ -231,3 +231,13 @@ that does not start ST ends the string (ECMA-48).
 Covered by the `fytim.input.*` tests. Worth upstreaming: every host that
 queries the terminal can hit this.
 
+## The host sets the capabilities
+
+**Files:** `core/include/timui.h`, `core/src/timui_core.c`
+
+`timui_open()` guesses the capabilities from `TERM`, `TERM_PROGRAM` and
+`COLORTERM`. With `timui_set_caps()`, a host that asked the terminal can
+replace that guess on an open ui; it calls `timui_caps_apply_force()`.
+libfytimui exposes it as `fytim_set_caps()`.
+
+Covered by `fytim.page.probed_caps_replace_the_guess`.

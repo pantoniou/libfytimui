@@ -65,6 +65,23 @@ enum fytim_result fytim_size(const struct fytim *ft, int *w, int *h) FYTIM_EXPOR
 /* Whether the terminal takes 24-bit colour, which mixing a ground needs. */
 bool fytim_truecolor(const struct fytim *ft) FYTIM_EXPORT;
 
+/* Capabilities of the terminal, for fytim_set_caps(). */
+#define FYTIM_CAP_TRUECOLOR        (1u << 0)
+#define FYTIM_CAP_SYNC_OUTPUT      (1u << 1)   /* mode 2026 */
+#define FYTIM_CAP_KITTY_KEYBOARD   (1u << 2)
+#define FYTIM_CAP_KITTY_GRAPHICS   (1u << 3)
+#define FYTIM_CAP_SIXEL_GRAPHICS   (1u << 4)
+#define FYTIM_CAP_ALL              ((1u << 5) - 1)
+
+/*
+ * Set the capabilities in @on and clear those in @off. When it opens, the
+ * library guesses the capabilities from the environment. A host that asked
+ * the terminal passes the answer here; it takes effect from the next frame.
+ * Returns FYTIM_ERR_INVALID for an unknown flag.
+ */
+enum fytim_result fytim_set_caps(struct fytim *ft, unsigned int on,
+                                 unsigned int off) FYTIM_EXPORT;
+
 /* Whether this instance grabbed the mouse (see fytim_cfg.mouse). A work
  * pane draws no control the user could not reach. */
 bool fytim_mouse_enabled(const struct fytim *ft) FYTIM_EXPORT;

@@ -1017,6 +1017,10 @@ TIMUI_API TimuiImageProtocol timui_caps_image_protocol(const TimuiCaps *caps);
 /* The capabilities detected for an open ui — so apps can, e.g., choose an inline
  * image vs a text fallback: timui_image_protocol(ui) != TIMUI_IMAGE_PROTOCOL_NONE. */
 TIMUI_API const TimuiCaps *timui_caps(const Timui *ui);
+/* Replace the detected capabilities of an open ui with ones the host got
+ * from the terminal. Flags in force_on are set, then flags in force_off are
+ * cleared. */
+TIMUI_API void timui_set_caps(Timui *ui, uint32_t force_on, uint32_t force_off);
 
 /* ---- Synchronized output (DEC 2026) + cursor -------------------------- *
  * Wrap a frame's terminal writes so the terminal repaints atomically. The

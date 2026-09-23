@@ -520,6 +520,27 @@ bool fytim_mouse_enabled(const struct fytim *ft)
     return ft && ft->mouse;
 }
 
+static uint32_t caps_to_timui(unsigned int caps)
+{
+    uint32_t t = 0;
+
+    if(caps & FYTIM_CAP_TRUECOLOR)      t |= TIMUI_CAP_TRUECOLOR;
+    if(caps & FYTIM_CAP_SYNC_OUTPUT)    t |= TIMUI_CAP_SYNC_OUTPUT;
+    if(caps & FYTIM_CAP_KITTY_KEYBOARD) t |= TIMUI_CAP_KITTY_KEYBOARD;
+    if(caps & FYTIM_CAP_KITTY_GRAPHICS) t |= TIMUI_CAP_KITTY_GRAPHICS;
+    if(caps & FYTIM_CAP_SIXEL_GRAPHICS) t |= TIMUI_CAP_SIXEL_GRAPHICS;
+    return t;
+}
+
+enum fytim_result fytim_set_caps(struct fytim *ft, unsigned int on,
+                                 unsigned int off)
+{
+    if(!ft || !ft->ui || ((on | off) & ~FYTIM_CAP_ALL))
+        return FYTIM_ERR_INVALID;
+    timui_set_caps(ft->ui, caps_to_timui(on), caps_to_timui(off));
+    return FYTIM_OK;
+}
+
 bool fytim_truecolor(const struct fytim *ft)
 {
     return ft && ft->ui && timui_caps_has(timui_caps(ft->ui),
