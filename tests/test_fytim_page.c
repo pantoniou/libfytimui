@@ -1777,6 +1777,21 @@ static void test_rejects_bad_tile_pages(void)
     h_close(&h);
 }
 
+/* The capabilities a host probed replace what the environment suggested. */
+static void test_probed_caps_replace_the_guess(void)
+{
+    struct harness h;
+
+    CHECK(fytim_set_caps(NULL, 0, 0) == FYTIM_ERR_INVALID);
+    CHECK(h_open(&h));
+    CHECK(fytim_set_caps(h.ft, FYTIM_CAP_TRUECOLOR, 0) == FYTIM_OK);
+    CHECK(fytim_truecolor(h.ft));
+    CHECK(fytim_set_caps(h.ft, 0, FYTIM_CAP_TRUECOLOR) == FYTIM_OK);
+    CHECK(!fytim_truecolor(h.ft));
+    CHECK(fytim_set_caps(h.ft, 1u << 31, 0) == FYTIM_ERR_INVALID);
+    h_close(&h);
+}
+
 static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "a_page_is_set_and_cleared", test_a_page_is_set_and_cleared },
     { "a_page_replaces_the_band_stack", test_a_page_replaces_the_band_stack },
@@ -1822,6 +1837,7 @@ static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "cells_take_a_ground", test_cells_take_a_ground },
     { "cells_take_a_wash", test_cells_take_a_wash },
     { "a_surface_reads_back", test_a_surface_reads_back },
+    { "probed_caps_replace_the_guess", test_probed_caps_replace_the_guess },
     { "a_band_reads_back", test_a_band_reads_back },
     { "a_committed_tile_page_keeps_its_head",
       test_a_committed_tile_page_keeps_its_head },

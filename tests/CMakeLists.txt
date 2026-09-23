@@ -287,7 +287,7 @@ foreach(t a_page_is_set_and_cleared a_page_replaces_the_band_stack
           text_expands_tabs text_erases_to_its_edge text_measures_glyphs
           text_rejects_bad_input
           cells_take_a_ground cells_take_a_wash a_surface_reads_back
-          a_band_reads_back
+          a_band_reads_back probed_caps_replace_the_guess
           regression_a_click_below_the_top_finds_its_act
           regression_a_commit_moves_the_band_down
           regression_a_stray_cursor_report_is_ignored
