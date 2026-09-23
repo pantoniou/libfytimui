@@ -229,6 +229,29 @@ endforeach()
 
 # A page of rows and slots that the host rendered: what is accepted, what a
 # slot grants, and which event a click makes.
+# Terminal replies in the input stream: the decoder of the core, directly.
+add_executable(test_fytim_input test_fytim_input.c
+               $<TARGET_OBJECTS:fytimui-core>)
+target_include_directories(test_fytim_input PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include)
+target_link_libraries(test_fytim_input PRIVATE m util)
+if(ASAN_C_FLAGS)
+    target_compile_options(test_fytim_input PRIVATE ${ASAN_C_FLAGS})
+    target_link_options(test_fytim_input PRIVATE ${ASAN_C_FLAGS})
+endif()
+
+foreach(t regression_a_late_osc_reply_is_not_typed
+          regression_a_split_osc_reply_is_not_typed
+          regression_a_late_dcs_reply_is_not_typed
+          regression_a_late_apc_reply_is_not_typed
+          regression_a_late_kitty_flags_reply_is_not_a_key
+          regression_a_late_mode_report_is_not_typed
+          late_csi_replies_are_dropped alt_keys_stay_keys
+          a_lone_alt_key_resolves an_unterminated_string_ends
+          keys_still_decode)
+    add_test(NAME fytim.input.${t} COMMAND test_fytim_input ${t})
+endforeach()
+
 add_executable(test_fytim_page test_fytim_page.c
                ${CMAKE_SOURCE_DIR}/src/libfytimui.c
                ${CMAKE_SOURCE_DIR}/src/fytim_sgr.c
