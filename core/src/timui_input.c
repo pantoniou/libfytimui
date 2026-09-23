@@ -158,18 +158,47 @@ TIMUI_API void timui_input_init(TimuiInputParser *p){
     p->utf8_need = 0; p->utf8_len = 0; p->utf8_cp = 0; p->utf8_ptr = NULL;
     p->now_ms = 0; p->esc_since_ms = 0;
     p->paste_tail_len = 0;
+    p->csi_private = 0; p->csi_inter = 0;
+    p->str_intro = 0; p->str_len = 0;
 }
 #define TIMUI_ESC_TIMEOUT_MS 50   /* lone-Esc resolution window */
+/* A terminal reply (an OSC, DCS or APC string) that arrives after the host
+ * stopped waiting is dropped, not passed on as keys. A string that does not
+ * end is given up after this many bytes or milliseconds. */
+#define TIMUI_STRING_MAX      4096
+#define TIMUI_STRING_TIMEOUT_MS 500
+/* Whether byte c after ESC and intro starts a reply, not an Alt key. OSC
+ * colour replies start with a digit, DCS replies with a digit or '>', and
+ * the kitty graphics reply with 'G'. */
+static int string_starts_(unsigned char intro, unsigned char c){
+    switch(intro){
+        case ']': return c >= '0' && c <= '9';
+        case 'P': return (c >= '0' && c <= '9') || c == '>';
+        case '_': return c == 'G';
+        default:  return 0;
+    }
+}
 TIMUI_API void timui_input_set_now(TimuiInputParser *p, uint64_t now_ms){
     if(p) p->now_ms = now_ms;
 }
 static int timui_input_flush_esc_(TimuiInputParser *p, uint64_t now_ms, TimuiEventFn cb, void *ctx){
     int emitted = 0;
     if(!p) return 0;
-    if((p->state == 1 || p->state == 2 || p->state == 3) &&
+    if((p->state == 6 || p->state == 7) &&
+       now_ms - p->esc_since_ms >= TIMUI_STRING_TIMEOUT_MS){
+        p->state = 0;
+        p->str_len = 0;
+        p->esc_since_ms = 0;
+        return 0;
+    }
+    if((p->state == 1 || p->state == 2 || p->state == 3 || p->state == 5) &&
        now_ms - p->esc_since_ms >= TIMUI_ESC_TIMEOUT_MS){
         if(p->state == 1){
             emit_key(cb, ctx, TIMUI_KEY_ESCAPE, 0, 0);
+            emitted = 1;
+        }
+        if(p->state == 5){
+            emit_key(cb, ctx, TIMUI_KEY_UNKNOWN, TIMUI_MOD_ALT, p->str_intro);
             emitted = 1;
         }
         p->state = 0;
@@ -304,9 +333,13 @@ TIMUI_API size_t timui_input_feed(TimuiInputParser *p, const void *data, size_t 
                 p->mod_param = 0; p->has_mod = 0; p->sub_param = 0;
                 p->csi_mouse = 0; p->mcount = 0;
                 p->mparam[0] = p->mparam[1] = p->mparam[2] = 0;
+                p->csi_private = 0; p->csi_inter = 0;
                 break;
             }
             if(c == 'O'){ p->state = 3; break; }
+            if(c == ']' || c == 'P' || c == '_'){
+                p->state = 5; p->str_intro = c; break;
+            }
             if(c == 0x1b){ emit_key(cb, ctx, TIMUI_KEY_ESCAPE, 0, 0); count++; p->esc_since_ms = p->now_ms; break; }
             if(c >= 0x20 && c < 0x80){
                 emit_key(cb, ctx, TIMUI_KEY_UNKNOWN, TIMUI_MOD_ALT, (uint32_t)c);
@@ -325,7 +358,8 @@ TIMUI_API size_t timui_input_feed(TimuiInputParser *p, const void *data, size_t 
              * leaking the interrupted tail as text. */
             if(c == 0x1b){ p->state = 1; p->esc_since_ms = p->now_ms; break; }
             if(c == '<'){ p->csi_mouse = 1; p->mcount = 0; p->mparam[0] = p->mparam[1] = p->mparam[2] = -1; break; }
-            if(c == '?' || c == '>' || c == '='){ break; }              /* private marker */
+            if(c == '?' || c == '>' || c == '='){ p->csi_private = 1; break; } /* private marker */
+            if(c >= 0x20 && c <= 0x2f){ p->csi_inter = 1; break; }      /* intermediate */
             /* Z4: ':' opens a sub-parameter (Kitty event-type / alternate-key
              * reports). timui does not use sub-parameters, so ignore their
              * digits until the next ';' or final byte — but stay in CSI state
@@ -351,7 +385,9 @@ TIMUI_API size_t timui_input_feed(TimuiInputParser *p, const void *data, size_t 
             }
             if(c >= 0x40 && c <= 0x7e){
                 uint32_t mods = p->has_mod ? decode_kitty_mods(p->mod_param) : 0;
-                if(p->csi_mouse){
+                if((p->csi_private || p->csi_inter) && !p->csi_mouse){
+                    /* a terminal reply, such as DA1 or DECRPM: no key */
+                }else if(p->csi_mouse){
                     if((c == 'M' || c == 'm') &&
                        p->mcount == 2 && p->mparam[0] >= 0 &&
                        p->mparam[1] > 0 && p->mparam[2] > 0){
@@ -381,6 +417,27 @@ TIMUI_API size_t timui_input_feed(TimuiInputParser *p, const void *data, size_t 
             }
             p->state = 0;          /* unexpected: resync */
             if(c >= 0x80) i--;     /* non-ASCII may be a UTF-8 lead; do not drop it */
+            break;
+        case 5: /* ESC + ']' 'P' '_': a reply, or an Alt key */
+            if(string_starts_(p->str_intro, c)){
+                p->state = 6; p->str_len = 1;
+                break;
+            }
+            emit_key(cb, ctx, TIMUI_KEY_UNKNOWN, TIMUI_MOD_ALT, p->str_intro);
+            count++;
+            p->state = 0;
+            i--;   /* reprocess in ground; see the note in state 1 */
+            break;
+        case 6: /* OSC/DCS/APC string: dropped to BEL or ST */
+            if(c == 0x07){ p->state = 0; break; }
+            if(c == 0x1b){ p->state = 7; break; }
+            if(++p->str_len > TIMUI_STRING_MAX){ p->state = 0; }
+            break;
+        case 7: /* ESC inside a string */
+            if(c == '\\'){ p->state = 0; break; }
+            /* ECMA-48: an ESC that does not start ST ends the string */
+            p->state = 1; p->esc_since_ms = p->now_ms;
+            i--;
             break;
         case 3: /* SS3 (ESC O X) */
             /* Z3: an ESC here aborts the truncated SS3 and restarts a fresh

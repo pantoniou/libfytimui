@@ -1070,7 +1070,9 @@ struct TimuiEvent {
  * Feed raw input bytes; complete key/text events are delivered to cb. The
  * parser holds state, so a sequence split across feeds still completes. */
 typedef struct {
-    int         state;     /* 0 ground, 1 esc, 2 csi, 3 ss3, 4 utf8 */
+    int         state;     /* 0 ground, 1 esc, 2 csi, 3 ss3, 4 utf8,
+                              5 esc + string introducer, 6 string,
+                              7 esc inside a string */
     int         param;     /* current CSI numeric parameter (~ keys) */
     int         nparams;   /* any parameter seen */
     int         mod_param; /* second CSI parameter (kitty modifiers) */
@@ -1089,6 +1091,10 @@ typedef struct {
     uint64_t    esc_since_ms;  /* timestamp ESC state was entered */
     unsigned char paste_tail[6]; /* deferred partial paste terminator */
     int         paste_tail_len; /* length of deferred partial terminator */
+    int         csi_private;   /* CSI private marker '?' '>' '=' seen: a reply */
+    int         csi_inter;     /* CSI intermediate byte seen: a reply */
+    unsigned char str_intro;   /* ']' 'P' '_' after ESC, state 5 */
+    size_t      str_len;       /* bytes of the string dropped, state 6 */
 } TimuiInputParser;
 
 typedef void (*TimuiEventFn)(void *ctx, const TimuiEvent *ev);

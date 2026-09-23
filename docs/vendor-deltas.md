@@ -208,3 +208,26 @@ Covered by `fytim.page.regression_a_click_below_the_top_finds_its_act`,
 `fytim.page.regression_a_commit_moves_the_band_down` and
 `fytim.page.regression_a_stray_cursor_report_is_ignored`. Worth upstreaming:
 any inline host that takes clicks has the defect.
+
+## A late terminal reply is not input
+
+**Files:** `core/include/timui.h`, `core/src/timui_input.c`
+
+A host asks the terminal what it supports before it opens the UI. A reply
+that arrived after the host stopped waiting went to the parser, which turned
+it into keys: `ESC ] 11;rgb:… ST` became Alt+`]` and typed text, `CSI ? 1 u`
+became a kitty key, and the `$` in `CSI ? 2026;2 $ y` reset the parser, which
+then typed the `y`.
+
+The parser now drops these replies. A CSI sequence with a private marker or
+an intermediate byte is a reply and produces no key. Kitty key reports and
+SGR mouse reports have neither, so they are not affected. After `ESC ]`,
+`ESC P` or `ESC _`, the next byte decides: a digit (OSC), a digit or `>`
+(DCS) or `G` (APC) starts a string, which is dropped up to BEL or ST. Any
+other byte, or the Escape timeout, makes the pair an Alt key. A string that
+does not end is given up after 4096 bytes or 500 ms. An ESC inside a string
+that does not start ST ends the string (ECMA-48).
+
+Covered by the `fytim.input.*` tests. Worth upstreaming: every host that
+queries the terminal can hit this.
+
