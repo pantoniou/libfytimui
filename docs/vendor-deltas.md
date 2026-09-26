@@ -241,3 +241,42 @@ replace that guess on an open ui; it calls `timui_caps_apply_force()`.
 libfytimui exposes it as `fytim_set_caps()`.
 
 Covered by `fytim.page.probed_caps_replace_the_guess`.
+
+## A hyperlink URI is stored whole
+
+**Files:** `core/include/timui.h`, `core/src/timui_render.c`
+
+`TimuiHyperlink` held its URI in a 256-byte field and cut a longer one, and a
+cut URI names another resource. It now holds a heap string that the buffer
+keeps from frame to frame. The renderer points at the open URI and does not
+copy it.
+
+Covered by `timui.core.test_hyperlink_set_edges`.
+
+## Link ids are stable across frames
+
+**Files:** `core/include/timui.h`, `core/src/timui_core.c`,
+`core/src/timui_int.h`, `core/src/timui_render.c`
+
+A link id was an index into the table of its own frame, so two equal cells
+could link to different URIs, and the diff compared URI strings. The
+`TimuiLinkTable` of a ui is shared by `curr` and `prev`: one id names one URI
+in both. `timui_link_table_sweep()` frees an id after each swap when no cell
+of the drawn frame uses it. A buffer without a shared table keeps the old
+per-frame ids. The two inline paint paths write OSC 8 links too, and close
+an open link at the end of each row.
+
+Covered by `timui.core.test_hyperlink_set_edges` and the
+`fytim.surface.*_follows_a_changed_link` tests.
+
+## A clear goes before an OSC 52 copy
+
+**Files:** `core/src/timui_clipboard.c`
+
+kitty joins consecutive OSC 52 writes, so a second copy was added to the
+first. `timui_clipboard_set()` writes an OSC 52 with the invalid payload `!`
+before the text, which clears the clipboard. A terminal that does not join
+writes takes it as an empty selection.
+
+Covered by `fytim.page.copy_needs_the_clipboard` and
+`fytim.page.copy_is_written_whole_under_backpressure`.
