@@ -61,6 +61,7 @@ struct Timui {
     TimuiCellBuffer   curr;
     TimuiCellBuffer   prev;
     int               have_buffers;
+    TimuiLinkTable    links;          /* shared by @curr and @prev */
     /* Inline band mode: commits queue here and flush inside the next
      * timui_end, so erase + lines + repaint reach the terminal as one
      * update. inline_dirty forces a repaint when the band cells alone

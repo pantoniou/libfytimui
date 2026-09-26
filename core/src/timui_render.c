@@ -66,7 +66,7 @@ TIMUI_API void timui_cells_clear(TimuiCellBuffer *buf){
         buf->cells[i].fg = TIMUI_COLOR_DEFAULT;
         buf->cells[i].bg = TIMUI_COLOR_DEFAULT;
     }
-    buf->link_count = 0;   /* hyperlinks are per-frame */
+    if(!buf->shared) buf->link_count = 0;   /* hyperlinks are per-frame */
 }
 TIMUI_API TimuiCell *timui_cells_get(TimuiCellBuffer *buf, int x, int y){
     if(!buf || !buf->cells || x < 0 || y < 0 || x >= buf->w || y >= buf->h) return NULL;
@@ -232,11 +232,102 @@ TIMUI_API TimuiStyle timui_style_make(uint32_t fg, uint32_t bg, uint32_t attrs){
 TIMUI_API void timui_draw_text(TimuiCellBuffer *buf, int x, int y, TimuiStr text, TimuiStyle st){
     timui_draw_text_linked(buf, x, y, text, st, 0);   /* Z7: unlinked == linked with id 0 */
 }
+/* Keep @uri in @l, whose storage is reused. */
+static int link_store_(TimuiHyperlink *l, const TimuiAllocator *al, const char *uri){
+    size_t n = strlen(uri), cap;
+    char *s;
+    if(n == SIZE_MAX) return 0;
+    /* A URI is stored whole: a cut one names another resource. */
+    if(l->cap < n + 1){
+        cap = n + 1 < 64 ? 64 : n + 1;
+        s = (char *)al->realloc(al->userdata, l->uri, l->cap, cap);
+        if(!s) return 0;
+        l->uri = s;
+        l->cap = cap;
+    }
+    memcpy(l->uri, uri, n + 1);
+    return 1;
+}
+/* The id of @uri in the shared table: the id it has, else a free one. */
+static uint32_t link_table_intern_(TimuiLinkTable *t, const TimuiAllocator *al,
+                                   const char *uri){
+    int i, fresh = -1, cap;
+    TimuiHyperlink *nl;
+    unsigned char *nv;
+    for(i = 0; i < t->count; i++){
+        if(!t->live[i]){
+            if(fresh < 0) fresh = i;
+            continue;
+        }
+        if(!strcmp(t->links[i].uri, uri)) return (uint32_t)i + 1;
+    }
+    if(fresh < 0){
+        if(t->count == t->cap){
+            /* Make both arrays before either replaces its old one: @cap
+             * is the size of both. */
+            cap = t->cap ? t->cap * 2 : 8;
+            if(cap < t->cap) return 0;
+            nl = (TimuiHyperlink *)al->alloc(al->userdata, (size_t)cap * sizeof *nl);
+            nv = (unsigned char *)al->alloc(al->userdata, (size_t)cap);
+            if(!nl || !nv){
+                if(nl) al->free(al->userdata, nl, (size_t)cap * sizeof *nl);
+                if(nv) al->free(al->userdata, nv, (size_t)cap);
+                return 0;
+            }
+            if(t->cap){
+                memcpy(nl, t->links, (size_t)t->cap * sizeof *nl);
+                memcpy(nv, t->live, (size_t)t->cap);
+                al->free(al->userdata, t->links, (size_t)t->cap * sizeof *nl);
+                al->free(al->userdata, t->live, (size_t)t->cap);
+            }
+            t->links = nl;
+            t->live = nv;
+            t->cap = cap;
+        }
+        fresh = t->count;
+        t->links[fresh].uri = NULL;
+        t->links[fresh].cap = 0;
+        t->live[fresh] = 0;
+        t->count++;
+    }
+    if(!link_store_(&t->links[fresh], al, uri)) return 0;
+    t->live[fresh] = 1;
+    return (uint32_t)fresh + 1;
+}
+TIMUI_API void timui_link_table_free(TimuiLinkTable *t, const TimuiAllocator *al){
+    int i;
+    if(!t || !al) return;
+    for(i = 0; i < t->count; i++)
+        al->free(al->userdata, t->links[i].uri, t->links[i].cap);
+    if(t->links) al->free(al->userdata, t->links, (size_t)t->cap * sizeof *t->links);
+    if(t->live) al->free(al->userdata, t->live, (size_t)t->cap);
+    memset(t, 0, sizeof *t);
+}
+TIMUI_API void timui_link_table_sweep(TimuiLinkTable *t, const TimuiCellBuffer *drawn){
+    size_t i, n;
+    uint32_t id;
+    if(!t || !t->count) return;
+    memset(t->live, 0, (size_t)t->count);
+    if(!drawn || !drawn->cells) return;
+    n = (size_t)drawn->w * (size_t)drawn->h;
+    for(i = 0; i < n; i++){
+        id = drawn->cells[i].hyperlink_id;
+        if(id && id <= (uint32_t)t->count) t->live[id - 1] = 1;
+    }
+}
+TIMUI_API const char *timui_hyperlink_uri(const TimuiCellBuffer *buf, uint32_t id){
+    if(!buf || !id) return NULL;
+    if(buf->shared){
+        if(id > (uint32_t)buf->shared->count || !buf->shared->live[id - 1])
+            return NULL;
+        return buf->shared->links[id - 1].uri;
+    }
+    return (buf->links && id <= (uint32_t)buf->link_count) ? buf->links[id - 1].uri : NULL;
+}
 TIMUI_API uint32_t timui_hyperlink_set(TimuiCellBuffer *buf, const char *uri){
     TimuiHyperlink *l;
-    size_t n, cap;
-    char *s;
     if(!buf || !uri) return 0;
+    if(buf->shared) return link_table_intern_(buf->shared, &buf->alloc, uri);
     if(buf->link_count >= buf->link_cap){
         int nc = buf->link_cap ? buf->link_cap * 2 : 8;
         TimuiHyperlink *nl = (TimuiHyperlink *)buf->alloc.realloc(buf->alloc.userdata,
@@ -245,24 +336,13 @@ TIMUI_API uint32_t timui_hyperlink_set(TimuiCellBuffer *buf, const char *uri){
         buf->links = nl;
         buf->link_cap = nc;
     }
-    n = strlen(uri);
-    if(n == SIZE_MAX) return 0;
     l = &buf->links[buf->link_count];
     if(buf->link_count == buf->link_alloc){
         l->uri = NULL;
         l->cap = 0;
     }
-    /* A URI is stored whole: a cut one names another resource. */
-    if(l->cap < n + 1){
-        cap = n + 1 < 64 ? 64 : n + 1;
-        s = (char *)buf->alloc.realloc(buf->alloc.userdata, l->uri, l->cap, cap);
-        if(!s) return 0;
-        l->uri = s;
-        l->cap = cap;
-    }
+    if(!link_store_(l, &buf->alloc, uri)) return 0;
     if(buf->link_count == buf->link_alloc) buf->link_alloc++;
-    memcpy(l->uri, uri, n);
-    l->uri[n] = '\0';
     buf->link_count++;
     return (uint32_t)buf->link_count;   /* 1-based id */
 }
@@ -480,15 +560,35 @@ TIMUI_API void timui_renderer_reset(TimuiRenderer *r){
     r->last_link_uri = NULL;
 }
 /* Resolve a cell's hyperlink id to its URI in the buffer (NULL if none / OOR).
- * ids are per-frame indices (cells_clear resets link_count each frame), so the
- * renderer compares URIs — not ids — to catch a same-id-different-URI change. */
+ * An unshared buffer makes its ids again each frame, so the renderer compares
+ * URIs, not ids, to catch a same-id-different-URI change. */
 static const char *cell_link_uri(const TimuiCellBuffer *buf, uint32_t id){
-    return (id && buf->links && id <= (uint32_t)buf->link_count) ? buf->links[id - 1].uri : NULL;
+    return timui_hyperlink_uri(buf, id);
 }
 static int uri_eq(const char *a, const char *b){
     if(a == b) return 1;
     if(!a || !b) return 0;
     return strcmp(a, b) == 0;
+}
+/* Open, change or close the OSC 8 link so that it is the link of @c. */
+static void link_follow_(TimuiTransport *t, TimuiRenderer *r,
+                         const TimuiCellBuffer *buf, const TimuiCell *c){
+    const char *curi = cell_link_uri(buf, c->hyperlink_id);
+    int want = curi != NULL;
+    if(want != r->have_last_link || (want && !uri_eq(curi, r->last_link_uri))){
+        emit_osc8(t, curi);
+        r->last_link = (int)c->hyperlink_id;
+        r->have_last_link = want;
+        r->last_link_uri = curi;
+    }
+}
+/* Close an open link: nothing after it is linked. */
+static void link_close_(TimuiTransport *t, TimuiRenderer *r){
+    if(!r->have_last_link) return;
+    emit_osc8(t, NULL);
+    r->last_link = 0;
+    r->have_last_link = 0;
+    r->last_link_uri = NULL;
 }
 static uint32_t render_safe_cp(uint32_t cp){
     if(cp == 0) return ' ';
@@ -522,18 +622,8 @@ TIMUI_API void timui_render_diff(TimuiTransport *t, const TimuiCellBuffer *prev,
                uri_eq(cell_link_uri(prev, pc->hyperlink_id), cell_link_uri(curr, cc->hyperlink_id))) continue;
             if(r->last_x != x || r->last_y != y) emit_cup(t, x, y);
             emit_sgr(t, r, cc);
-            {   /* OSC 8: emit on a link-state change (open/close) or a URI
-                 * change. ids are per-frame, so cache the open URI string and
-                 * track whether a link is currently open (have_last_link). */
-                const char *curi = cell_link_uri(curr, cc->hyperlink_id);
-                int want = curi != NULL;
-                if(want != r->have_last_link || (want && !uri_eq(curi, r->last_link_uri))){
-                    emit_osc8(t, curi);
-                    r->last_link = (int)cc->hyperlink_id;
-                    r->have_last_link = want;
-                    r->last_link_uri = curi;
-                }
-            }
+            /* OSC 8 on a link-state change (open/close) or a URI change. */
+            link_follow_(t, r, curr, cc);
             gn = timui_utf8_encode_(render_safe_cp(cc->codepoint), gb);
             r_emit(t, gb, (size_t)gn);
             emit_combining_(t, cc);
@@ -541,12 +631,7 @@ TIMUI_API void timui_render_diff(TimuiTransport *t, const TimuiCellBuffer *prev,
             r->last_y = y;
         }
     }
-    if(r->have_last_link){
-        emit_osc8(t, NULL);
-        r->last_link = 0;
-        r->have_last_link = 0;
-        r->last_link_uri = NULL;
-    }
+    link_close_(t, r);
     if(t->flush) t->flush(t);
 }
 /* ---- inline band mode --------------------------------------------------- *
@@ -583,6 +668,7 @@ TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf)
          * screen, and BCE terminals fill the revealed line with the CURRENT
          * background -- an open row background would bleed into it */
         if(y > 0){
+            link_close_(t, &r);                  /* a link ends with its row */
             R_EMIT(t, "\x1b[0m\r\n");            /* LF at the bottom row scrolls */
             timui_renderer_reset(&r);
         }
@@ -593,11 +679,13 @@ TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf)
             int gn;
             if(c->flags & TIMUI_CELL_CONTINUATION) continue;   /* wide glyph tail */
             emit_sgr(t, &r, c);
+            link_follow_(t, &r, buf, c);
             gn = timui_utf8_encode_(render_safe_cp(c->codepoint), gb);
             r_emit(t, gb, (size_t)gn);
             emit_combining_(t, c);
         }
     }
+    link_close_(t, &r);
     R_EMIT(t, "\x1b[0m\r");                      /* reset so commits stay clean */
     if(buf->h > 1){                              /* re-home to the band anchor */
         char nb[16];
@@ -659,10 +747,12 @@ TIMUI_API void timui_inline_paint_diff(TimuiTransport *t,
             int gn;
             if(c->flags & TIMUI_CELL_CONTINUATION) continue;   /* wide glyph tail */
             emit_sgr(t, &r, c);
+            link_follow_(t, &r, curr, c);
             gn = timui_utf8_encode_(render_safe_cp(c->codepoint), gb);
             r_emit(t, gb, (size_t)gn);
             emit_combining_(t, c);
         }
+        link_close_(t, &r);
         R_EMIT(t, "\x1b[0m");                    /* leave SGR clean for commits */
         timui_renderer_reset(&r);                /* the reset voided SGR state */
     }

@@ -638,6 +638,18 @@ typedef struct {
  * from frame to frame; @cap is the allocated size of @uri. */
 typedef struct { char *uri; size_t cap; } TimuiHyperlink;
 
+/*
+ * The links of a UI, shared by the buffers it diffs. An id names one URI in
+ * every buffer that shares the table, so two cells that compare equal byte
+ * for byte link to the same URI. An id no cell of the last drawn frame uses
+ * is free and may name another URI in the next frame.
+ */
+typedef struct {
+    TimuiHyperlink *links;          /* id - 1 -> URI */
+    unsigned char  *live;           /* 0: the id is free */
+    int             count, cap;     /* entries made; allocated */
+} TimuiLinkTable;
+
 struct TimuiCellBuffer {
     TimuiCell    *cells;
     int           w;
@@ -649,6 +661,7 @@ struct TimuiCellBuffer {
     int           link_count;
     int           link_cap;
     int           link_alloc;   /* entries of @links whose @uri is allocated */
+    TimuiLinkTable *shared; /* NULL: @links, which each frame starts empty */
 };
 TIMUI_API void timui_push_clip(TimuiFrame *f, TimuiRect rect);
 TIMUI_API void timui_pop_clip(TimuiFrame *f);
@@ -717,16 +730,22 @@ typedef struct {
     int last_x, last_y;                 /* last written cell (0-based); -1 = none */
     int last_fg, last_bg, last_attrs;   /* -1 = not yet emitted this run */
     int last_link;                      /* current OSC 8 hyperlink id, 0 = none */
-    /* OSC 8 hyperlink ids are per-frame indices into each buffer's links table,
+    /* A buffer without a shared table makes its link ids again each frame,
      * so the renderer compares the URI string (not the id) to detect a
      * same-id-different-URI change across frames (W9). The pointer names the
-     * links table of the buffer being drawn and is valid only during one
-     * timui_render_diff(), which closes every link it opens. */
+     * link storage of the buffer being drawn and is valid only during one
+     * paint, which closes every link it opens. */
     const char *last_link_uri;           /* URI of the currently-open OSC 8 link */
     int have_last_link;                  /* 1 = a link is currently open */
 } TimuiRenderer;
 
 TIMUI_API void timui_renderer_reset(TimuiRenderer *r);
+/* The URI of link @id in @buf, or NULL. */
+TIMUI_API const char *timui_hyperlink_uri(const TimuiCellBuffer *buf, uint32_t id);
+/* Release what a link table holds. */
+TIMUI_API void timui_link_table_free(TimuiLinkTable *t, const TimuiAllocator *alloc);
+/* Free every id that no cell of @drawn uses. */
+TIMUI_API void timui_link_table_sweep(TimuiLinkTable *t, const TimuiCellBuffer *drawn);
 /* Diff prev vs curr and emit the minimal terminal update (CUP + truecolor SGR
  * + glyph) through t; unchanged cells produce no output. */
 TIMUI_API void timui_render_diff(TimuiTransport *t, const TimuiCellBuffer *prev,

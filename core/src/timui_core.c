@@ -297,6 +297,7 @@ static TimuiResult timui_setup(Timui *ui, int w, int h){
     if(r != TIMUI_OK) return r;
     r = timui_cells_init(&ui->prev, w, h, &ui->alloc);
     if(r != TIMUI_OK){ timui_cells_destroy(&ui->curr); return r; }
+    ui->curr.shared = ui->prev.shared = &ui->links;
     ui->have_buffers = 1;
     timui_renderer_reset(&ui->renderer);
     timui_input_init(&ui->input);
@@ -607,6 +608,7 @@ TIMUI_API void timui_close(Timui *ui){
     timui_remove_sig_handlers(ui);    /* W6: stop intercepting after the terminal is restored */
     if(ui->termios_active) timui_termios_destroy(&ui->termios);
     if(ui->have_buffers){ timui_cells_destroy(&ui->curr); timui_cells_destroy(&ui->prev); }
+    timui_link_table_free(&ui->links, &ui->alloc);
     if(ui->have_postq) timui_mpsc_destroy(&ui->postq);
     timui_interact_destroy(&ui->ia);   /* V24: free the dynamic tab_order */
     if(ui->have_ids) timui_id_stack_destroy(&ui->ids);
@@ -1042,6 +1044,7 @@ TIMUI_API void timui_end(TimuiFrame *frame){
         if(ui->transport.flush) ui->transport.flush(&ui->transport);
         ui->inline_dirty = 0;
         tmp = ui->prev; ui->prev = ui->curr; ui->curr = tmp;
+        timui_link_table_sweep(&ui->links, &ui->prev);
         return;
     }
     if(sync) timui_sync_begin(&ui->transport);
@@ -1075,6 +1078,8 @@ TIMUI_API void timui_end(TimuiFrame *frame){
     if(sync) timui_sync_end(&ui->transport);
     if(ui->transport.flush) ui->transport.flush(&ui->transport);   /* commit the frame */
     tmp = ui->prev; ui->prev = ui->curr; ui->curr = tmp;   /* swap for next diff */
+    /* The frame just drawn is the only one a free id could be compared to. */
+    timui_link_table_sweep(&ui->links, &ui->prev);
 }
 TIMUI_API TimuiRect timui_root(const TimuiFrame *frame){
     TimuiRect z = {0, 0, 0, 0};
@@ -1105,6 +1110,7 @@ TIMUI_API TimuiResult timui_ui_resize(Timui *ui, int w, int h){
     timui_cells_destroy(&ui->curr);
     ui->prev = next_prev;
     ui->curr = next_curr;
+    ui->curr.shared = ui->prev.shared = &ui->links;
     ui->have_buffers = 1;
     ui->w = w;
     ui->h = h;
@@ -1290,9 +1296,7 @@ TIMUI_API const char *timui_hyperlink_at(const TimuiFrame *f, int x, int y){
     if(!f || !f->ui) return NULL;
     ui = f->ui;
     c = timui_cells_get(&ui->curr, x, y);
-    if(c && c->hyperlink_id > 0 && (int)c->hyperlink_id <= ui->curr.link_count)
-        return ui->curr.links[c->hyperlink_id - 1].uri;
-    return NULL;
+    return c ? timui_hyperlink_uri(&ui->curr, c->hyperlink_id) : NULL;
 }
 TIMUI_API int timui_key_pressed(TimuiFrame *f, TimuiKey key){
     return (f && f->ui && f->ui->key_pressed == key);
