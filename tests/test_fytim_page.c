@@ -557,7 +557,7 @@ static void test_copy_needs_the_clipboard(void)
     if(!h_open_alt(&h, true)){ CHECK(0); return; }
     CHECK(fytim_copy(h.ft, "hello", 5) == FYTIM_OK);
     n = h_out(&h, buf, sizeof buf);
-    CHECK(contains(buf, n, "\x1b]52;c;aGVsbG8=\x1b\\"));
+    CHECK(contains(buf, n, "\x1b]52;c;!\x1b\\\x1b]52;c;aGVsbG8=\x1b\\"));
     CHECK(fytim_copy(h.ft, NULL, 0) == FYTIM_ERR_INVALID);
     CHECK(fytim_copy(h.ft, "", 0) == FYTIM_ERR_INVALID);
     CHECK(fytim_copy(NULL, "x", 1) == FYTIM_ERR_INVALID);
@@ -626,7 +626,13 @@ static void test_copy_is_written_whole_under_backpressure(void)
         (void)poll(&pfd, 1, 1000);
     }
     CHECK(done && WIFEXITED(status) && WEXITSTATUS(status) == 0);
-    osc = find_bytes(seen, len, "\x1b]52;c;", 7);
+    /* A clear goes first, so that a terminal that joins OSC 52 writes
+     * starts a new clipboard; the text follows it. */
+    osc = find_bytes(seen, len, "\x1b]52;c;!\x1b\\", 10);
+    CHECK(osc != NULL);
+    if(osc)
+        osc = find_bytes(osc + 10, len - (size_t)(osc + 10 - seen),
+                         "\x1b]52;c;", 7);
     CHECK(osc != NULL);
     if(osc){
         st = find_bytes(osc, len - (size_t)(osc - seen), "\x1b\\", 2);

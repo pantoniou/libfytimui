@@ -169,7 +169,9 @@ foreach(t open_reports_its_size put_row_paints put_row_after_a_frame_paints
           chrome_survives_a_short_region
           rejects_bad_geometry
           put_row_clips_to_width cursor_is_bounded null_safety
-          destroy_with_open_surface)
+          destroy_with_open_surface links_table draw_text_links_cells
+          frame_writes_links commit_keeps_links
+          inline_follows_a_changed_link alt_follows_a_changed_link)
     add_test(NAME fytim.surface.${t} COMMAND test_fytim_surface ${t})
 endforeach()
 
@@ -558,7 +560,9 @@ foreach(t plain_text bold_run combined_params truecolor indexed_color
           style_persists_across_feeds escape_split_across_feeds
           disallowed_sequences_flagged osc8_hyperlink_allowed
           osc8_long_url_allowed
-          other_osc_still_disallowed malformed_input_safe
+          other_osc_still_disallowed osc8_link_kept
+          osc8_link_split_and_reset osc8_link_long
+          osc8_link_malformed_and_opt_in malformed_input_safe
           overlong_escape_safe null_and_empty_safe
           style_emit_roundtrip style_emit_default_and_tiny
           runs_never_split_utf8)

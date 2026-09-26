@@ -6,6 +6,7 @@
 #include "fytim_sgr.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures;
@@ -21,6 +22,9 @@ static int failures;
 struct capture {
     char text[MAX_RUNS][256];
     struct fytim_sgr_style style[MAX_RUNS];
+    /* The link of each run, copied: the parser reuses its storage. */
+    char link[MAX_RUNS][128];
+    size_t link_len[MAX_RUNS];      /* 0 for a run outside a link */
     int n;
 };
 
@@ -33,6 +37,12 @@ static bool cap_run(void *user, const char *text, size_t len,
     memcpy(c->text[c->n], text, len);
     c->text[c->n][len] = '\0';
     c->style[c->n] = *style;
+    c->link[c->n][0] = '\0';
+    c->link_len[c->n] = 0;
+    if(style->link){
+        c->link_len[c->n] = strlen(style->link);
+        snprintf(c->link[c->n], sizeof c->link[0], "%s", style->link);
+    }
     ++c->n;
     return true;
 }
@@ -216,6 +226,102 @@ static void test_osc8_long_url_allowed(void)
     CHECK(strcmp(c.text[0], "sign in") == 0);
 }
 
+/* A parser that keeps links gives each run the URI of its link. */
+static void test_osc8_link_kept(void)
+{
+    struct capture c = {0};
+    struct fytim_sgr_parser p;
+
+    fytim_sgr_init(&p);
+    p.keep_links = true;
+    feed(&c, &p, "a\x1b]8;;https://x.y/1\x1b\\b\x1b]8;id=7;https://x.y/2\a"
+                 "c\x1b]8;;\x1b\\d");
+    CHECK(!p.disallowed_seen);
+    CHECK(c.n == 4);
+    CHECK(c.link_len[0] == 0);
+    CHECK(strcmp(c.link[1], "https://x.y/1") == 0);
+    CHECK(strcmp(c.link[2], "https://x.y/2") == 0);
+    CHECK(c.link_len[3] == 0);
+    fytim_sgr_fini(&p);
+}
+
+/* The link survives a payload split at any byte, and an SGR reset: a link is
+ * not a style attribute. */
+static void test_osc8_link_split_and_reset(void)
+{
+    static const char s[] = "\x1b]8;;https://q.r/s\x1b\\x\x1b[0my\x1b]8;;\x1b\\z";
+    struct capture c = {0};
+    struct fytim_sgr_parser p;
+    size_t i;
+
+    fytim_sgr_init(&p);
+    p.keep_links = true;
+    for(i = 0; i < sizeof s - 1; i++)
+        fytim_sgr_feed(&p, s + i, 1, cap_run, &c);
+    CHECK(!p.disallowed_seen);
+    CHECK(c.n == 3);
+    CHECK(strcmp(c.text[0], "x") == 0 &&
+          strcmp(c.link[0], "https://q.r/s") == 0);
+    CHECK(strcmp(c.text[1], "y") == 0 &&
+          strcmp(c.link[1], "https://q.r/s") == 0);
+    CHECK(strcmp(c.text[2], "z") == 0 && c.link_len[2] == 0);
+    fytim_sgr_fini(&p);
+}
+
+/* A long URI is kept whole; one past the bound leaves its text unlinked
+ * rather than linked to a cut URI. */
+static void test_osc8_link_long(void)
+{
+    static const size_t lens[] = { 4000, FYTIM_SGR_LINK_MAX + 1 };
+    struct capture c = {0};
+    struct fytim_sgr_parser p;
+    size_t n, len, k;
+    char *s;
+
+    for(k = 0; k < sizeof lens / sizeof lens[0]; k++){
+        len = lens[k];
+        s = malloc(len + 32);
+        CHECK(s != NULL);
+        if(!s) return;
+        memcpy(s, "\x1b]8;;", 5);
+        memset(s + 5, 'u', len);
+        memcpy(s + 5 + len, "\x1b\\t", 3);
+        n = 5 + len + 3;
+        fytim_sgr_init(&p);
+        p.keep_links = true;
+        c.n = 0;
+        fytim_sgr_feed(&p, s, n, cap_run, &c);
+        CHECK(!p.disallowed_seen);
+        CHECK(c.n == 1 && strcmp(c.text[0], "t") == 0);
+        if(len <= FYTIM_SGR_LINK_MAX)
+            CHECK(c.link_len[0] == len);
+        else
+            CHECK(c.link_len[0] == 0);
+        fytim_sgr_fini(&p);
+        free(s);
+    }
+}
+
+/* A malformed link payload links nothing, and a parser that did not ask for
+ * links allocates nothing. */
+static void test_osc8_link_malformed_and_opt_in(void)
+{
+    struct capture c = {0};
+    struct fytim_sgr_parser p;
+
+    fytim_sgr_init(&p);
+    p.keep_links = true;
+    feed(&c, &p, "\x1b]8;https://no.params\a" "a");
+    CHECK(c.n == 1 && c.link_len[0] == 0);
+    fytim_sgr_fini(&p);
+
+    fytim_sgr_init(&p);
+    c.n = 0;
+    feed(&c, &p, "\x1b]8;;https://x.y\x1b\\a");
+    CHECK(c.n == 1 && c.link_len[0] == 0);
+    CHECK(p.osc_buf == NULL && p.link == NULL);
+}
+
 /* Every OTHER OSC stays disallowed: titles, clipboard, palette. */
 static void test_other_osc_still_disallowed(void)
 {
@@ -362,6 +468,10 @@ int main(int argc, char **argv)
         { "osc8_hyperlink_allowed", test_osc8_hyperlink_allowed },
         { "osc8_long_url_allowed", test_osc8_long_url_allowed },
         { "other_osc_still_disallowed", test_other_osc_still_disallowed },
+        { "osc8_link_kept", test_osc8_link_kept },
+        { "osc8_link_split_and_reset", test_osc8_link_split_and_reset },
+        { "osc8_link_long", test_osc8_link_long },
+        { "osc8_link_malformed_and_opt_in", test_osc8_link_malformed_and_opt_in },
         { "malformed_input_safe", test_malformed_input_safe },
         { "overlong_escape_safe", test_overlong_escape_safe },
         { "null_and_empty_safe", test_null_and_empty_safe },

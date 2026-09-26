@@ -31,7 +31,7 @@ struct harness {
     int out[2];
 };
 
-static int h_open(struct harness *h)
+static int h_open_screen(struct harness *h, bool alt)
 {
     struct fytim_cfg cfg;
     memset(h, 0, sizeof *h);
@@ -41,8 +41,14 @@ static int h_open(struct harness *h)
     fytim_cfg_default(&cfg);
     cfg.input_fd  = h->in[0];
     cfg.output_fd = h->out[1];
+    if(alt) cfg.screen = FYTIM_SCREEN_ALT;
     h->ft = fytim_create(&cfg);
     return h->ft != NULL;
+}
+
+static int h_open(struct harness *h)
+{
+    return h_open_screen(h, false);
 }
 
 static void h_close(struct harness *h)
@@ -536,6 +542,171 @@ static void test_destroy_with_open_surface(void)
     CHECK(1);
 }
 
+/* A table holds each URI once, whole, and refuses what it cannot write back. */
+static void test_links_table(void)
+{
+    struct fytim_links *l = fytim_links_create();
+    uint32_t a, b;
+
+    CHECK(l != NULL);
+    if(!l) return;
+    a = fytim_links_add(l, "https://a.example/");
+    b = fytim_links_add(l, "https://b.example/");
+    CHECK(a != 0 && b != 0 && a != b);
+    CHECK(fytim_links_add(l, "https://a.example/") == a);
+    CHECK(fytim_links_count(l) == 2);
+    CHECK(strcmp(fytim_links_uri(l, b), "https://b.example/") == 0);
+    CHECK(fytim_links_uri(l, 0) == NULL && fytim_links_uri(l, 3) == NULL);
+    CHECK(fytim_links_add(l, "") == 0 && fytim_links_add(l, NULL) == 0);
+    CHECK(fytim_links_add(l, "https://x\x1b\\y") == 0);
+    CHECK(fytim_links_add(l, "https://x\ay") == 0);
+    fytim_links_clear(l);
+    CHECK(fytim_links_count(l) == 0 && fytim_links_uri(l, a) == NULL);
+    fytim_links_destroy(l);
+    fytim_links_destroy(NULL);
+}
+
+/* Text drawn with a table links the cells of each link and no others. */
+static void test_draw_text_links_cells(void)
+{
+    static const char text[] =
+        "a\x1b]8;;https://x.example/\x1b\\bc\x1b]8;;\x1b\\d";
+    struct fytim_cell grid[8];
+    struct fytim_links *l = fytim_links_create();
+    uint32_t id;
+
+    memset(grid, 0, sizeof grid);
+    CHECK(fytim_cells_draw_text_links(grid, 1, 8, 0, 0, 8, 1, text,
+                                      sizeof text - 1, l) == 1);
+    id = grid[1].link;
+    CHECK(grid[0].chars[0] == 'a' && grid[0].link == 0);
+    CHECK(grid[1].chars[0] == 'b' && id != 0 && grid[2].link == id);
+    CHECK(grid[3].chars[0] == 'd' && grid[3].link == 0);
+    CHECK(strcmp(fytim_links_uri(l, id), "https://x.example/") == 0);
+
+    /* Without a table the same text links nothing. */
+    memset(grid, 0, sizeof grid);
+    CHECK(fytim_cells_draw_text(grid, 1, 8, 0, 0, 8, 1, text,
+                                sizeof text - 1) == 1);
+    CHECK(grid[1].chars[0] == 'b' && grid[1].link == 0);
+    fytim_links_destroy(l);
+}
+
+/* A URI far past 256 bytes, drawn into a surface. */
+static char *long_uri(void)
+{
+    static const char head[] = "https://auth.example.com/authorize?q=";
+    char *u = malloc(sizeof head + 2000);
+    size_t i;
+
+    if(!u) return NULL;
+    memcpy(u, head, sizeof head - 1);
+    for(i = 0; i < 2000; i++) u[sizeof head - 1 + i] = 'a' + (char)(i % 26);
+    u[sizeof head - 1 + 2000] = '\0';
+    return u;
+}
+
+static void surface_draw_link(struct fytim_surface *s, const char *uri)
+{
+    struct fytim_cell grid[12];
+    char text[4096];
+    int n;
+
+    memset(grid, 0, sizeof grid);
+    n = snprintf(text, sizeof text, "go \x1b]8;;%s\x1b\\here\x1b]8;;\x1b\\", uri);
+    CHECK(n > 0 && (size_t)n < sizeof text);
+    CHECK(fytim_cells_draw_text_links(grid, 1, 12, 0, 0, 12, 1, text,
+                                      (size_t)n, fytim_surface_links(s)) == 1);
+    CHECK(fytim_surface_put_row(s, 0, grid, 12) == FYTIM_OK);
+}
+
+/* A linked cell reaches the terminal inside an OSC 8 link, with its URI
+ * whole. */
+static void test_frame_writes_links(void)
+{
+    struct harness h;
+    struct fytim_surface *s;
+    char open_seq[4096], buf[16384];
+    char *uri = long_uri();
+    size_t n;
+
+    if(!uri || !h_open(&h)){ CHECK(0); free(uri); return; }
+    s = fytim_surface_open(h.ft, 1, 12);
+    surface_draw_link(s, uri);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    snprintf(open_seq, sizeof open_seq, "\x1b]8;;%s\x1b\\", uri);
+    CHECK(contains(buf, n, open_seq));
+    CHECK(contains(buf, n, "\x1b]8;;\x1b\\"));
+    fytim_surface_close(s);
+    h_close(&h);
+    free(uri);
+}
+
+/*
+ * The same text drawn again with another URI is drawn again: the link is part
+ * of what a cell shows. Both screens diff frames, and both must see it.
+ */
+static void frame_follows_a_changed_link(bool alt)
+{
+    struct harness h;
+    struct fytim_surface *s;
+    char buf[16384];
+    size_t n;
+
+    if(!h_open_screen(&h, alt)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 1, 12);
+    surface_draw_link(s, "https://one.example/");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "\x1b]8;;https://one.example/\x1b\\"));
+    CHECK(fytim_surface_clear(s) == FYTIM_OK);
+    surface_draw_link(s, "https://two.example/");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    CHECK(contains(buf, n, "\x1b]8;;https://two.example/\x1b\\"));
+    CHECK(!contains(buf, n, "https://one.example/"));
+    fytim_surface_close(s);
+    h_close(&h);
+}
+
+static void test_inline_follows_a_changed_link(void)
+{
+    frame_follows_a_changed_link(false);
+}
+
+static void test_alt_follows_a_changed_link(void)
+{
+    frame_follows_a_changed_link(true);
+}
+
+/* A committed surface keeps its links in the transcript, and a cleared one
+ * forgets them. */
+static void test_commit_keeps_links(void)
+{
+    struct harness h;
+    struct fytim_surface *s;
+    char open_seq[4096], buf[16384];
+    char *uri = long_uri();
+    size_t n;
+
+    if(!uri || !h_open(&h)){ CHECK(0); free(uri); return; }
+    s = fytim_surface_open(h.ft, 1, 12);
+    surface_draw_link(s, uri);
+    CHECK(fytim_surface_clear(s) == FYTIM_OK);
+    CHECK(fytim_links_count(fytim_surface_links(s)) == 0);
+    surface_draw_link(s, uri);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    (void)h_out(&h, buf, sizeof buf);
+    CHECK(fytim_surface_commit(s) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    n = h_out(&h, buf, sizeof buf);
+    snprintf(open_seq, sizeof open_seq, "\x1b]8;;%s\x1b\\here", uri);
+    CHECK(contains(buf, n, open_seq));
+    h_close(&h);
+    free(uri);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "open_reports_its_size",       test_open_reports_its_size },
@@ -558,6 +729,12 @@ static const struct case_ent cases[] = {
     { "cursor_is_bounded",           test_cursor_is_bounded },
     { "null_safety",                 test_null_safety },
     { "destroy_with_open_surface",   test_destroy_with_open_surface },
+    { "links_table",                 test_links_table },
+    { "draw_text_links_cells",       test_draw_text_links_cells },
+    { "frame_writes_links",          test_frame_writes_links },
+    { "commit_keeps_links",          test_commit_keeps_links },
+    { "inline_follows_a_changed_link", test_inline_follows_a_changed_link },
+    { "alt_follows_a_changed_link",  test_alt_follows_a_changed_link },
 };
 
 int main(int argc, char **argv)

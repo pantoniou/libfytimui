@@ -200,8 +200,7 @@ TIMUI_TEST(test_label_hyperlink_wrapper){
     buf = timui_frame_buffer(f);
     cell = timui_cells_get(buf, 1, 0);
     TIMUI_CHECK(cell && cell->codepoint == 'g' && cell->hyperlink_id != 0);
-    TIMUI_CHECK(buf->link_count >= 1);
-    TIMUI_CHECK(strcmp(buf->links[cell->hyperlink_id - 1].uri, "https://x") == 0);
+    TIMUI_CHECK(strcmp(timui_hyperlink_uri(buf, cell->hyperlink_id), "https://x") == 0);
     timui_end(f);
 
     timui_begin(ui, &f);                              /* uri == NULL -> plain, no link */
@@ -289,14 +288,45 @@ TIMUI_TEST(test_hyperlink_set_edges){
     TIMUI_CHECK(timui_hyperlink_set(&b, NULL) == 0);
     for(i = 1; i <= 9; i++)                           /* grows past the initial cap of 8 */
         TIMUI_CHECK(timui_hyperlink_set(&b, "u") == (uint32_t)i);
-    {   /* a 299-char URI is stored NUL-terminated at 255 (uri[256]) */
-        char big[300];
+    {   /* a URI longer than any fixed field is stored whole */
+        char big[4096];
         uint32_t id;
         memset(big, 'a', sizeof big - 1); big[sizeof big - 1] = '\0';
         id = timui_hyperlink_set(&b, big);
-        TIMUI_CHECK(id != 0 && strlen(b.links[id - 1].uri) == 255);
+        TIMUI_CHECK(id != 0 && strcmp(b.links[id - 1].uri, big) == 0);
     }
     timui_cells_destroy(&b);
+
+    {   /* a shared table keeps one id per URI across buffers, and frees an id
+         * only when the drawn frame no longer uses it */
+        TimuiLinkTable lt;
+        TimuiCellBuffer p, q;
+        TimuiCell *c;
+        uint32_t a, bb, d;
+        memset(&lt, 0, sizeof lt);
+        timui_cells_init(&p, 4, 1, &def);
+        timui_cells_init(&q, 4, 1, &def);
+        p.shared = q.shared = &lt;
+        a = timui_hyperlink_set(&p, "https://a/");
+        bb = timui_hyperlink_set(&p, "https://b/");
+        TIMUI_CHECK(a && bb && a != bb);
+        TIMUI_CHECK(timui_hyperlink_set(&q, "https://a/") == a);
+        c = timui_cells_get(&p, 0, 0);
+        c->hyperlink_id = a;
+        timui_cells_clear(&p);
+        TIMUI_CHECK(timui_hyperlink_uri(&q, bb) != NULL);   /* clear keeps ids */
+        c = timui_cells_get(&p, 0, 0);
+        c->hyperlink_id = a;
+        timui_link_table_sweep(&lt, &p);
+        TIMUI_CHECK(strcmp(timui_hyperlink_uri(&q, a), "https://a/") == 0);
+        TIMUI_CHECK(timui_hyperlink_uri(&q, bb) == NULL);   /* unused: freed */
+        d = timui_hyperlink_set(&q, "https://d/");
+        TIMUI_CHECK(d == bb);                               /* and reused */
+        TIMUI_CHECK(strcmp(timui_hyperlink_uri(&p, d), "https://d/") == 0);
+        timui_cells_destroy(&p);
+        timui_cells_destroy(&q);
+        timui_link_table_free(&lt, &def);
+    }
 
     {   /* grow-OOM: the 9th link's realloc fails -> id 0, count unchanged */
         CountAlloc ca = {0, 0, 0};
