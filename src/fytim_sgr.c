@@ -6,6 +6,7 @@
 #include "fytim_sgr.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define MAX_PARAMS 32
@@ -17,6 +18,16 @@ void fytim_sgr_init(struct fytim_sgr_parser *p)
     p->style.fg = FYTIM_COLOR_DEFAULT;
     p->style.bg = FYTIM_COLOR_DEFAULT;
     p->style.attrs = 0;
+}
+
+void fytim_sgr_fini(struct fytim_sgr_parser *p)
+{
+    if(!p) return;
+    free(p->osc_buf);
+    free(p->link);
+    p->osc_buf = p->link = NULL;
+    p->osc_len = p->osc_cap = p->link_cap = 0;
+    p->style.link = NULL;
 }
 
 /* Apply one SGR sequence's parameters. Colour parameters consume following
@@ -134,6 +145,70 @@ static void handle_csi(struct fytim_sgr_parser *p, const char *body, size_t len,
  * clipboard, palette - is not. An OSC payload is unbounded (a hyperlink carries
  * a URL), which is why this is state rather than a carried buffer.
  */
+/* Keep one byte of an OSC 8 payload for a parser that keeps links. */
+static void osc_keep(struct fytim_sgr_parser *p, char ch)
+{
+    size_t cap;
+    char *nb;
+
+    if(!p->keep_links || !p->osc_is_link || p->osc_overflow) return;
+    /* "8;" and the parameters come before the URI. */
+    if(p->osc_len >= FYTIM_SGR_LINK_MAX + 256){
+        p->osc_overflow = true;
+        return;
+    }
+    if(p->osc_len + 2 > p->osc_cap){
+        cap = p->osc_cap ? p->osc_cap * 2 : 128;
+        nb = realloc(p->osc_buf, cap);
+        if(!nb){
+            p->osc_overflow = true;
+            return;
+        }
+        p->osc_buf = nb;
+        p->osc_cap = cap;
+    }
+    p->osc_buf[p->osc_len++] = ch;
+}
+
+/*
+ * An OSC 8 ended: "8;params;URI" opens a link to URI, an empty URI closes it.
+ * A payload the parser could not keep, or a malformed one, closes the link:
+ * text is never linked to a URI other than the one it was given.
+ */
+static void osc_link_end(struct fytim_sgr_parser *p)
+{
+    const char *uri;
+    size_t n, cap;
+    char *nb;
+
+    if(!p->keep_links) return;
+    p->style.link = NULL;
+    if(p->osc_overflow || !p->osc_buf || p->osc_len < 2) return;
+    p->osc_buf[p->osc_len] = '\0';
+    uri = memchr(p->osc_buf + 2, ';', p->osc_len - 2);
+    if(!uri) return;
+    uri++;
+    n = strlen(uri);
+    if(!n || n > FYTIM_SGR_LINK_MAX) return;
+    if(n + 1 > p->link_cap){
+        cap = n + 1 < 128 ? 128 : n + 1;
+        nb = realloc(p->link, cap);
+        if(!nb) return;
+        p->link = nb;
+        p->link_cap = cap;
+    }
+    memcpy(p->link, uri, n + 1);
+    p->style.link = p->link;
+}
+
+/* An OSC ended at its terminator. */
+static void osc_end(struct fytim_sgr_parser *p)
+{
+    if(!p->osc_is_link) p->disallowed_seen = true;
+    else osc_link_end(p);
+    p->in_osc = false;
+}
+
 static size_t consume_osc_tail(struct fytim_sgr_parser *p, const char *buf,
                                size_t len)
 {
@@ -143,11 +218,11 @@ static size_t consume_osc_tail(struct fytim_sgr_parser *p, const char *buf,
         if(p->osc_saw_esc){
             p->osc_saw_esc = false;
             if(buf[i] == '\\'){                     /* ST: ESC backslash */
-                if(!p->osc_is_link) p->disallowed_seen = true;
-                p->in_osc = false;
+                osc_end(p);
                 return i + 1;
             }
             /* not an ST after all; the ESC was payload, keep scanning */
+            osc_keep(p, '\x1b');
         }
         if(p->osc_seen < 2){
             /* The two bytes after "ESC ]" decide whether this is OSC 8. */
@@ -156,12 +231,14 @@ static size_t consume_osc_tail(struct fytim_sgr_parser *p, const char *buf,
             p->osc_seen++;
         }
         if(buf[i] == '\a'){
-            if(!p->osc_is_link) p->disallowed_seen = true;
-            p->in_osc = false;
+            osc_end(p);
             return i + 1;
         }
-        if(buf[i] == '\x1b')
+        if(buf[i] == '\x1b'){
             p->osc_saw_esc = true;
+            continue;
+        }
+        osc_keep(p, buf[i]);
     }
     return len;                                   /* still inside the OSC */
 }
@@ -184,6 +261,8 @@ static size_t consume_escape(struct fytim_sgr_parser *p, const char *buf, size_t
             p->osc_is_link = true;      /* until a byte says otherwise */
             p->osc_saw_esc = false;
             p->osc_seen = 0;
+            p->osc_len = 0;
+            p->osc_overflow = false;
             return 2 + consume_osc_tail(p, buf + 2, len - 2);
         }
         p->disallowed_seen = true;

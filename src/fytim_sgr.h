@@ -22,10 +22,18 @@
  * and content given as cells must mean the same thing by them. */
 #include <libfytimui/libfytimui-style.h>
 
+/* The longest OSC 8 URI a parser keeps. A longer link leaves its text
+ * unlinked: a cut URI names another resource. */
+#define FYTIM_SGR_LINK_MAX (64u * 1024u)
+
 struct fytim_sgr_style {
     uint32_t fg;
     uint32_t bg;
     uint32_t attrs;
+    /* The URI of the open OSC 8 link, or NULL. Set only by a parser with
+     * keep_links; it names the storage of that parser and is valid until the
+     * next feed or fytim_sgr_fini(). */
+    const char *link;
 };
 
 /* Called for each run of plain text sharing one style. text is not NUL
@@ -51,9 +59,22 @@ struct fytim_sgr_parser {
     bool   osc_is_link;
     bool   osc_saw_esc;      /* the ESC of a possible ST split across feeds */
     unsigned osc_seen;       /* bytes seen, to classify OSC 8 across a split */
+    /*
+     * Set by the caller after fytim_sgr_init() to receive OSC 8 links in the
+     * style of each run. Such a parser allocates, and its owner must call
+     * fytim_sgr_fini(). Without it the parser allocates nothing.
+     */
+    bool   keep_links;
+    bool   osc_overflow;     /* the payload passed FYTIM_SGR_LINK_MAX */
+    char  *osc_buf;          /* the OSC 8 payload being read */
+    size_t osc_len, osc_cap;
+    char  *link;             /* the URI of the open link */
+    size_t link_cap;
 };
 
 void fytim_sgr_init(struct fytim_sgr_parser *p);
+/* Release what a parser with keep_links allocated. Safe on any parser. */
+void fytim_sgr_fini(struct fytim_sgr_parser *p);
 
 /* Feed bytes; runs are delivered via cb. Safe across arbitrary chunk
  * boundaries, including an escape sequence split mid-way. */
