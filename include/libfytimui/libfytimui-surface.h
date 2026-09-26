@@ -24,6 +24,7 @@
 
 struct fytim;
 struct fytim_surface;   /* opaque; owned by the fytim it was opened on */
+struct fytim_links;     /* opaque; the URIs that cells link to */
 
 /* A base character and the characters that combine with it. */
 #define FYTIM_CELL_CHARS 6
@@ -39,7 +40,28 @@ struct fytim_cell {
     uint32_t bg;
     uint32_t attrs;         /* FYTIM_ATTR_* */
     unsigned char width;    /* 0 and 1 are one cell wide, 2 is a wide glyph */
+    /* 0, or the id of the URI the cell links to. The ids of the cells of a
+     * surface name fytim_surface_links() of that surface. */
+    uint32_t link;
 };
+
+/*
+ * A table of URIs that cells link to, by id. An id is not 0, and it stays
+ * valid until fytim_links_clear() or fytim_links_destroy(). A URI is stored
+ * whole, however long it is.
+ */
+struct fytim_links *fytim_links_create(void) FYTIM_EXPORT;
+void fytim_links_destroy(struct fytim_links *l) FYTIM_EXPORT;
+/* Forget every URI: a host that draws its whole grid again clears first. */
+void fytim_links_clear(struct fytim_links *l) FYTIM_EXPORT;
+/* The id of @uri, added when the table does not hold it; 0 when it cannot be
+ * added or @uri is NULL or empty. */
+uint32_t fytim_links_add(struct fytim_links *l, const char *uri) FYTIM_EXPORT;
+/* The URI of @id, or NULL for an id the table does not hold. */
+const char *fytim_links_uri(const struct fytim_links *l, uint32_t id)
+    FYTIM_EXPORT;
+/* The number of URIs the table holds; the ids are 1 to this number. */
+uint32_t fytim_links_count(const struct fytim_links *l) FYTIM_EXPORT;
 
 /*
  * Open a surface of @rows by @cols. The size is what the host draws into and
@@ -106,6 +128,17 @@ int fytim_cells_draw_text(struct fytim_cell *grid, int grid_rows,
     FYTIM_EXPORT;
 
 /*
+ * As fytim_cells_draw_text, and a cell drawn inside an OSC 8 link links to its
+ * URI: the URI is added to @links and the cell takes its id. A cell outside a
+ * link takes 0. With @links NULL no cell is linked, as fytim_cells_draw_text
+ * draws. The text of a link whose URI cannot be kept is drawn unlinked.
+ */
+int fytim_cells_draw_text_links(struct fytim_cell *grid, int grid_rows,
+                                int grid_cols, int row, int col, int width,
+                                int height, const char *text, size_t len,
+                                struct fytim_links *links) FYTIM_EXPORT;
+
+/*
  * Put the cells of a box of @grid on the ground @bg, as the library puts the
  * chrome of a tile on the ground fytim_surface_set_bg gave it: the box starts
  * at (@row, @col) and is cut at @width columns, @height rows and the grid. A
@@ -131,8 +164,15 @@ int fytim_cells_wash(struct fytim_cell *grid, int grid_rows, int grid_cols,
                      int row, int col, int width, int height, uint32_t bg,
                      int mix, bool truecolor) FYTIM_EXPORT;
 
-/* Blank the whole grid. */
+/* Blank the whole grid, and forget the URIs its cells linked to. */
 enum fytim_result fytim_surface_clear(struct fytim_surface *s) FYTIM_EXPORT;
+
+/*
+ * The URIs the cells of @s link to. The surface owns the table; a host draws
+ * the cells it puts on @s with it, and the library writes each linked cell as
+ * an OSC 8 link. NULL when the table cannot be made.
+ */
+struct fytim_links *fytim_surface_links(struct fytim_surface *s) FYTIM_EXPORT;
 
 /*
  * Where the program left its cursor. The library draws it as a reverse-video

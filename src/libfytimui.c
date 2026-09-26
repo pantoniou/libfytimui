@@ -82,6 +82,7 @@ struct fytim_surface {
     struct fytim_workband *wb;
     struct fytim          *owner;
     struct fytim_cell     *grid;   /* rows * cols, row-major */
+    struct fytim_links    *links;  /* the URIs of the grid, made on demand */
     char *margin;                  /* chrome at the left of every row */
     uint32_t wash;                 /* ground under the program, or DEFAULT */
     int wash_mix;                  /* percent of the wash mixed into a colour */
@@ -435,6 +436,7 @@ static void sf_free(struct fytim_surface *sf)
     if(!sf) return;
     if(sf->owner->keys == sf) sf->owner->keys = NULL;
     free(sf->grid);
+    fytim_links_destroy(sf->links);
     free(sf->margin);
     surface_page_free(sf);
     free(sf);
@@ -1288,9 +1290,87 @@ enum fytim_result fytim_surface_put_row(struct fytim_surface *sf, int row,
     return FYTIM_OK;
 }
 
+/* ---- links ------------------------------------------------------------- */
+
+struct fytim_links {
+    char **uri;                     /* id - 1 -> URI, owned */
+    uint32_t count, cap;
+};
+
+struct fytim_links *fytim_links_create(void)
+{
+    return calloc(1, sizeof(struct fytim_links));
+}
+
+void fytim_links_clear(struct fytim_links *l)
+{
+    uint32_t i;
+
+    if(!l) return;
+    for(i = 0; i < l->count; i++) free(l->uri[i]);
+    l->count = 0;
+}
+
+void fytim_links_destroy(struct fytim_links *l)
+{
+    if(!l) return;
+    fytim_links_clear(l);
+    free(l->uri);
+    free(l);
+}
+
+uint32_t fytim_links_add(struct fytim_links *l, const char *uri)
+{
+    uint32_t i, cap;
+    char **nu, *s;
+    const unsigned char *p;
+
+    if(!l || !uri || !uri[0]) return 0;
+    /* A URI is written back inside an OSC: a control byte would end it. */
+    for(p = (const unsigned char *)uri; *p; p++)
+        if(*p < 0x20 || *p == 0x7f) return 0;
+    /* A document links a few URIs, often the one just added again. */
+    for(i = l->count; i > 0; i--)
+        if(!strcmp(l->uri[i - 1], uri)) return i;
+    if(l->count == UINT32_MAX) return 0;
+    if(l->count == l->cap){
+        cap = l->cap ? l->cap * 2 : 8;
+        if(cap < l->cap) return 0;
+        nu = realloc(l->uri, (size_t)cap * sizeof *nu);
+        if(!nu) return 0;
+        l->uri = nu;
+        l->cap = cap;
+    }
+    s = strdup(uri);
+    if(!s) return 0;
+    l->uri[l->count++] = s;
+    return l->count;
+}
+
+const char *fytim_links_uri(const struct fytim_links *l, uint32_t id)
+{
+    if(!l || !id || id > l->count) return NULL;
+    return l->uri[id - 1];
+}
+
+uint32_t fytim_links_count(const struct fytim_links *l)
+{
+    return l ? l->count : 0;
+}
+
+struct fytim_links *fytim_surface_links(struct fytim_surface *sf)
+{
+    if(!sf) return NULL;
+    if(!sf->links) sf->links = fytim_links_create();
+    return sf->links;
+}
+
 /* Where styled text is being drawn into a grid of cells. */
 struct cells_draw_ctx {
     struct fytim_cell *grid;
+    struct fytim_links *links;      /* NULL: no cell is linked */
+    uint32_t link;                  /* the id the cells of this run take */
+    const char *link_uri;           /* the URI of @link, in @links */
     int grid_cols;
     int origin_x, x, y;
     int max_x, max_y;               /* exclusive */
@@ -1301,7 +1381,8 @@ struct cells_draw_ctx {
 
 /* One cell of a grapheme: its codepoints in @s, the style of its run. */
 static void cells_put_(struct fytim_cell *c, const char *s, size_t n,
-                       const struct fytim_sgr_style *style, int width)
+                       const struct fytim_sgr_style *style, int width,
+                       uint32_t link)
 {
     uint32_t cp;
     size_t off = 0;
@@ -1318,6 +1399,7 @@ static void cells_put_(struct fytim_cell *c, const char *s, size_t n,
     c->bg = style->bg;
     c->attrs = style->attrs;
     c->width = (unsigned char)width;
+    c->link = link;
 }
 
 static bool cells_run_(void *user, const char *text, size_t len,
@@ -1328,6 +1410,15 @@ static bool cells_run_(void *user, const char *text, size_t len,
     size_t i, start = 0, off, nx;
     int gw, stop;
 
+    /* The style names the parser's copy of the URI, which the next link
+     * reuses: compare the text, and keep the table's copy. */
+    if(!ctx->links || !style->link){
+        ctx->link = 0;
+        ctx->link_uri = NULL;
+    }else if(!ctx->link_uri || strcmp(ctx->link_uri, style->link)){
+        ctx->link = fytim_links_add(ctx->links, style->link);
+        ctx->link_uri = fytim_links_uri(ctx->links, ctx->link);
+    }
     for(i = 0; i <= len; i++){
         if(i < len && text[i] != '\n') continue;
         for(off = start; off < i && ctx->y < ctx->max_y && !ctx->cut;
@@ -1348,7 +1439,7 @@ static bool cells_run_(void *user, const char *text, size_t len,
                 if(stop > ctx->max_x) stop = ctx->max_x;
                 for(; ctx->x < stop; ctx->x++)
                     cells_put_(&ctx->grid[ctx->y * ctx->grid_cols + ctx->x],
-                               "", 0, style, 1);
+                               "", 0, style, 1, ctx->link);
                 continue;
             }
             nx = timui_grapheme_next(text, i, off);
@@ -1363,16 +1454,16 @@ static bool cells_run_(void *user, const char *text, size_t len,
             if(ctx->x + gw > ctx->max_x){
                 if(ctx->max_x > ctx->origin_x){
                     c = &ctx->grid[ctx->y * ctx->grid_cols + ctx->max_x - 1];
-                    cells_put_(c, "\xe2\x80\xa6", 3, style, 1);
+                    cells_put_(c, "\xe2\x80\xa6", 3, style, 1, ctx->link);
                 }
                 ctx->cut = true;
                 break;
             }
             c = &ctx->grid[ctx->y * ctx->grid_cols + ctx->x];
-            cells_put_(c, text + off, nx - off, style, gw);
+            cells_put_(c, text + off, nx - off, style, gw, ctx->link);
             /* A double-width glyph owns the cell after it. */
             if(gw == 2)
-                cells_put_(c + 1, "", 0, style, 0);
+                cells_put_(c + 1, "", 0, style, 0, ctx->link);
             ctx->x += gw;
         }
         if(i < len){
@@ -1390,6 +1481,15 @@ int fytim_cells_draw_text(struct fytim_cell *grid, int grid_rows,
                           int grid_cols, int row, int col, int width,
                           int height, const char *text, size_t len)
 {
+    return fytim_cells_draw_text_links(grid, grid_rows, grid_cols, row, col,
+                                       width, height, text, len, NULL);
+}
+
+int fytim_cells_draw_text_links(struct fytim_cell *grid, int grid_rows,
+                                int grid_cols, int row, int col, int width,
+                                int height, const char *text, size_t len,
+                                struct fytim_links *links)
+{
     struct cells_draw_ctx ctx;
     struct fytim_sgr_parser sp;
     const char *el, *cur;
@@ -1405,12 +1505,14 @@ int fytim_cells_draw_text(struct fytim_cell *grid, int grid_rows,
 
     memset(&ctx, 0, sizeof ctx);
     ctx.grid = grid;
+    ctx.links = links;
     ctx.grid_cols = grid_cols;
     ctx.origin_x = ctx.x = col;
     ctx.y = row;
     ctx.max_x = width > grid_cols - col ? grid_cols : col + width;
     ctx.max_y = height > grid_rows - row ? grid_rows : row + height;
     fytim_sgr_init(&sp);
+    sp.keep_links = links != NULL;
     /*
      * A bare EL is the structural fill of a libfymd4c card row: the rest of
      * the row takes the active style, as a terminal fills it.
@@ -1430,11 +1532,12 @@ int fytim_cells_draw_text(struct fytim_cell *grid, int grid_rows,
             }
             for(; ctx.x < ctx.max_x; ctx.x++)
                 cells_put_(&ctx.grid[ctx.y * ctx.grid_cols + ctx.x], "", 0,
-                           &sp.style, 1);
+                           &sp.style, 1, 0);
         }
         cur = el + 3;
         left -= chunk + 3;
     }
+    fytim_sgr_fini(&sp);
     return ctx.rows;
 }
 
@@ -1524,6 +1627,7 @@ enum fytim_result fytim_surface_clear(struct fytim_surface *sf)
     if(!sf) return FYTIM_ERR_INVALID;
     memset(sf->grid, 0,
            (size_t)sf->rows * (size_t)sf->cols * sizeof *sf->grid);
+    fytim_links_clear(sf->links);
     return FYTIM_OK;
 }
 
@@ -1574,6 +1678,7 @@ static int surface_row_text(const struct fytim_surface *sf, int row,
     const struct fytim_cell *cell;
     char esc[64], utf8[4];
     bool have_prev = false;
+    const char *uri, *open_uri = NULL;
     int col, last, i;
     size_t n;
 
@@ -1588,6 +1693,15 @@ static int surface_row_text(const struct fytim_surface *sf, int row,
         st.fg = cell->fg;
         st.bg = cell->bg;
         st.attrs = cell->attrs;
+        st.link = NULL;
+        /* A linked cell stays a link in the transcript. */
+        uri = fytim_links_uri(sf->links, cell->link);
+        if(uri != open_uri){
+            if(rt_add(out, "\x1b]8;;", 5)) return -1;
+            if(uri && rt_add(out, uri, strlen(uri))) return -1;
+            if(rt_add(out, "\x1b\\", 2)) return -1;
+            open_uri = uri;
+        }
         if(!have_prev || st.fg != prev.fg || st.bg != prev.bg ||
            st.attrs != prev.attrs){
             n = fytim_sgr_style_emit(&st, esc, sizeof esc);
@@ -1605,6 +1719,7 @@ static int surface_row_text(const struct fytim_surface *sf, int row,
         }
         if(cell->width > 1) col++;
     }
+    if(open_uri && rt_add(out, "\x1b]8;;\x1b\\", 7)) return -1;
     if(have_prev && rt_add(out, "\x1b[0m", 4)) return -1;
     return 0;
 }
@@ -3115,10 +3230,17 @@ static void draw_surface(TimuiFrame *f, TimuiCellBuffer *buf,
     struct ground g = surface_ground_(sf);
     TimuiStyle st;
     TimuiStr str;
+    uint32_t *frame_link = NULL, nlinks, link;
+    const char *uri;
     int first, row, col, i;
     int margin_w;
     size_t len;
 
+    /* A surface link id maps to an id of this frame, made on first use. A
+     * frame that cannot map them draws the cells unlinked. */
+    nlinks = fytim_links_count(sf->links);
+    if(nlinks && nlinks < UINT32_MAX)
+        frame_link = calloc((size_t)nlinks + 1, sizeof *frame_link);
     first = sf->rows - rows;
     if(first < 0) first = 0;
 
@@ -3168,11 +3290,20 @@ static void draw_surface(TimuiFrame *f, TimuiCellBuffer *buf,
             }
             str.ptr = utf8;
             str.len = len;
-            timui_draw_text(buf, x + margin_w + col, y, str, st);
+            link = 0;
+            if(frame_link && cell->link && cell->link <= nlinks){
+                if(!frame_link[cell->link]){
+                    uri = fytim_links_uri(sf->links, cell->link);
+                    frame_link[cell->link] = timui_hyperlink_set(buf, uri);
+                }
+                link = frame_link[cell->link];
+            }
+            timui_draw_text_linked(buf, x + margin_w + col, y, str, st, link);
             /* A double-width glyph owns the cell after it. */
             if(cell->width > 1) col++;
         }
     }
+    free(frame_link);
 }
 
 /* Draw surface chrome beside the same margin as the program grid. */
