@@ -634,7 +634,9 @@ typedef struct {
     uint32_t image_id;    /* reserved for kitty-graphics cell placement (unused) */
 } TimuiCell;
 
-typedef struct { char uri[256]; } TimuiHyperlink;
+/* A hyperlink URI of any length. The buffer owns @uri and keeps its storage
+ * from frame to frame; @cap is the allocated size of @uri. */
+typedef struct { char *uri; size_t cap; } TimuiHyperlink;
 
 struct TimuiCellBuffer {
     TimuiCell    *cells;
@@ -646,6 +648,7 @@ struct TimuiCellBuffer {
     TimuiHyperlink *links;  /* per-frame hyperlink table (id = index + 1) */
     int           link_count;
     int           link_cap;
+    int           link_alloc;   /* entries of @links whose @uri is allocated */
 };
 TIMUI_API void timui_push_clip(TimuiFrame *f, TimuiRect rect);
 TIMUI_API void timui_pop_clip(TimuiFrame *f);
@@ -715,9 +718,11 @@ typedef struct {
     int last_fg, last_bg, last_attrs;   /* -1 = not yet emitted this run */
     int last_link;                      /* current OSC 8 hyperlink id, 0 = none */
     /* OSC 8 hyperlink ids are per-frame indices into each buffer's links table,
-     * so the renderer caches the last-emitted URI string (not the id) to detect
-     * a same-id-different-URI change across frames (W9). */
-    char last_link_uri[256];             /* URI of the currently-open OSC 8 link */
+     * so the renderer compares the URI string (not the id) to detect a
+     * same-id-different-URI change across frames (W9). The pointer names the
+     * links table of the buffer being drawn and is valid only during one
+     * timui_render_diff(), which closes every link it opens. */
+    const char *last_link_uri;           /* URI of the currently-open OSC 8 link */
     int have_last_link;                  /* 1 = a link is currently open */
 } TimuiRenderer;
 

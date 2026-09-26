@@ -14,6 +14,7 @@ TIMUI_API TimuiResult timui_cells_init(TimuiCellBuffer *buf, int w, int h, const
     buf->links = NULL;
     buf->link_count = 0;
     buf->link_cap = 0;
+    buf->link_alloc = 0;
     buf->cells = (TimuiCell *)alloc->alloc(alloc->userdata, n * sizeof(TimuiCell));
     if(!buf->cells){ buf->w = buf->h = 0; return TIMUI_ERR_OUT_OF_MEMORY; }
     timui_cells_clear(buf);
@@ -23,7 +24,14 @@ TIMUI_API void timui_cells_destroy(TimuiCellBuffer *buf){
     size_t n;
     if(!buf || !buf->cells) return;
     n = (size_t)buf->w * (size_t)buf->h;
-    if(buf->links){ buf->alloc.free(buf->alloc.userdata, buf->links, (size_t)buf->link_cap * sizeof(*buf->links)); buf->links = NULL; }
+    if(buf->links){
+        int i;
+        for(i = 0; i < buf->link_alloc; i++)
+            buf->alloc.free(buf->alloc.userdata, buf->links[i].uri, buf->links[i].cap);
+        buf->alloc.free(buf->alloc.userdata, buf->links, (size_t)buf->link_cap * sizeof(*buf->links));
+        buf->links = NULL;
+        buf->link_count = buf->link_cap = buf->link_alloc = 0;
+    }
     buf->alloc.free(buf->alloc.userdata, buf->cells, n * sizeof(TimuiCell));
     buf->cells = NULL;
     buf->w = buf->h = 0;
@@ -225,7 +233,9 @@ TIMUI_API void timui_draw_text(TimuiCellBuffer *buf, int x, int y, TimuiStr text
     timui_draw_text_linked(buf, x, y, text, st, 0);   /* Z7: unlinked == linked with id 0 */
 }
 TIMUI_API uint32_t timui_hyperlink_set(TimuiCellBuffer *buf, const char *uri){
-    size_t n;
+    TimuiHyperlink *l;
+    size_t n, cap;
+    char *s;
     if(!buf || !uri) return 0;
     if(buf->link_count >= buf->link_cap){
         int nc = buf->link_cap ? buf->link_cap * 2 : 8;
@@ -236,9 +246,23 @@ TIMUI_API uint32_t timui_hyperlink_set(TimuiCellBuffer *buf, const char *uri){
         buf->link_cap = nc;
     }
     n = strlen(uri);
-    if(n >= sizeof(buf->links[0].uri)) n = sizeof(buf->links[0].uri) - 1;
-    memcpy(buf->links[buf->link_count].uri, uri, n);
-    buf->links[buf->link_count].uri[n] = '\0';
+    if(n == SIZE_MAX) return 0;
+    l = &buf->links[buf->link_count];
+    if(buf->link_count == buf->link_alloc){
+        l->uri = NULL;
+        l->cap = 0;
+    }
+    /* A URI is stored whole: a cut one names another resource. */
+    if(l->cap < n + 1){
+        cap = n + 1 < 64 ? 64 : n + 1;
+        s = (char *)buf->alloc.realloc(buf->alloc.userdata, l->uri, l->cap, cap);
+        if(!s) return 0;
+        l->uri = s;
+        l->cap = cap;
+    }
+    if(buf->link_count == buf->link_alloc) buf->link_alloc++;
+    memcpy(l->uri, uri, n);
+    l->uri[n] = '\0';
     buf->link_count++;
     return (uint32_t)buf->link_count;   /* 1-based id */
 }
@@ -453,7 +477,7 @@ TIMUI_API void timui_renderer_reset(TimuiRenderer *r){
     r->last_fg = -1; r->last_bg = -1; r->last_attrs = -1;
     r->last_link = 0;
     r->have_last_link = 0;
-    r->last_link_uri[0] = '\0';
+    r->last_link_uri = NULL;
 }
 /* Resolve a cell's hyperlink id to its URI in the buffer (NULL if none / OOR).
  * ids are per-frame indices (cells_clear resets link_count each frame), so the
@@ -507,12 +531,7 @@ TIMUI_API void timui_render_diff(TimuiTransport *t, const TimuiCellBuffer *prev,
                     emit_osc8(t, curi);
                     r->last_link = (int)cc->hyperlink_id;
                     r->have_last_link = want;
-                    if(curi){
-                        size_t ul = strlen(curi);
-                        if(ul >= sizeof r->last_link_uri) ul = sizeof r->last_link_uri - 1;
-                        memcpy(r->last_link_uri, curi, ul);
-                        r->last_link_uri[ul] = '\0';
-                    }else r->last_link_uri[0] = '\0';
+                    r->last_link_uri = curi;
                 }
             }
             gn = timui_utf8_encode_(render_safe_cp(cc->codepoint), gb);
@@ -526,7 +545,7 @@ TIMUI_API void timui_render_diff(TimuiTransport *t, const TimuiCellBuffer *prev,
         emit_osc8(t, NULL);
         r->last_link = 0;
         r->have_last_link = 0;
-        r->last_link_uri[0] = '\0';
+        r->last_link_uri = NULL;
     }
     if(t->flush) t->flush(t);
 }
