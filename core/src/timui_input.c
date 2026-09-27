@@ -411,6 +411,7 @@ TIMUI_API size_t timui_input_feed(TimuiInputParser *p, const void *data, size_t 
                     count++;
                 } else if(c == 'I'){ emit_focus(cb, ctx, 1); count++; }
                 else if(c == 'O'){ emit_focus(cb, ctx, 0); count++; }
+                else if(c == 'Z'){ emit_key(cb, ctx, TIMUI_KEY_TAB, mods | TIMUI_MOD_SHIFT, 0); count++; }   /* CSI Z: Shift-Tab */
                 else { TimuiKey k = csi_letter(c); if(k != TIMUI_KEY_UNKNOWN){ emit_key(cb, ctx, k, mods, 0); count++; } }
                 p->state = 0;
                 break;

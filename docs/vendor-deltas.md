@@ -280,3 +280,13 @@ writes takes it as an empty selection.
 
 Covered by `fytim.page.copy_needs_the_clipboard` and
 `fytim.page.copy_is_written_whole_under_backpressure`.
+
+## CSI Z is Shift-Tab
+
+**Files:** `core/src/timui_input.c`
+
+A terminal sends `CSI Z` for Shift-Tab, and the decoder dropped it. It is now
+`TIMUI_KEY_TAB` with `TIMUI_MOD_SHIFT`, so a list that Tab moves down can be
+moved up. `test_input_invalid_safe` takes `CSI Y` as the unknown final.
+
+Covered by `fytim.vt.completion_popup_keys`.

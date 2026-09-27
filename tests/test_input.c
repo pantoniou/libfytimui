@@ -127,7 +127,7 @@ TIMUI_TEST(test_input_invalid_safe){
     Sink s;
     /* stray continuation byte + unknown CSI final + invalid lead: no crash,
        each invalid byte becomes one U+FFFD replacement (2 total). */
-    static const unsigned char junk[] = { 0x80, 0x1b, '[', 'Z', 0xff };
+    static const unsigned char junk[] = { 0x80, 0x1b, '[', 'Y', 0xff };
     s.n = 0;
     timui_input_init(&p);
     timui_input_feed(&p, junk, sizeof junk, sink_cb, &s);
