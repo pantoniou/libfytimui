@@ -136,6 +136,8 @@ foreach(t create_paints_inline commit_batches_into_pump
           large_commit_spills_intact sgr_carries_across_commits
           workband_shed_oldest ctrl_g_edit_and_suspend ctrl_t_focus_next
           ctrl_tab_focus_next
+          regression_focus_keys_in_one_frame
+          regression_focus_key_moves_the_rest
           ctrl_shift_t_cycles_zoom_rows bound_keys_leave_the_prompt
           key_bindings_are_checked a_surface_with_the_keys_ignores_bindings
           regression_idle_band_keeps_status size_accessor sync_brackets_updates

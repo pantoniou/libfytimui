@@ -977,6 +977,56 @@ static void test_a_surface_with_the_keys_ignores_bindings(void)
     h_close(&h);
 }
 
+/*
+ * Two focus keys in one frame are two moves, and what follows them is the
+ * input of whoever holds the keys after them: the prompt reads the rest only
+ * after each key was acted on.
+ */
+static void test_regression_focus_keys_in_one_frame(void)
+{
+    struct harness h;
+    struct fytim_event ev;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_keys(&h, "\x14\x1b[9;5uab");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_FOCUS_NEXT);
+    CHECK(!fytim_next_event(h.ft, &ev));
+    CHECK(!strcmp(fytim_input(h.ft), ""));
+    /* The held Ctrl-Tab keeps its modifier: it is a focus key again. */
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_FOCUS_NEXT);
+    CHECK(!fytim_next_event(h.ft, &ev));
+    CHECK(!strcmp(fytim_input(h.ft), ""));
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!strcmp(fytim_input(h.ft), "ab"));
+    h_close(&h);
+}
+
+/* The input after a focus key goes to the surface the host gave the keys. */
+static void test_regression_focus_key_moves_the_rest(void)
+{
+    struct harness h;
+    struct fytim_surface *sf;
+    struct fytim_event ev;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    sf = fytim_surface_open(h.ft, 2, 10);
+    CHECK(sf != NULL);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_keys(&h, "\x14ls\x1b[A");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_FOCUS_NEXT);
+    CHECK(!strcmp(fytim_input(h.ft), ""));
+    CHECK(fytim_surface_set_keys(sf, true) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_SURFACE_KEYS &&
+          ev.text_len == 5 && !memcmp(ev.text, "ls\x1b[A", 5));
+    CHECK(!strcmp(fytim_input(h.ft), ""));
+    h_close(&h);
+}
+
 /* Kitty keyboard preserves Ctrl on Tab, so it can cycle focus too. */
 static void test_ctrl_tab_focus_next(void)
 {
@@ -1101,6 +1151,8 @@ int main(int argc, char **argv)
           test_a_surface_with_the_keys_ignores_bindings },
         { "ctrl_t_focus_next", test_ctrl_t_focus_next },
         { "ctrl_tab_focus_next", test_ctrl_tab_focus_next },
+        { "regression_focus_keys_in_one_frame", test_regression_focus_keys_in_one_frame },
+        { "regression_focus_key_moves_the_rest", test_regression_focus_key_moves_the_rest },
         { "ctrl_shift_t_cycles_zoom_rows",
           test_ctrl_shift_t_cycles_zoom_rows },
         { "regression_idle_band_keeps_status",
