@@ -159,6 +159,12 @@ struct fytim_key_binding {
 
 static int key_filter_(void *user, TimuiKey key, uint32_t cp, uint32_t mods);
 
+/* Bytes of keys, bounded: a key past the bound is not written. */
+struct key_out {
+    char buf[512];
+    size_t len;
+};
+
 struct fytim {
     Timui             *ui;
     struct fytim_pane *panes;      /* transcript is the head and is never closed */
@@ -176,6 +182,15 @@ struct fytim {
     unsigned long      header_right_seq;
     unsigned long      draw_seq;   /* the frame drawn last */
     int                out_fd;
+
+    /*
+     * A focus key typed while the prompt holds the keys changes who owns the
+     * input after it. The rest of that frame is held, as bytes, and given
+     * back to the next frame, which reads it for the new owner.
+     */
+    bool focus_hold;
+    struct key_out held;
+    bool held_lost;                /* input past the bound of @held */
 
     /* band chrome */
     char *header;
@@ -2615,13 +2630,101 @@ static bool key_binding_hit_(const struct fytim_key_binding *b, TimuiKey key,
 
 /* The filter of the core: a bound key becomes FYTIM_EVENT_KEY. A surface that
  * holds the keys gets every key, bound or not. */
+static void key_put(struct key_out *k, const char *bytes, size_t n);
+static void key_put_str(struct key_out *k, const char *s);
+static const char *key_sequence(TimuiKey key);
+static char key_control_byte(uint32_t cp);
+
+/* A focus key: Ctrl-T, Ctrl-Tab. Ctrl-Shift-T is the pane height instead. */
+static bool key_is_focus_(TimuiKey key, uint32_t cp, uint32_t mods)
+{
+    if(key == TIMUI_KEY_TAB && (mods & TIMUI_MOD_CTRL)) return true;
+    return key == TIMUI_KEY_UNKNOWN && (cp == 't' || cp == 'T') &&
+           (mods & (TIMUI_MOD_CTRL | TIMUI_MOD_SHIFT)) == TIMUI_MOD_CTRL;
+}
+
+/*
+ * The bytes that decode to the same key again: a named key keeps its
+ * modifiers, as xterm and CSI u send them, because the next frame reads the
+ * bytes with the same parser.
+ */
+static void key_hold_(struct key_out *k, TimuiKey key, uint32_t cp,
+                      uint32_t mods)
+{
+    static const struct { TimuiKey key; const char *seq; } csi[] = {
+        { TIMUI_KEY_UP, "A" }, { TIMUI_KEY_DOWN, "B" },
+        { TIMUI_KEY_RIGHT, "C" }, { TIMUI_KEY_LEFT, "D" },
+        { TIMUI_KEY_HOME, "H" }, { TIMUI_KEY_END, "F" },
+    };
+    static const struct { TimuiKey key; int code; } tilde[] = {
+        { TIMUI_KEY_INSERT, 2 }, { TIMUI_KEY_DELETE, 3 },
+        { TIMUI_KEY_PAGE_UP, 5 }, { TIMUI_KEY_PAGE_DOWN, 6 },
+    };
+    static const struct { TimuiKey key; int code; } csiu[] = {
+        { TIMUI_KEY_TAB, 9 }, { TIMUI_KEY_ENTER, 13 },
+        { TIMUI_KEY_ESCAPE, 27 }, { TIMUI_KEY_BACKSPACE, 127 },
+    };
+    unsigned m = 1 + (mods & (TIMUI_MOD_SHIFT | TIMUI_MOD_ALT | TIMUI_MOD_CTRL));
+    char seq[32], utf8[4], ctl;
+    const char *named;
+    size_t i;
+
+    if(key == TIMUI_KEY_UNKNOWN){
+        if(!mods){
+            key_put(k, utf8, fytim_utf8_put_(utf8, cp));
+            return;
+        }
+        ctl = (mods & TIMUI_MOD_CTRL) ? key_control_byte(cp) : 0;
+        if(mods & TIMUI_MOD_ALT) key_put_str(k, "\x1b");
+        if(ctl) key_put(k, &ctl, 1);
+        else key_put(k, utf8, fytim_utf8_put_(utf8, cp));
+        return;
+    }
+    if(m > 1){
+        for(i = 0; i < sizeof csi / sizeof csi[0]; i++)
+            if(csi[i].key == key){
+                snprintf(seq, sizeof seq, "\x1b[1;%u%s", m, csi[i].seq);
+                key_put_str(k, seq);
+                return;
+            }
+        for(i = 0; i < sizeof tilde / sizeof tilde[0]; i++)
+            if(tilde[i].key == key){
+                snprintf(seq, sizeof seq, "\x1b[%d;%u~", tilde[i].code, m);
+                key_put_str(k, seq);
+                return;
+            }
+        for(i = 0; i < sizeof csiu / sizeof csiu[0]; i++)
+            if(csiu[i].key == key){
+                snprintf(seq, sizeof seq, "\x1b[%d;%uu", csiu[i].code, m);
+                key_put_str(k, seq);
+                return;
+            }
+    }
+    named = key_sequence(key);
+    if(named) key_put_str(k, named);
+}
+
 static int key_filter_(void *user, TimuiKey key, uint32_t cp, uint32_t mods)
 {
     struct fytim *ft = user;
+    size_t before;
     char *name;
     int i;
 
-    if(!ft || ft->keys || ft->nbindings == 0) return 0;
+    if(!ft || ft->keys) return 0;
+    /* After a focus key the input of the frame is the next owner's. */
+    if(ft->focus_hold){
+        before = ft->held.len;
+        key_hold_(&ft->held, key, cp, mods);
+        if(ft->held.len == before) ft->held_lost = true;
+        return 1;
+    }
+    if(key_is_focus_(key, cp, mods)){
+        ev_push(ft, FYTIM_EVENT_FOCUS_NEXT, NULL, 0, 0, 0);
+        ft->focus_hold = true;
+        return 1;
+    }
+    if(ft->nbindings == 0) return 0;
     if((mods & TIMUI_MOD_CTRL) && cp >= 'A' && cp <= 'Z') cp += 'a' - 'A';
     for(i = 0; i < ft->nbindings; i++){
         if(!key_binding_hit_(&ft->bindings[i], key, cp, mods)) continue;
@@ -4512,11 +4615,6 @@ static void draw_band(struct fytim *ft, TimuiFrame *f,
 
 /* ---- keys handed to a surface ------------------------------------------ */
 
-struct key_out {
-    char buf[512];
-    size_t len;
-};
-
 static void key_put(struct key_out *k, const char *bytes, size_t n)
 {
     if(k->len + n > sizeof k->buf) return;
@@ -5652,12 +5750,22 @@ enum fytim_result fytim_pump(struct fytim *ft)
         }
     }
 
+    ft->focus_hold = false;
+    ft->held.len = 0;
+    ft->held_lost = false;
     tr = timui_begin_result(ft->ui, &f);
     if(tr == TIMUI_ERR_EOF || tr == TIMUI_ERR_CLOSED){
         ft->closed = true;
         return FYTIM_ERR_CLOSED;
     }
     if(tr != TIMUI_OK) return FYTIM_ERR_IO;
+    /* The frame is decoded: give the input held after a focus key back,
+     * for the next frame to read after the host has moved the keys. */
+    if(ft->held.len &&
+       timui_input_push(ft->ui, ft->held.buf, ft->held.len) != TIMUI_OK)
+        ft->held_lost = true;
+    if(ft->held_lost)
+        ev_push(ft, FYTIM_EVENT_KEYS_LOST, NULL, 0, 0, 0);
 
     /* free the previous pop's text now that a pump invalidates it */
     free(ft->ev_last);
@@ -5689,8 +5797,6 @@ enum fytim_result fytim_pump(struct fytim *ft)
         bool zoom_rows_next = ctrl && cp == 't' &&
             timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN,
                                    TIMUI_MOD_CTRL | TIMUI_MOD_SHIFT);
-        bool focus_next = (!zoom_rows_next && ctrl && cp == 't') ||
-            timui_key_pressed_mods(f, TIMUI_KEY_TAB, TIMUI_MOD_CTRL);
         if(ctrl && cp == 'c')
             ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
         if(ctrl && cp == 'd' && !ft->input[0])
@@ -5701,14 +5807,13 @@ enum fytim_result fytim_pump(struct fytim *ft)
         }
         if(ctrl && cp == 'g')
             ev_push(ft, FYTIM_EVENT_EDIT, NULL, 0, 0, 0);
-        if(focus_next)
-            ev_push(ft, FYTIM_EVENT_FOCUS_NEXT, NULL, 0, 0, 0);
         if(zoom_rows_next)
             ev_push(ft, FYTIM_EVENT_ZOOM_ROWS_NEXT, NULL, 0, 0, 0);
-        if(!focus_next && timui_key_pressed(f, TIMUI_KEY_TAB))
+        /* The key filter takes a focus key, in order with what follows. */
+        if(timui_key_pressed(f, TIMUI_KEY_TAB))
             complete_tab(ft);
-        else if(!focus_next && (timui_text_input(f).len > 0 ||
-                timui_key_pressed(f, TIMUI_KEY_ENTER)))
+        else if(timui_text_input(f).len > 0 ||
+                timui_key_pressed(f, TIMUI_KEY_ENTER))
             complete_leave(ft);          /* typing accepts and exits */
         if((ctrl && cp == 'p') ||
            (timui_key_pressed(f, TIMUI_KEY_UP) && cursor_on_first_line(ft)))

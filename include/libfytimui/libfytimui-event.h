@@ -32,7 +32,10 @@ enum fytim_event_type {
     FYTIM_EVENT_EDIT,        /* ^G: the user asked for an external editor;
                                 the host runs it between fytim_suspend and
                                 fytim_resume, then fytim_set_input */
-    FYTIM_EVENT_FOCUS_NEXT,  /* ^T or Kitty Ctrl-Tab: move keyboard focus */
+    FYTIM_EVENT_FOCUS_NEXT,  /* ^T or Kitty Ctrl-Tab: move keyboard focus.
+                                One event for each key; what was typed after
+                                it reaches the next frame, for the new owner
+                                of the keys */
     FYTIM_EVENT_ZOOM_ROWS_NEXT, /* Kitty Ctrl-Shift-T: cycle pane height */
     FYTIM_EVENT_SURFACE_KEYS, /* keys for the surface holding them, already
                                  encoded as the bytes a terminal would send */
@@ -78,7 +81,11 @@ enum fytim_event_type {
      * On a page, the id of the region under the click is in text/text_len,
      * with the lifetime of FYTIM_EVENT_LINE text, or text is NULL: a host
      * that draws its own tiles in slots of the page finds them by it. */
-    FYTIM_EVENT_FOCUS_PROMPT
+    FYTIM_EVENT_FOCUS_PROMPT,
+    /* Keys typed after a focus key in one frame are given to the next
+     * frame, for the new owner of the keys. More of them than the library
+     * can hold were typed, and the rest is lost: the host reports it. */
+    FYTIM_EVENT_KEYS_LOST
 };
 
 struct fytim_event {
