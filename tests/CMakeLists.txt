@@ -553,7 +553,12 @@ if(VTERM_FOUND)
               regression_unmatched_shrink_held
               regression_settle_compacts
               regression_sgr_carries_across_rows
-              regression_sgr_survives_freeze_cut)
+              regression_sgr_survives_freeze_cut
+              completion_popup_shows_items completion_popup_is_a_layer
+              completion_popup_keys completion_popup_narrows
+              completion_popup_scrolls completion_popup_rejects
+              completion_popup_inline_fits completion_popup_tab_after_text
+              completion_popup_mouse)
         add_test(NAME fytim.vt.${t} COMMAND test_fytim_vt ${t})
     endforeach()
 endif()

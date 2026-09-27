@@ -66,8 +66,18 @@ static int vth_open(struct vth *h)
     return h->ft != NULL;
 }
 
+static int vth_open_pty_screen(struct vth *h, int rows, int cols,
+                               enum fytim_screen screen);
+static bool vth_mouse;   /* the next instance grabs the mouse */
+
 /* As above but over a real pty, so TIOCGWINSZ works and can be changed. */
 static int vth_open_pty(struct vth *h, int rows, int cols)
+{
+    return vth_open_pty_screen(h, rows, cols, FYTIM_SCREEN_INLINE);
+}
+
+static int vth_open_pty_screen(struct vth *h, int rows, int cols,
+                               enum fytim_screen screen)
 {
     struct fytim_cfg cfg;
     struct winsize ws;
@@ -86,6 +96,8 @@ static int vth_open_pty(struct vth *h, int rows, int cols)
     fytim_cfg_default(&cfg);
     cfg.input_fd  = h->sfd;
     cfg.output_fd = h->sfd;
+    cfg.screen = screen;
+    cfg.mouse = vth_mouse;
     h->ft = fytim_create(&cfg);
     return h->ft != NULL;
 }
@@ -694,10 +706,370 @@ static void test_regression_resize_repaints_width(void)
     vth_close(&h);
 }
 
+/* ---- the completion popup ------------------------------------------------ */
+
+/* Pump until the library asks for no frame at once, as a host does. */
+static void vth_pump_ready(struct vth *h)
+{
+    int i;
+
+    vth_pump(h);
+    for(i = 0; i < 8 && fytim_poll_timeout_ms(h->ft) == 0; i++)
+        vth_pump(h);
+    CHECK(fytim_poll_timeout_ms(h->ft) != 0);
+}
+
+static void vth_keys(struct vth *h, const char *s)
+{
+    int fd = h->mfd >= 0 ? h->mfd : h->in[1];
+
+    CHECK(write(fd, s, strlen(s)) == (ssize_t)strlen(s));
+}
+
+static void popup_items(void *user, const char *text,
+                        struct fytim_completions *c)
+{
+    static const char *const items[][2] = {
+        { "branch", "Create and list branches" },
+        { "branches", "Pick a branch to view" },
+        { "btw", "Ask a side question" },
+    };
+    char line[64];
+    size_t i, len = strlen(text);
+
+    (void)user;
+    for(i = 0; i < sizeof items / sizeof items[0]; i++){
+        snprintf(line, sizeof line, "/%s", items[i][0]);
+        if(strncmp(line, text, len)) continue;
+        CHECK(fytim_completion_add_item(c, line, items[i][0],
+                                        items[i][1]) == FYTIM_OK);
+    }
+    CHECK(fytim_completion_set_anchor(c, 1) == FYTIM_OK);
+}
+
+static int vth_open_popup(struct vth *h)
+{
+    if(!vth_open_pty_screen(h, 24, 80, FYTIM_SCREEN_ALT)) return 0;
+    CHECK(fytim_set_complete_fn(h->ft, popup_items, NULL) == FYTIM_OK);
+    CHECK(fytim_set_header(h->ft, "HEADER") == FYTIM_OK);
+    CHECK(fytim_set_status_row(h->ft, 1, "STATUS") == FYTIM_OK);
+    vth_pump_ready(h);
+    vth_keys(h, "/b");
+    vth_pump_ready(h);
+    return 1;
+}
+
+/* The popup stands over the rows above the prompt, a label under the word
+ * with its description beside it, the first row selected. */
+static void test_completion_popup_shows_items(void)
+{
+    struct vth h;
+    int prompt, row, col;
+    char line[512];
+
+    if(!vth_open_popup(&h)){ CHECK(0); return; }
+    vth_pump_ready(&h);
+    prompt = vth_find_row(&h, "> /b");
+    CHECK(prompt >= 0);
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/b") == 0);
+    row = vth_find_row(&h, "Pick a branch to view");
+    CHECK(row > 0 && row < prompt);
+    CHECK(vth_find_row(&h, "btw") == row + 1);
+    vth_row(&h, row - 1, line, sizeof line);
+    CHECK(strstr(line, "branch") && strstr(line, "Create and list"));
+    /* The label starts at the column of the word after the slash. */
+    col = (int)(strstr(line, "branch") - line);
+    CHECK(col == 3);
+    {
+        struct fyvt_screen_cell cell;
+        struct fyvt_pos p = { row - 1, col };
+
+        fyvt_screen_get_cell(h.vs, p, &cell);
+        CHECK(cell.attrs.reverse);
+        p.row = row;
+        fyvt_screen_get_cell(h.vs, p, &cell);
+        CHECK(!cell.attrs.reverse);
+    }
+    vth_close(&h);
+}
+
+/* A layer moves nothing: the prompt and the status keep their rows, and
+ * closing the popup gives back what it covered. */
+static void test_completion_popup_is_a_layer(void)
+{
+    struct vth h;
+    int prompt, status, header;
+
+    if(!vth_open_popup(&h)){ CHECK(0); return; }
+    vth_pump_ready(&h);
+    prompt = vth_find_row(&h, "> /b");
+    status = vth_find_row(&h, "STATUS");
+    header = vth_find_row(&h, "HEADER");
+    CHECK(prompt >= 0 && status >= 0 && header >= 0);
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    CHECK(vth_find_row(&h, "Pick a branch") >= 0);
+    CHECK(vth_find_row(&h, "> /b") == prompt);
+    CHECK(vth_find_row(&h, "STATUS") == status);
+    vth_keys(&h, "\x1b[27u");     /* Escape, not held for a sequence */
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(vth_find_row(&h, "Pick a branch") < 0);
+    CHECK(vth_find_row(&h, "HEADER") == header);
+    CHECK(vth_find_row(&h, "> /b") == prompt);
+    vth_close(&h);
+}
+
+/* Down and Tab move on, Up and Shift-Tab move back, Enter takes the
+ * selection without submitting, Escape interrupts nothing. */
+static void test_completion_popup_keys(void)
+{
+    struct vth h;
+    struct fytim_event ev;
+
+    if(!vth_open_popup(&h)){ CHECK(0); return; }
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    vth_keys(&h, "\x1b[B\t\x1b[Z\x1b[A\x1b[B");
+    vth_pump_ready(&h);
+    CHECK(strcmp(fytim_input(h.ft), "/b") == 0);
+    vth_keys(&h, "\r");
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/branches") == 0);
+    vth_keys(&h, "\x7f\x7f\x7f\x7f\x7f\x7f\x7f");
+    vth_pump_ready(&h);
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    vth_keys(&h, "\x1b[27u");     /* Escape, not held for a sequence */
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    while(fytim_next_event(h.ft, &ev)){
+        CHECK(ev.type != FYTIM_EVENT_LINE);
+        CHECK(ev.type != FYTIM_EVENT_INTERRUPT);
+    }
+    vth_close(&h);
+}
+
+/* Typing asks the host again: the list narrows, and closes on no match. */
+static void test_completion_popup_narrows(void)
+{
+    struct vth h;
+
+    if(!vth_open_popup(&h)){ CHECK(0); return; }
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    CHECK(vth_find_row(&h, "Ask a side") >= 0);
+    vth_keys(&h, "r");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(vth_find_row(&h, "Ask a side") < 0);
+    CHECK(vth_find_row(&h, "Pick a branch") >= 0);
+    vth_keys(&h, "x");
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(vth_find_row(&h, "Pick a branch") < 0);
+    CHECK(strcmp(fytim_input(h.ft), "/brx") == 0);
+    vth_close(&h);
+}
+
+/* More candidates than rows: the popup scrolls with the selection and
+ * counts it. */
+static void many_items(void *user, const char *text,
+                       struct fytim_completions *c)
+{
+    char line[32], label[32];
+    int i;
+
+    (void)user;
+    (void)text;
+    for(i = 0; i < 12; i++){
+        snprintf(line, sizeof line, "/cmd%02d", i);
+        snprintf(label, sizeof label, "cmd%02d", i);
+        CHECK(fytim_completion_add_item(c, line, label, NULL) == FYTIM_OK);
+    }
+}
+
+static void test_completion_popup_scrolls(void)
+{
+    struct vth h;
+    int i;
+
+    if(!vth_open_pty_screen(&h, 24, 80, FYTIM_SCREEN_ALT)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, many_items, NULL) == FYTIM_OK);
+    CHECK(fytim_set_completion_rows(h.ft, 4) == FYTIM_OK);
+    CHECK(fytim_set_completion_rows(h.ft, 0) == FYTIM_ERR_INVALID);
+    vth_pump_ready(&h);
+    vth_keys(&h, "/");
+    vth_pump_ready(&h);
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    CHECK(vth_find_row(&h, "cmd03") >= 0);
+    CHECK(vth_find_row(&h, "cmd04") < 0);
+    CHECK(vth_find_row(&h, "1/12") >= 0);
+    for(i = 0; i < 6; i++){
+        vth_keys(&h, "\x1b[B");
+        vth_pump_ready(&h);
+    }
+    CHECK(vth_find_row(&h, "cmd06") >= 0);
+    CHECK(vth_find_row(&h, "cmd02") < 0);
+    CHECK(vth_find_row(&h, "7/12") >= 0);
+    /* A page moves by the rows shown and stops at the ends. */
+    vth_keys(&h, "\x1b[6~");
+    vth_pump_ready(&h);
+    CHECK(vth_find_row(&h, "11/12") >= 0);
+    vth_keys(&h, "\x1b[6~");
+    vth_pump_ready(&h);
+    CHECK(vth_find_row(&h, "12/12") >= 0);
+    vth_keys(&h, "\x1b[5~");
+    vth_pump_ready(&h);
+    CHECK(vth_find_row(&h, "8/12") >= 0);
+    vth_keys(&h, "\x1b[5~\x1b[5~\x1b[5~");
+    vth_pump_ready(&h);
+    CHECK(vth_find_row(&h, "1/12") >= 0);
+    CHECK(fytim_completion_active(h.ft));
+    vth_close(&h);
+}
+
+/* Inline, the popup takes only the rows of the band: it shows what fits, and
+ * the prompt keeps its row. */
+static void test_completion_popup_inline_fits(void)
+{
+    struct vth h;
+    int prompt;
+
+    if(!vth_open_pty(&h, 24, 80)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, popup_items, NULL) == FYTIM_OK);
+    vth_pump_ready(&h);
+    vth_keys(&h, "/b");
+    vth_pump_ready(&h);
+    prompt = vth_find_row(&h, "> /b");
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(vth_find_row(&h, "Create and list") >= 0);
+    CHECK(vth_find_row(&h, "> /b") == prompt);
+    vth_close(&h);
+}
+
+/* Text and a Tab that arrive together complete the text: the Tab is acted on
+ * in the order it was typed. */
+static void test_completion_popup_tab_after_text(void)
+{
+    struct vth h;
+
+    if(!vth_open_pty_screen(&h, 24, 80, FYTIM_SCREEN_ALT)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, popup_items, NULL) == FYTIM_OK);
+    vth_pump(&h);
+    vth_keys(&h, "/bt\t");
+    vth_pump(&h);
+    CHECK(fytim_poll_timeout_ms(h.ft) == 0);
+    vth_pump_ready(&h);
+    CHECK(strcmp(fytim_input(h.ft), "/btw") == 0);
+    vth_keys(&h, "\x7f\x7fr\tx");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft) == false);
+    CHECK(strcmp(fytim_input(h.ft), "/branchx") == 0);
+    vth_close(&h);
+}
+
+/* The column of @needle on row @y, or -1. */
+static int vth_col(struct vth *h, int y, const char *needle)
+{
+    char line[512];
+    char *p;
+
+    vth_row(h, y, line, sizeof line);
+    p = strstr(line, needle);
+    return p ? (int)(p - line) : -1;
+}
+
+/* With the mouse grabbed, the wheel over the popup moves the selection, a
+ * click on a row takes it, and a click outside closes the popup. */
+static void test_completion_popup_mouse(void)
+{
+    struct vth h;
+    char seq[64];
+    int y, x;
+
+    vth_mouse = true;
+    if(!vth_open_pty_screen(&h, 24, 80, FYTIM_SCREEN_ALT)){
+        vth_mouse = false;
+        CHECK(0);
+        return;
+    }
+    vth_mouse = false;
+    CHECK(fytim_set_complete_fn(h.ft, many_items, NULL) == FYTIM_OK);
+    CHECK(fytim_set_completion_rows(h.ft, 4) == FYTIM_OK);
+    vth_pump(&h);
+    vth_keys(&h, "/");
+    vth_pump(&h);
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    y = vth_find_row(&h, "cmd01");
+    x = vth_col(&h, y, "cmd01");
+    CHECK(y >= 0 && x >= 0);
+    /* Two steps of the wheel down over the popup. */
+    snprintf(seq, sizeof seq, "\x1b[<65;%d;%dM", x + 1, y + 1);
+    vth_keys(&h, seq);
+    vth_pump_ready(&h);
+    vth_keys(&h, seq);
+    vth_pump_ready(&h);
+    CHECK(vth_find_row(&h, "3/12") >= 0);
+    /* The wheel away from the popup does not move it. */
+    snprintf(seq, sizeof seq, "\x1b[<65;%d;%dM", 1, 1);
+    vth_keys(&h, seq);
+    vth_pump_ready(&h);
+    CHECK(vth_find_row(&h, "3/12") >= 0);
+    y = vth_find_row(&h, "cmd02");
+    x = vth_col(&h, y, "cmd02");
+    snprintf(seq, sizeof seq, "\x1b[<0;%d;%dM\x1b[<0;%d;%dm", x + 1, y + 1,
+             x + 1, y + 1);
+    vth_keys(&h, seq);
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/cmd02") == 0);
+    /* A click outside closes it and keeps the line, which Tab extended to
+     * the common prefix. */
+    CHECK(fytim_set_input(h.ft, "/") == FYTIM_OK);
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    vth_keys(&h, "\x1b[<0;1;1M\x1b[<0;1;1m");
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/cmd") == 0);
+    vth_close(&h);
+}
+
+/* Outside the callback a candidate is refused, and so is an anchor past the
+ * line. */
+static void test_completion_popup_rejects(void)
+{
+    CHECK(fytim_completion_add_item(NULL, "x", NULL, NULL) ==
+          FYTIM_ERR_INVALID);
+    CHECK(fytim_completion_set_anchor(NULL, 0) == FYTIM_ERR_INVALID);
+    CHECK(fytim_set_completion_rows(NULL, 3) == FYTIM_ERR_INVALID);
+}
+
 int main(int argc, char **argv)
 {
     struct { const char *name; void (*fn)(void); } tests[] = {
         { "prompt_style_fills_card", test_prompt_style_fills_card },
+        { "completion_popup_shows_items", test_completion_popup_shows_items },
+        { "completion_popup_is_a_layer", test_completion_popup_is_a_layer },
+        { "completion_popup_keys", test_completion_popup_keys },
+        { "completion_popup_narrows", test_completion_popup_narrows },
+        { "completion_popup_scrolls", test_completion_popup_scrolls },
+        { "completion_popup_rejects", test_completion_popup_rejects },
+        { "completion_popup_inline_fits", test_completion_popup_inline_fits },
+        { "completion_popup_mouse", test_completion_popup_mouse },
+        { "completion_popup_tab_after_text",
+          test_completion_popup_tab_after_text },
         { "prompt_wraps_and_grows", test_prompt_wraps_and_grows },
         { "prompt_reflows_after_resize", test_prompt_reflows_after_resize },
         { "regression_workband_cap_keeps_chrome",

@@ -1097,10 +1097,8 @@ static void test_completion_reports_its_state(void)
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     h_type(&h, "\t");
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    h_type(&h, "\t");
-    CHECK(fytim_pump(h.ft) == FYTIM_OK);
     CHECK(fytim_completion_active(h.ft));
-    h_type(&h, "x");
+    h_type(&h, "\x1b[27u");     /* Escape, not held for a sequence */
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     CHECK(!fytim_completion_active(h.ft));
     (void)h_out(&h, buf, sizeof buf);

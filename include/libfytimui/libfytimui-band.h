@@ -240,6 +240,8 @@ enum fytim_chrome_style {
     FYTIM_CHROME_WORKBAND,
     FYTIM_CHROME_MARKER,
     FYTIM_CHROME_CONTROL,    /* the marks, arrows and thumb of a tile */
+    FYTIM_CHROME_POPUP,      /* the frame and the text of a popup */
+    FYTIM_CHROME_POPUP_SELECTED,   /* the selected row of a popup */
     FYTIM_CHROME_STYLE_COUNT
 };
 /* Override a chrome slot's base style with an SGR-only string. NULL restores
@@ -293,11 +295,20 @@ enum fytim_result fytim_history_add(struct fytim *ft, const char *line) FYTIM_EX
 enum fytim_result fytim_history_set_max_len(struct fytim *ft, int max_len) FYTIM_EXPORT;
 
 /* ---- completion --------------------------------------------------------- *
- * linenoise-style: on Tab the library calls the host back with the current
- * input; the host adds candidates. A single candidate completes outright;
- * several first extend to the longest common prefix, then Tab cycles the
- * candidates and the original line (shown in a status-row ribbon, windowed
- * on the selection). Typing accepts and leaves completion. */
+ * On Tab the library calls the host back with the current input, and the
+ * host adds candidates: each is the whole line that taking it gives. A single
+ * candidate completes outright. Several first extend the line to their
+ * longest common prefix, and then open a popup of them above the prompt.
+ *
+ * The popup is a layer: it is drawn over the screen and takes no rows, so
+ * nothing under it moves. It shows at most fytim_set_completion_rows() rows,
+ * each with its label and a one-line description. Tab and Down select the
+ * next, Shift-Tab and Up the previous, PageDown and PageUp move a page, Enter
+ * puts the selection into the line without submitting it, and Escape closes
+ * the popup. With the mouse grabbed, the wheel over the popup moves the
+ * selection, a click on a row takes it, and a click elsewhere closes it. Typing edits the line,
+ * and the library asks the host again for the edited line; the popup closes
+ * when nothing matches. */
 struct fytim_completions;   /* valid only during the callback */
 
 typedef void (*fytim_complete_fn)(void *user, const char *text,
@@ -305,7 +316,23 @@ typedef void (*fytim_complete_fn)(void *user, const char *text,
 
 enum fytim_result fytim_set_complete_fn(struct fytim *ft,
                                         fytim_complete_fn fn, void *user) FYTIM_EXPORT;
+/* A candidate that the popup shows as itself, with no description. */
 enum fytim_result fytim_completion_add(struct fytim_completions *c,
                                        const char *candidate) FYTIM_EXPORT;
+/* A candidate that the popup shows as @label, NULL for the candidate, with
+ * @description, NULL for none, beside it. Both are plain text of one row. */
+enum fytim_result fytim_completion_add_item(struct fytim_completions *c,
+                                            const char *candidate,
+                                            const char *label,
+                                            const char *description) FYTIM_EXPORT;
+/* The byte offset in the text where the completed word starts: the popup
+ * stands with its labels at that column. Without it, the word starts after
+ * the last blank. */
+enum fytim_result fytim_completion_set_anchor(struct fytim_completions *c,
+                                              size_t offset) FYTIM_EXPORT;
+/* Rows of candidates the popup shows at most; it scrolls through the rest.
+ * The default is FYTIM_COMPLETION_ROWS. */
+#define FYTIM_COMPLETION_ROWS 8
+enum fytim_result fytim_set_completion_rows(struct fytim *ft, int rows) FYTIM_EXPORT;
 
 #endif /* LIBFYTIMUI_BAND_H */

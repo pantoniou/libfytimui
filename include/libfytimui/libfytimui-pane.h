@@ -93,7 +93,8 @@ bool fytim_mouse_enabled(const struct fytim *ft) FYTIM_EXPORT;
 int fytim_poll_fd(const struct fytim *ft) FYTIM_EXPORT;
 
 /* Maximum milliseconds the host may block before calling fytim_pump again and
- * still have animation and escape-sequence timeouts advance correctly. */
+ * still have animation and escape-sequence timeouts advance correctly. It is 0
+ * when the last pump left input or a completion for the next frame. */
 int fytim_poll_timeout_ms(const struct fytim *ft) FYTIM_EXPORT;
 
 /* Drain pending input, update state, repaint if anything changed. Never

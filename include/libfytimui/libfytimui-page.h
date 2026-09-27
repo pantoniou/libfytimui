@@ -16,8 +16,8 @@
  *
  * The library draws the rows, then draws each slot region with the component
  * bound to its id. The built-in ids are "tail" (the transcript tail),
- * "prompt" (the marker and the editor) and "completion" (the ribbon while
- * completion is active). A band, a surface or a pane is bound with the
+ * "prompt" (the marker and the editor) and "completion" (the keys of the
+ * completion popup while it is open). A band, a surface or a pane is bound with the
  * fytim_*_bind() calls. A slot with nothing bound is blank, and a band that
  * is bound to no slot is not drawn while a page is set.
  *
@@ -166,8 +166,8 @@ int fytim_prompt_rows(const struct fytim *ft) FYTIM_EXPORT;
  */
 bool fytim_prompt_card(const struct fytim *ft) FYTIM_EXPORT;
 
-/* Whether completion is cycling, which is when the ribbon has something to
- * draw. */
+/* Whether the completion popup is open, which is when the completion slot
+ * has something to draw. */
 bool fytim_completion_active(const struct fytim *ft) FYTIM_EXPORT;
 
 /* Rows the tiles of @wp ask for, their heads included and the chrome of the

@@ -143,6 +143,13 @@ struct fytim_workpane {
     bool hidden;                   /* no rows and no tiles drawn */
 };
 
+/* One candidate: the line that taking it gives, and what the popup shows. */
+struct comp_item {
+    char *cand;
+    char *label;   /* NULL shows the candidate */
+    char *desc;    /* NULL for none */
+};
+
 struct fytim_completions {
     struct fytim *owner;
     /* candidates collected during the host callback; retained while
@@ -158,6 +165,8 @@ struct fytim_key_binding {
 };
 
 static int key_filter_(void *user, TimuiKey key, uint32_t cp, uint32_t mods);
+static void complete_leave(struct fytim *ft);
+static bool complete_key(struct fytim *ft, TimuiKey key, uint32_t mods);
 
 /* Bytes of keys, bounded: a key past the bound is not written. */
 struct key_out {
@@ -236,10 +245,22 @@ struct fytim {
     fytim_complete_fn complete_fn;
     void             *complete_user;
     struct fytim_completions comps;
-    char **comp;                   /* retained candidates while cycling */
+    struct comp_item *comp;        /* retained while the popup is open */
     int    comp_n, comp_cap;
-    int    comp_active, comp_idx, comp_collecting;
-    char  *comp_saved;
+    int    comp_active, comp_idx, comp_top, comp_collecting;
+    int    comp_rows_max;
+    bool   comp_tab;               /* a Tab to act on once the editor ran */
+    bool   pump_again;             /* the last frame left work for the next */
+    size_t comp_anchor;            /* byte offset of the completed word */
+    bool   comp_anchor_set;
+    char  *comp_query;             /* the line the candidates were asked for */
+    /* The cell of the anchor, from the prompt drawn in frame comp_at_seq,
+     * and the popup rectangle drawn in frame comp_rect_seq. */
+    int    comp_ax, comp_ay;
+    unsigned long comp_at_seq;
+    struct fytim_rect comp_rect;
+    int    comp_rect_row0;         /* screen row of the first candidate */
+    unsigned long comp_rect_seq;
 
     /* event queue (FIFO); text ownership travels with the entry and parks
      * in ev_last after a pop, per the header's lifetime contract */
@@ -382,6 +403,7 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
     ft->wb_default_max = (cfg->workband_rows > 0) ? cfg->workband_rows
                                                   : FYTIM_WORKBAND_DEFAULT;
     ft->hist_max  = FYTIM_HIST_DEFAULT;
+    ft->comp_rows_max = FYTIM_COMPLETION_ROWS;
     ft->hist_pos  = 0;
     ft->out_fd    = tcfg.output_fd;
     ft->pst.text  = ft->input;
@@ -420,7 +442,11 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
 static void comp_free_candidates(struct fytim *ft)
 {
     int i;
-    for(i = 0; i < ft->comp_n; i++) free(ft->comp[i]);
+    for(i = 0; i < ft->comp_n; i++){
+        free(ft->comp[i].cand);
+        free(ft->comp[i].label);
+        free(ft->comp[i].desc);
+    }
     free(ft->comp);
     ft->comp = NULL;
     ft->comp_n = ft->comp_cap = 0;
@@ -525,7 +551,7 @@ void fytim_destroy(struct fytim *ft)
     free(ft->hist);
     free(ft->draft);
     comp_free_candidates(ft);
-    free(ft->comp_saved);
+    free(ft->comp_query);
     for(i = 0; i < ft->ev_n; i++)
         free((char *)ft->evq[(ft->ev_head + i) % FYTIM_EVQ_CAP].text);
     free(ft->ev_last);
@@ -579,7 +605,8 @@ int fytim_poll_fd(const struct fytim *ft)
 
 int fytim_poll_timeout_ms(const struct fytim *ft)
 {
-    return ft ? timui_poll_timeout_ms(ft->ui) : -1;
+    if(!ft) return -1;
+    return ft->pump_again ? 0 : timui_poll_timeout_ms(ft->ui);
 }
 
 struct fytim_pane *fytim_transcript(struct fytim *ft)
@@ -2555,7 +2582,7 @@ enum fytim_result fytim_set_input(struct fytim *ft, const char *text)
 {
     if(!ft) return FYTIM_ERR_INVALID;
     input_load(ft, text);
-    ft->comp_active = 0;
+    complete_leave(ft);
     return FYTIM_OK;
 }
 
@@ -2719,6 +2746,19 @@ static int key_filter_(void *user, TimuiKey key, uint32_t cp, uint32_t mods)
         if(ft->held.len == before) ft->held_lost = true;
         return 1;
     }
+    if(complete_key(ft, key, mods)) return 1;
+    /*
+     * Tab completes the line as it stands at the Tab: the text typed before
+     * it reaches the editor in this frame, and what follows it waits for the
+     * next one.
+     */
+    if(key == TIMUI_KEY_TAB && !(mods & (TIMUI_MOD_SHIFT | TIMUI_MOD_ALT |
+                                         TIMUI_MOD_CTRL)) &&
+       ft->complete_fn){
+        ft->comp_tab = true;
+        ft->focus_hold = true;
+        return 1;
+    }
     if(key_is_focus_(key, cp, mods)){
         ev_push(ft, FYTIM_EVENT_FOCUS_NEXT, NULL, 0, 0, 0);
         ft->focus_hold = true;
@@ -2839,24 +2879,74 @@ enum fytim_result fytim_set_complete_fn(struct fytim *ft,
     return FYTIM_OK;
 }
 
-enum fytim_result fytim_completion_add(struct fytim_completions *c,
-                                       const char *candidate)
+static char *comp_dup_row(const char *s)
+{
+    char *d, *p;
+
+    d = strdup(s);
+    if(!d) return NULL;
+    /* One row: a control character would move the cursor of the terminal. */
+    for(p = d; *p; p++)
+        if((unsigned char)*p < 0x20 || *p == 0x7f) *p = ' ';
+    return d;
+}
+
+enum fytim_result fytim_completion_add_item(struct fytim_completions *c,
+                                            const char *candidate,
+                                            const char *label,
+                                            const char *description)
 {
     struct fytim *ft;
-    char *dup;
+    struct comp_item it = { NULL, NULL, NULL };
+
     if(!c || !c->owner || !candidate) return FYTIM_ERR_INVALID;
     ft = c->owner;
     if(!ft->comp_collecting) return FYTIM_ERR_INVALID;   /* outside the callback */
     if(ft->comp_n == ft->comp_cap){
         int ncap = ft->comp_cap ? ft->comp_cap * 2 : 8;
-        char **nc = realloc(ft->comp, (size_t)ncap * sizeof *nc);
+        struct comp_item *nc = realloc(ft->comp, (size_t)ncap * sizeof *nc);
         if(!nc) return FYTIM_ERR_NOMEM;
         ft->comp = nc;
         ft->comp_cap = ncap;
     }
-    dup = strdup(candidate);
-    if(!dup) return FYTIM_ERR_NOMEM;
-    ft->comp[ft->comp_n++] = dup;
+    it.cand = strdup(candidate);
+    it.label = label ? comp_dup_row(label) : NULL;
+    it.desc = description && description[0] ? comp_dup_row(description) : NULL;
+    if(!it.cand || (label && !it.label) ||
+       (description && description[0] && !it.desc)){
+        free(it.cand);
+        free(it.label);
+        free(it.desc);
+        return FYTIM_ERR_NOMEM;
+    }
+    ft->comp[ft->comp_n++] = it;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_completion_add(struct fytim_completions *c,
+                                       const char *candidate)
+{
+    return fytim_completion_add_item(c, candidate, NULL, NULL);
+}
+
+enum fytim_result fytim_completion_set_anchor(struct fytim_completions *c,
+                                              size_t offset)
+{
+    struct fytim *ft;
+
+    if(!c || !c->owner) return FYTIM_ERR_INVALID;
+    ft = c->owner;
+    if(!ft->comp_collecting || offset > strlen(ft->input))
+        return FYTIM_ERR_INVALID;
+    ft->comp_anchor = offset;
+    ft->comp_anchor_set = true;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_set_completion_rows(struct fytim *ft, int rows)
+{
+    if(!ft || rows < 1) return FYTIM_ERR_INVALID;
+    ft->comp_rows_max = rows;
     return FYTIM_OK;
 }
 
@@ -2864,52 +2954,168 @@ static void complete_leave(struct fytim *ft)
 {
     ft->comp_active = 0;
     comp_free_candidates(ft);
-    free(ft->comp_saved);
-    ft->comp_saved = NULL;
+    free(ft->comp_query);
+    ft->comp_query = NULL;
+}
+
+/* Ask the host for the candidates of the line as it stands. */
+static bool complete_collect(struct fytim *ft)
+{
+    const char *sp;
+
+    comp_free_candidates(ft);
+    free(ft->comp_query);
+    ft->comp_query = strdup(ft->input);
+    if(!ft->comp_query) return false;
+    ft->comp_anchor_set = false;
+    ft->comp_collecting = 1;
+    ft->complete_fn(ft->complete_user, ft->input, &ft->comps);
+    ft->comp_collecting = 0;
+    if(!ft->comp_anchor_set){
+        sp = strrchr(ft->input, ' ');
+        ft->comp_anchor = sp ? (size_t)(sp - ft->input) + 1 : 0;
+    }
+    ft->comp_idx = 0;
+    ft->comp_top = 0;
+    return ft->comp_n > 0;
 }
 
 static void complete_tab(struct fytim *ft)
 {
+    size_t plen, common;
+    int i;
+
     if(!ft->complete_fn) return;
-    if(!ft->comp_active){
-        size_t plen = strlen(ft->input), common;
-        int i;
-        comp_free_candidates(ft);
-        free(ft->comp_saved);
-        ft->comp_saved = strdup(ft->input);
-        if(!ft->comp_saved) return;
-        ft->comp_collecting = 1;
-        ft->complete_fn(ft->complete_user, ft->input, &ft->comps);
-        ft->comp_collecting = 0;
-        if(ft->comp_n == 0) return;               /* nothing matches: beepless */
-        if(ft->comp_n == 1){                      /* unique: complete outright */
-            input_load(ft, ft->comp[0]);
-            complete_leave(ft);
-            return;
-        }
-        /* bash-style: first Tab extends to the longest common prefix; only
-         * when that adds nothing does Tab start cycling the candidates */
-        common = strlen(ft->comp[0]);
-        for(i = 1; i < ft->comp_n; i++){
-            size_t j = 0;
-            while(j < common && ft->comp[i][j] == ft->comp[0][j]) j++;
-            common = j;
-        }
-        if(common > plen && common < sizeof ft->input){
-            memcpy(ft->input, ft->comp[0], common);
-            ft->input[common] = '\0';
-            ft->pst.cursor = common;
-            ft->pst.scroll_y = 0;
-            complete_leave(ft);
-            return;
-        }
-        ft->comp_active = 1;
-        ft->comp_idx = 0;
-    }else{
-        ft->comp_idx = (ft->comp_idx + 1) % (ft->comp_n + 1);  /* + the original */
+    if(!complete_collect(ft)){                    /* nothing matches */
+        complete_leave(ft);
+        return;
     }
-    input_load(ft, ft->comp_idx == ft->comp_n ? ft->comp_saved
-                                              : ft->comp[ft->comp_idx]);
+    if(ft->comp_n == 1){                          /* unique: complete outright */
+        input_load(ft, ft->comp[0].cand);
+        complete_leave(ft);
+        return;
+    }
+    /* The line first extends to the longest common prefix, and the popup
+     * then offers what is left to choose. */
+    plen = strlen(ft->input);
+    common = strlen(ft->comp[0].cand);
+    for(i = 1; i < ft->comp_n; i++){
+        size_t j = 0;
+        while(j < common && ft->comp[i].cand[j] == ft->comp[0].cand[j]) j++;
+        common = j;
+    }
+    if(common > plen && common < sizeof ft->input &&
+       !strncmp(ft->comp[0].cand, ft->input, plen)){
+        char *q;
+
+        memcpy(ft->input, ft->comp[0].cand, common);
+        ft->input[common] = '\0';
+        ft->pst.cursor = common;
+        ft->pst.scroll_y = 0;
+        q = strdup(ft->input);
+        if(!q){
+            complete_leave(ft);
+            return;
+        }
+        free(ft->comp_query);
+        ft->comp_query = q;
+    }
+    ft->comp_active = 1;
+}
+
+/* The line changed under an open popup: ask again, and close on no match. */
+static void complete_refresh(struct fytim *ft)
+{
+    if(!ft->comp_active || !ft->comp_query ||
+       !strcmp(ft->comp_query, ft->input))
+        return;
+    if(!complete_collect(ft)) complete_leave(ft);
+}
+
+static void complete_move(struct fytim *ft, int delta)
+{
+    if(ft->comp_n < 1) return;
+    ft->comp_idx = (ft->comp_idx + delta + ft->comp_n) % ft->comp_n;
+}
+
+/* The rows the popup showed last, else the rows it shows at most. */
+static int complete_page_rows(const struct fytim *ft)
+{
+    int rows = ft->comp_rect_seq == ft->draw_seq ? ft->comp_rect.h - 2
+                                                 : ft->comp_rows_max;
+
+    return rows > 0 ? rows : 1;
+}
+
+/* Move by @delta and stop at either end: a page does not wrap. */
+static void complete_move_clamp(struct fytim *ft, int delta)
+{
+    int idx = ft->comp_idx + delta;
+
+    if(idx >= ft->comp_n) idx = ft->comp_n - 1;
+    if(idx < 0) idx = 0;
+    ft->comp_idx = idx;
+}
+
+static void complete_take(struct fytim *ft, int idx)
+{
+    if(idx >= 0 && idx < ft->comp_n) input_load(ft, ft->comp[idx].cand);
+    complete_leave(ft);
+}
+
+/*
+ * The keys of an open popup: they move and take the selection, and neither
+ * the editor nor the keys of the library see them. Escape closes the popup
+ * and interrupts nothing.
+ */
+static bool complete_key(struct fytim *ft, TimuiKey key, uint32_t mods)
+{
+    if(!ft->comp_active) return false;
+    mods &= TIMUI_MOD_SHIFT | TIMUI_MOD_ALT | TIMUI_MOD_CTRL;
+    if(key == TIMUI_KEY_TAB && mods == TIMUI_MOD_SHIFT) complete_move(ft, -1);
+    else if(key == TIMUI_KEY_TAB && !mods) complete_move(ft, 1);
+    else if(key == TIMUI_KEY_DOWN && !mods) complete_move(ft, 1);
+    else if(key == TIMUI_KEY_UP && !mods) complete_move(ft, -1);
+    else if(key == TIMUI_KEY_PAGE_DOWN && !mods)
+        complete_move_clamp(ft, complete_page_rows(ft));
+    else if(key == TIMUI_KEY_PAGE_UP && !mods)
+        complete_move_clamp(ft, -complete_page_rows(ft));
+    else if(key == TIMUI_KEY_ENTER && !mods) complete_take(ft, ft->comp_idx);
+    else if(key == TIMUI_KEY_ESCAPE && !mods) complete_leave(ft);
+    else return false;
+    return true;
+}
+
+/*
+ * The mouse over an open popup: the wheel moves the selection a row for each
+ * step, and a click on a row takes it. A click outside the popup closes it
+ * and goes on to what is under it. Returns whether the popup took the event.
+ */
+static bool complete_mouse(struct fytim *ft, TimuiFrame *f)
+{
+    const struct fytim_rect *r = &ft->comp_rect;
+    int x = 0, y = 0, down = 0, wheel, row;
+    bool inside;
+
+    if(!ft->comp_active || ft->comp_rect_seq != ft->draw_seq) return false;
+    wheel = timui_mouse_wheel(f);
+    if(wheel){
+        (void)timui_mouse_state(f, &x, &y, &down);
+        if(x < r->x || x >= r->x + r->w || y < r->y || y >= r->y + r->h)
+            return false;
+        complete_move_clamp(ft, -wheel);
+        return true;
+    }
+    if(!timui_mouse_clicked(f, &x, &y)) return false;
+    inside = x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h;
+    if(!inside){
+        complete_leave(ft);
+        return false;
+    }
+    row = y - ft->comp_rect_row0;
+    if(row >= 0 && row < r->h - 2 && x > r->x && x < r->x + r->w - 1)
+        complete_take(ft, ft->comp_top + row);
+    return true;
 }
 
 /* ---- band drawing ------------------------------------------------------- */
@@ -4159,39 +4365,194 @@ static int prompt_lines(const struct fytim *ft)
     return n < FYTIM_PROMPT_MAX ? n : FYTIM_PROMPT_MAX;
 }
 
+/* The status row of an open popup says which keys it takes. */
 static void draw_completion_ribbon(struct fytim *ft, TimuiFrame *f,
                                    const struct fytim_rect *r, TimuiStyle st)
 {
-    char full[2048], line[512];
-    int i, o = 0, sel_beg = 0, sel_end = 0, first = 0;
-    for(i = 0; i <= ft->comp_n && o < (int)sizeof full - 1; i++){
-        const char *c = i == ft->comp_n
-                        ? (ft->comp_saved && ft->comp_saved[0] ? ft->comp_saved
-                                                               : "(empty)")
-                        : ft->comp[i];
-        if(i == ft->comp_idx) sel_beg = o;
-        o += snprintf(full + o, sizeof full - (size_t)o, "%c%s%c ",
-                      i == ft->comp_idx ? '[' : ' ', c,
-                      i == ft->comp_idx ? ']' : ' ');
-        if(i == ft->comp_idx) sel_end = o;
+    static const char hint[] =
+        " \xe2\x86\x91\xe2\x86\x93 select \xc2\xb7 Enter take \xc2\xb7 Esc close";
+
+    (void)ft;
+    draw_row_styled(f, timui_frame_buffer(f), r->x, r->y, r->w, hint, st);
+}
+
+/* Display columns of @s, stopped at @len bytes. */
+static int text_cols(const char *s, size_t len)
+{
+    size_t i = 0, next;
+    int w = 0, gw;
+
+    while(i < len && s[i]){
+        next = timui_grapheme_next(s, len, i);
+        if(next <= i) next = i + 1;
+        gw = timui_grapheme_width(s + i, next - i);
+        w += gw > 0 ? gw : 1;
+        i = next;
     }
-    {   /* window on the selection so it never leaves the screen */
-        int avail = r->w - 2, len, truncated;
-        if(avail < 4) avail = 4;
-        if(sel_end > avail - 1 + first){
-            first = sel_end - (avail - 1);
-            if(first > sel_beg) first = sel_beg;
+    return w;
+}
+
+/*
+ * The cell of byte @off of the input in an editor @width columns wide, as
+ * prompt_lines() wraps it.
+ */
+static void input_cell_at(const struct fytim *ft, int width, size_t off,
+                          int *rowp, int *colp)
+{
+    const char *p = ft->input;
+    size_t len = strlen(p), i = 0, next;
+    int row = 0, col = 0, gw;
+
+    if(width < 1) width = 1;
+    if(off > len) off = len;
+    while(i < off){
+        if(p[i] == '\r' || p[i] == '\n'){
+            if(p[i] == '\r' && i + 1 < len && p[i + 1] == '\n') i++;
+            i++;
+            row++;
+            col = 0;
+            continue;
         }
-        len = o - first;
-        truncated = len > avail;
-        if(truncated) len = avail - 1;
-        if(len > (int)sizeof line - 8) len = (int)sizeof line - 8;
-        snprintf(line, sizeof line, "%s%.*s%s",
-                 first > 0 ? "\xe2\x80\xa6" : " ",
-                 len, full + first,
-                 truncated ? "\xe2\x80\xa6" : "");
+        next = timui_grapheme_next(p, len, i);
+        if(next <= i) next = i + 1;
+        gw = timui_grapheme_width(p + i, next - i);
+        if(gw < 1) gw = 1;
+        if(col > 0 && col + gw > width){
+            row++;
+            col = 0;
+        }
+        col += gw;
+        i = next;
+        if(col >= width){
+            row++;
+            col = 0;
+        }
     }
-    timui_label(f, r->x, r->y, (TimuiStr){ line, strlen(line) }, st);
+    *rowp = row;
+    *colp = col;
+}
+
+static TimuiStyle popup_style(const struct fytim *ft, enum fytim_chrome_style
+                              slot, TimuiStyle fallback)
+{
+    return ft->chrome_style_set[slot] ?
+           timui_style_from_sgr_(&ft->chrome_style[slot], fallback) :
+           fallback;
+}
+
+/*
+ * The completion popup, a layer over the screen. It stands above the word it
+ * completes, with its labels at the column of the word, or under it when the
+ * rows above are fewer. It takes the rows that are there and moves nothing:
+ * a short screen shows fewer candidates.
+ */
+static void draw_completion_popup(struct fytim *ft, TimuiFrame *f)
+{
+    TimuiCellBuffer *buf = timui_frame_buffer(f);
+    TimuiStyle body, sel, desc_st, row_st;
+    int W = timui_width(f), H = timui_height(f);
+    int lw = 0, dw = 0, inner, box_w, above, below, rows, y0, x0, i, y, lx;
+    bool up;
+    char count[32];
+
+    if(!ft->comp_active || ft->comp_n < 1 || ft->comp_at_seq != ft->draw_seq)
+        return;
+    for(i = 0; i < ft->comp_n; i++){
+        const char *l = ft->comp[i].label ? ft->comp[i].label
+                                          : ft->comp[i].cand;
+        int w = text_cols(l, strlen(l));
+
+        if(w > lw) lw = w;
+        if(ft->comp[i].desc){
+            w = text_cols(ft->comp[i].desc, strlen(ft->comp[i].desc));
+            if(w > dw) dw = w;
+        }
+    }
+    inner = 1 + lw + (dw ? 2 + dw : 0) + 1;
+    /* A list longer than the popup counts in the bottom rule: room for
+     * " N/N " between its corners. */
+    if(ft->comp_n > ft->comp_rows_max){
+        i = snprintf(count, sizeof count, " %d/%d ", ft->comp_n, ft->comp_n);
+        if(inner < i) inner = i;
+    }
+    box_w = inner + 2;
+    if(box_w > W) box_w = W;
+    if(box_w < 5) return;
+    above = ft->comp_ay;
+    below = H - ft->comp_ay - 1;
+    rows = ft->comp_n < ft->comp_rows_max ? ft->comp_n : ft->comp_rows_max;
+    up = above >= rows + 2 || above >= below;
+    if(rows > (up ? above : below) - 2) rows = (up ? above : below) - 2;
+    if(rows < 1) return;
+    y0 = up ? ft->comp_ay - rows - 2 : ft->comp_ay + 1;
+    x0 = ft->comp_ax - 2;
+    if(x0 + box_w > W) x0 = W - box_w;
+    if(x0 < 0) x0 = 0;
+    if(ft->comp_idx < ft->comp_top) ft->comp_top = ft->comp_idx;
+    if(ft->comp_idx >= ft->comp_top + rows)
+        ft->comp_top = ft->comp_idx - rows + 1;
+    if(ft->comp_top > ft->comp_n - rows) ft->comp_top = ft->comp_n - rows;
+    if(ft->comp_top < 0) ft->comp_top = 0;
+
+    body = popup_style(ft, FYTIM_CHROME_POPUP,
+                       timui_style_make(TIMUI_COLOR_DEFAULT,
+                                        TIMUI_COLOR_DEFAULT, 0));
+    sel = popup_style(ft, FYTIM_CHROME_POPUP_SELECTED,
+                      timui_style_make(TIMUI_COLOR_DEFAULT,
+                                       TIMUI_COLOR_DEFAULT,
+                                       TIMUI_ATTR_REVERSE));
+    timui_draw_fill(buf, TIMUI_RECT(x0, y0, box_w, rows + 2), body);
+    timui_draw_box(buf, TIMUI_RECT(x0, y0, box_w, rows + 2),
+                   TIMUI_BORDER_ROUND, body);
+    for(i = 0; i < rows; i++){
+        const struct comp_item *it = &ft->comp[ft->comp_top + i];
+        const char *l = it->label ? it->label : it->cand;
+
+        y = y0 + 1 + i;
+        row_st = ft->comp_top + i == ft->comp_idx ? sel : body;
+        desc_st = row_st;
+        desc_st.attrs |= TIMUI_ATTR_DIM;
+        if(row_st.attrs & TIMUI_ATTR_REVERSE) desc_st.attrs &= ~TIMUI_ATTR_DIM;
+        timui_draw_fill(buf, TIMUI_RECT(x0 + 1, y, box_w - 2, 1), row_st);
+        lx = x0 + 2;
+        if(lx < x0 + box_w - 1)
+            draw_row_styled(f, buf, lx, y, x0 + box_w - 1 - lx, l, row_st);
+        lx += lw + 2;
+        if(it->desc && lx < x0 + box_w - 1)
+            draw_row_styled(f, buf, lx, y, x0 + box_w - 1 - lx, it->desc,
+                            desc_st);
+    }
+    /* A list longer than the popup says where the selection is. */
+    if(ft->comp_n > rows){
+        snprintf(count, sizeof count, " %d/%d ", ft->comp_idx + 1,
+                 ft->comp_n);
+        i = (int)strlen(count);
+        if(i <= box_w - 2)
+            timui_draw_text(buf, x0 + box_w - 1 - i, y0 + rows + 1,
+                            (TimuiStr){ count, (size_t)i }, body);
+    }
+    ft->comp_rect = (struct fytim_rect){ x0, y0, box_w, rows + 2 };
+    ft->comp_rect_row0 = y0 + 1;
+    ft->comp_rect_seq = ft->draw_seq;
+}
+
+/*
+ * Layers drawn over the screen, in ascending order. A layer takes no rows:
+ * what it covers keeps its place, and the next frame draws it again.
+ */
+static const struct {
+    int z;
+    void (*draw)(struct fytim *ft, TimuiFrame *f);
+} layers[] = {
+    { 100, draw_completion_popup },
+};
+
+static void draw_layers(struct fytim *ft, TimuiFrame *f)
+{
+    size_t i;
+
+    for(i = 0; i < sizeof layers / sizeof layers[0]; i++)
+        layers[i].draw(ft, f);
 }
 
 /*
@@ -4396,6 +4757,17 @@ static void draw_prompt(struct fytim *ft, TimuiFrame *f,
             f, id, TIMUI_RECT(x + marker_w, y, w - marker_w, h),
             &ft->pst, TIMUI_TEXT_AREA_ENTER_SUBMITS);
     if(res.submitted) *submitted = true;
+    complete_refresh(ft);
+    if(ft->comp_active){
+        int row, col;
+
+        input_cell_at(ft, w - marker_w, ft->comp_anchor, &row, &col);
+        ft->comp_ax = x + marker_w + col;
+        ft->comp_ay = y + row - ft->pst.scroll_y;
+        if(ft->comp_ay < y) ft->comp_ay = y;
+        if(ft->comp_ay >= y + h) ft->comp_ay = y + h - 1;
+        ft->comp_at_seq = ft->draw_seq;
+    }
 }
 
 static void draw_band(struct fytim *ft, TimuiFrame *f,
@@ -5505,14 +5877,14 @@ static void draw_screen(struct fytim *ft, TimuiFrame *f, bool *submitted)
     ft->draw_seq++;
     if(ft->page_set){
         draw_page(ft, f, submitted);
-        return;
-    }
-    if(fytim_layout_compute_chrome(timui_width(f),
-                                   layout_height(ft, timui_height(f)),
-                                   prompt_lines(ft), ft->header_rows, &lay)){
+    }else if(fytim_layout_compute_chrome(timui_width(f),
+                                         layout_height(ft, timui_height(f)),
+                                         prompt_lines(ft), ft->header_rows,
+                                         &lay)){
         layout_drop_empty_chrome(ft, &lay);
         draw_band(ft, f, &lay, submitted);
     }
+    draw_layers(ft, f);
 }
 
 /* The cell @x, @y of the screen as a cell of @r, stopped at its edges. */
@@ -5753,6 +6125,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
     ft->focus_hold = false;
     ft->held.len = 0;
     ft->held_lost = false;
+    ft->pump_again = false;
     tr = timui_begin_result(ft->ui, &f);
     if(tr == TIMUI_ERR_EOF || tr == TIMUI_ERR_CLOSED){
         ft->closed = true;
@@ -5764,6 +6137,8 @@ enum fytim_result fytim_pump(struct fytim *ft)
     if(ft->held.len &&
        timui_input_push(ft->ui, ft->held.buf, ft->held.len) != TIMUI_OK)
         ft->held_lost = true;
+    /* Held input is read by the next frame, which the host runs at once. */
+    if(ft->held.len && !ft->held_lost) ft->pump_again = true;
     if(ft->held_lost)
         ev_push(ft, FYTIM_EVENT_KEYS_LOST, NULL, 0, 0, 0);
 
@@ -5790,7 +6165,9 @@ enum fytim_result fytim_pump(struct fytim *ft)
 
     if(timui_key_pressed(f, TIMUI_KEY_ESCAPE))
         ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
-    pump_mouse(ft, f, true);
+    /* A layer takes the mouse before what it covers. */
+    if(!complete_mouse(ft, f))
+        pump_mouse(ft, f, true);
     {
         int ctrl = timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN, TIMUI_MOD_CTRL);
         uint32_t cp = timui_key_codepoint(f);
@@ -5810,11 +6187,6 @@ enum fytim_result fytim_pump(struct fytim *ft)
         if(zoom_rows_next)
             ev_push(ft, FYTIM_EVENT_ZOOM_ROWS_NEXT, NULL, 0, 0, 0);
         /* The key filter takes a focus key, in order with what follows. */
-        if(timui_key_pressed(f, TIMUI_KEY_TAB))
-            complete_tab(ft);
-        else if(timui_text_input(f).len > 0 ||
-                timui_key_pressed(f, TIMUI_KEY_ENTER))
-            complete_leave(ft);          /* typing accepts and exits */
         if((ctrl && cp == 'p') ||
            (timui_key_pressed(f, TIMUI_KEY_UP) && cursor_on_first_line(ft)))
             hist_prev(ft);
@@ -5824,6 +6196,14 @@ enum fytim_result fytim_pump(struct fytim *ft)
     }
 
     draw_screen(ft, f, &submitted);
+
+    /* The editor has the text typed before the Tab; the next frame draws
+     * what the completion made of it. */
+    if(ft->comp_tab){
+        ft->comp_tab = false;
+        complete_tab(ft);
+        ft->pump_again = true;
+    }
 
     if(submitted){
         char *text = strdup(ft->input);

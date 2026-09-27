@@ -253,18 +253,27 @@ static void test_completion(void)
     CHECK(fytim_pump(h.ft) == FYTIM_OK);   /* ... then Tab completes it */
     CHECK(strcmp(fytim_input(h.ft), "/help") == 0);
 
-    /* reset the line, then "/h" matches both: Tab extends nothing beyond
-     * "/h", so it starts cycling: /help -> /history -> original -> ... */
+    /* "/h" matches both and the prefix adds nothing: Tab opens the popup
+     * and leaves the line alone. Tab moves the selection and Enter takes it
+     * without submitting the line. */
     CHECK(fytim_set_input(h.ft, "/h") == FYTIM_OK);
     h_keys(&h, "\t");
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    CHECK(strcmp(fytim_input(h.ft), "/help") == 0);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/h") == 0);
     h_keys(&h, "\t");
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(strcmp(fytim_input(h.ft), "/h") == 0);
+    h_keys(&h, "\r");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!fytim_completion_active(h.ft));
     CHECK(strcmp(fytim_input(h.ft), "/history") == 0);
-    h_keys(&h, "\t");
-    CHECK(fytim_pump(h.ft) == FYTIM_OK);
-    CHECK(strcmp(fytim_input(h.ft), "/h") == 0);     /* the original */
+    {
+        struct fytim_event ev;
+
+        while(fytim_next_event(h.ft, &ev))
+            CHECK(ev.type != FYTIM_EVENT_LINE);
+    }
     h_close(&h);
 }
 
