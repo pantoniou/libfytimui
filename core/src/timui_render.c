@@ -219,6 +219,27 @@ static void put_combining_(TimuiCellBuffer *buf, int x, int y, uint32_t cp){
         return;
     }
 }
+static int timui_grapheme_emoji_base_(uint32_t cp);
+/* U+FE0F asks for the emoji presentation of the glyph at (x,y): a terminal
+ * draws a one-column emoji base as two columns then. Widen its cell and blank
+ * the continuation, as a wide glyph does. Returns 1 when the cell widened. */
+static int widen_emoji_(TimuiCellBuffer *buf, int x, int y){
+    TimuiCell *c, cont;
+    if(!buf || x < 0 || y < 0 || x + 1 >= buf->w || y >= buf->h) return 0;
+    if(buf->has_clip && (x + 1 < buf->clip.x ||
+       x + 1 >= buf->clip.x + buf->clip.w)) return 0;
+    c = timui_cells_get(buf, x, y);
+    if(!c || c->width != 1 || (c->flags & TIMUI_CELL_CONTINUATION) ||
+       !timui_grapheme_emoji_base_(c->codepoint)) return 0;
+    clear_wide_pair_touching_(buf, x + 1, y);
+    c->width = 2;
+    memset(&cont, 0, sizeof cont);
+    cont.fg = TIMUI_COLOR_DEFAULT;   /* ADR 0001: blanked = default, not black */
+    cont.bg = TIMUI_COLOR_DEFAULT;
+    cont.flags = TIMUI_CELL_CONTINUATION;
+    timui_cells_put(buf, x + 1, y, &cont);
+    return 1;
+}
 static void put_glyph(TimuiCellBuffer *buf, int x, int y, uint32_t cp, TimuiStyle st){
     put_glyph_link(buf, x, y, cp, st, 0);
 }
@@ -363,6 +384,8 @@ TIMUI_API void timui_draw_text_linked(TimuiCellBuffer *buf, int x, int y, TimuiS
             /* A combining mark modifies the glyph already written. Dropping
              * it here would silently change the text. */
             put_combining_(buf, cx - 1, y, cp);
+            if(cp == 0xFE0F && widen_emoji_(buf, cx - 1, y))
+                cx++;
         }
         i += (size_t)adv;
     }
