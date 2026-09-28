@@ -158,6 +158,7 @@ void test_grapheme_next_prev(void);
 void test_grapheme_width(void);
 void test_utf8_decode_impossible_leads(void);
 void test_draw_text(void);
+void test_draw_text_emoji_selector_widens(void);
 void test_draw_text_truncated_utf8_replacement(void);
 void test_draw_fill(void);
 void test_draw_fill_extreme_negative_rect_empty(void);

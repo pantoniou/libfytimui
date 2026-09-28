@@ -22,6 +22,31 @@ TIMUI_TEST(test_draw_text){
     timui_cells_destroy(&b);
 }
 
+/* U+FE0F after a one-column emoji base makes a two-column cell: the next
+ * glyph starts after the continuation, where a terminal puts it. */
+TIMUI_TEST(test_draw_text_emoji_selector_widens){
+    TimuiAllocator al = timui_default_allocator();
+    TimuiCellBuffer b;
+    TimuiStyle s = timui_style_make(0xffffff, TIMUI_COLOR_DEFAULT, 0);
+    TimuiCell *g;
+    timui_cells_init(&b, 20, 5, &al);
+    timui_draw_text(&b, 0, 0, TIMUI_STR_LIT("\xE2\x9C\x88\xEF\xB8\x8Fx"), s);
+    g = timui_cells_get(&b, 0, 0);
+    TIMUI_CHECK(g && g->codepoint == 0x2708 && g->width == 2 &&
+                g->combining[0] == 0xFE0F);
+    g = timui_cells_get(&b, 1, 0);
+    TIMUI_CHECK(g && (g->flags & TIMUI_CELL_CONTINUATION));
+    g = timui_cells_get(&b, 2, 0);
+    TIMUI_CHECK(g && g->codepoint == 'x');
+    /* a letter keeps one column: the selector has no emoji to widen */
+    timui_draw_text(&b, 0, 1, TIMUI_STR_LIT("a\xEF\xB8\x8Fx"), s);
+    g = timui_cells_get(&b, 0, 1);
+    TIMUI_CHECK(g && g->codepoint == 'a' && g->width == 1);
+    g = timui_cells_get(&b, 1, 1);
+    TIMUI_CHECK(g && g->codepoint == 'x');
+    timui_cells_destroy(&b);
+}
+
 TIMUI_TEST(test_draw_text_truncated_utf8_replacement){
     TimuiAllocator al = timui_default_allocator();
     TimuiCellBuffer b;

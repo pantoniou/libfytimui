@@ -148,6 +148,7 @@ int main(int argc, char **argv){
         { "test_grapheme_width", test_grapheme_width },
         { "test_utf8_decode_impossible_leads", test_utf8_decode_impossible_leads },
         { "test_draw_text", test_draw_text },
+        { "test_draw_text_emoji_selector_widens", test_draw_text_emoji_selector_widens },
         { "test_draw_text_truncated_utf8_replacement", test_draw_text_truncated_utf8_replacement },
         { "test_draw_fill", test_draw_fill },
         { "test_draw_fill_extreme_negative_rect_empty", test_draw_fill_extreme_negative_rect_empty },
