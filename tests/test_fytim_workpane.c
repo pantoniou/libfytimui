@@ -1271,7 +1271,7 @@ static void test_the_header_right_takes_a_click(void)
 {
     static const struct fytim_header_act act = { "panel:pane", 0, 1 };
     struct harness h;
-    struct fytim_event ev;
+    struct fytim_event ev = {0};
     struct h_events evs;
     char buf[16384];
     size_t n;
