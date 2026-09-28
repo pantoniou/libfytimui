@@ -242,6 +242,8 @@ enum fytim_chrome_style {
     FYTIM_CHROME_CONTROL,    /* the marks, arrows and thumb of a tile */
     FYTIM_CHROME_POPUP,      /* the frame and the text of a popup */
     FYTIM_CHROME_POPUP_SELECTED,   /* the selected row of a popup */
+    FYTIM_CHROME_POPUP_BORDER,     /* the frame of a popup */
+    FYTIM_CHROME_POPUP_MATCH,      /* what a candidate shares with the line */
     FYTIM_CHROME_STYLE_COUNT
 };
 /* Override a chrome slot's base style with an SGR-only string. NULL restores
@@ -302,13 +304,16 @@ enum fytim_result fytim_history_set_max_len(struct fytim *ft, int max_len) FYTIM
  *
  * The popup is a layer: it is drawn over the screen and takes no rows, so
  * nothing under it moves. It shows at most fytim_set_completion_rows() rows,
- * each with its label and a one-line description. Tab and Down select the
- * next, Shift-Tab and Up the previous, PageDown and PageUp move a page, Enter
- * puts the selection into the line without submitting it, and Escape closes
- * the popup. With the mouse grabbed, the wheel over the popup moves the
- * selection, a click on a row takes it, and a click elsewhere closes it. Typing edits the line,
- * and the library asks the host again for the edited line; the popup closes
- * when nothing matches. */
+ * each with its label and a one-line description; the start of a label that
+ * repeats the word typed so far is drawn in FYTIM_CHROME_POPUP_MATCH. Down
+ * selects the next, Up and Shift-Tab the previous, and PageDown and PageUp
+ * move a page. Tab and Enter put the selection into the line without
+ * submitting it; Enter on a selection that changes nothing but trailing
+ * blanks submits the line.
+ * Escape closes the popup. With the mouse grabbed, the wheel over the popup
+ * moves the selection, a click on a row takes it, and a click elsewhere
+ * closes it. Typing edits the line, and the library asks the host again for
+ * the edited line; the popup closes when nothing but the line matches. */
 struct fytim_completions;   /* valid only during the callback */
 
 typedef void (*fytim_complete_fn)(void *user, const char *text,
@@ -334,5 +339,15 @@ enum fytim_result fytim_completion_set_anchor(struct fytim_completions *c,
  * The default is FYTIM_COMPLETION_ROWS. */
 #define FYTIM_COMPLETION_ROWS 8
 enum fytim_result fytim_set_completion_rows(struct fytim *ft, int rows) FYTIM_EXPORT;
+/* The mark drawn in the column before the label of the selected row, an
+ * SGR-styled string of one column; NULL or "" draws none. */
+enum fytim_result fytim_set_completion_mark(struct fytim *ft,
+                                            const char *mark) FYTIM_EXPORT;
+/* Open the popup as the line is typed, without a Tab: each edit of the line
+ * asks the host, and any candidate opens the popup. A candidate is then
+ * never taken or extended outright. Escape closes the popup until the line
+ * changes again. A line loaded from the history or by the host does not ask. */
+enum fytim_result fytim_set_completion_auto(struct fytim *ft,
+                                            bool on) FYTIM_EXPORT;
 
 #endif /* LIBFYTIMUI_BAND_H */
