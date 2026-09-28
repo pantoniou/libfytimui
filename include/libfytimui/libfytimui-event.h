@@ -85,7 +85,12 @@ enum fytim_event_type {
     /* Keys typed after a focus key in one frame are given to the next
      * frame, for the new owner of the keys. More of them than the library
      * can hold were typed, and the rest is lost: the host reports it. */
-    FYTIM_EVENT_KEYS_LOST
+    FYTIM_EVENT_KEYS_LOST,
+    /* A glyph whose advance the terminal decides was measured narrower than
+     * it was drawn: the library repaints its own cells, and a host that
+     * made rows with the old width makes them again. fytim_glyph_width()
+     * says what the terminal does. */
+    FYTIM_EVENT_GLYPH_WIDTH
 };
 
 struct fytim_event {

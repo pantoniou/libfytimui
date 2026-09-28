@@ -693,6 +693,22 @@ TIMUI_API void        timui_label_hyperlink(TimuiFrame *f, int x, int y, TimuiSt
  * width measures the first cluster in s[0..len]. */
 TIMUI_API int timui_utf8_decode(const char *s, size_t len, uint32_t *out_cp);
 TIMUI_API int timui_utf8_width(uint32_t cp);
+
+/*
+ * The advance the terminal gave an emoji base @cp that U+FE0F selects, which
+ * the renderer measures the first time it writes one: 1, 2, or 0 while it is
+ * not known (then it takes 2). timui_glyph_changed() says, once, that a
+ * measure changed the width of cells drawn before. A cursor report asked for
+ * with timui_cpr_expect() is matched to its question by
+ * timui_cpr_answer(). timui_glyph_reset() forgets the measures, for a new
+ * terminal.
+ */
+enum { TIMUI_CPR_NONE, TIMUI_CPR_LOCATE, TIMUI_CPR_GLYPH };
+TIMUI_API int timui_glyph_width(uint32_t cp);
+TIMUI_API int timui_glyph_changed(void);
+TIMUI_API void timui_glyph_reset(void);
+TIMUI_API void timui_cpr_expect(uint32_t cp, int col);
+TIMUI_API int timui_cpr_answer(int col);
 TIMUI_API size_t timui_grapheme_next(const char *s, size_t len, size_t off);
 TIMUI_API size_t timui_grapheme_prev(const char *s, size_t len, size_t off);
 TIMUI_API int    timui_grapheme_width(const char *s, size_t len);

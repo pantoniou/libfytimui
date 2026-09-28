@@ -232,6 +232,107 @@ static int timui_emoji_vs_base_(uint32_t cp){
     return codepoint_in_ranges_(cp, timui_emoji_vs_ranges,
         sizeof timui_emoji_vs_ranges / sizeof timui_emoji_vs_ranges[0]);
 }
+/*
+ * What the terminal does with a glyph it may draw at either width, learned
+ * while the program runs. An emoji base that U+FE0F selects is drawn in two
+ * columns by most terminals and in one by VTE. The first time such a glyph is
+ * written, the writer asks for the cursor position after it; the reply gives
+ * its advance, and every later cell of it takes that width. A glyph that was
+ * never written is taken as two columns. The terminal is one for the
+ * process, so the record is too.
+ */
+#define TIMUI_GLYPHS_MAX 64
+#define TIMUI_CPR_MAX 32
+static struct { uint32_t cp; unsigned char width, asked; } timui_glyphs_[TIMUI_GLYPHS_MAX];
+static int timui_nglyphs_;
+static int timui_glyphs_changed_;
+/* The cursor reports asked for and not yet answered, oldest first: a glyph
+ * and the column it was written at, or the band locating its row (cp 0).
+ * A terminal answers in order. */
+static struct { uint32_t cp; int col; } timui_cpr_[TIMUI_CPR_MAX];
+static int timui_cpr_head_, timui_cpr_count_;
+
+static int timui_glyph_find_(uint32_t cp){
+    int i;
+    for(i = 0; i < timui_nglyphs_; i++)
+        if(timui_glyphs_[i].cp == cp) return i;
+    return -1;
+}
+/* The measured advance of @cp with U+FE0F, or 0 when it is not known. */
+TIMUI_API int timui_glyph_width(uint32_t cp){
+    int i = timui_glyph_find_(cp);
+    return i < 0 ? 0 : timui_glyphs_[i].width;
+}
+/* The columns an emoji base that U+FE0F selects takes. */
+static int timui_glyph_vs_width_(uint32_t cp){
+    int w = timui_glyph_width(cp);
+    return w ? w : 2;
+}
+TIMUI_API void timui_glyph_reset(void){
+    timui_nglyphs_ = 0;
+    timui_glyphs_changed_ = 0;
+    timui_cpr_head_ = timui_cpr_count_ = 0;
+}
+TIMUI_API int timui_glyph_changed(void){
+    int c = timui_glyphs_changed_;
+    timui_glyphs_changed_ = 0;
+    return c;
+}
+/* Record a cursor report that is asked for now. A full queue drops the
+ * oldest, whose reply then answers nothing it could misplace. */
+TIMUI_API void timui_cpr_expect(uint32_t cp, int col){
+    int i;
+    if(timui_cpr_count_ == TIMUI_CPR_MAX){
+        timui_cpr_head_ = (timui_cpr_head_ + 1) % TIMUI_CPR_MAX;
+        timui_cpr_count_--;
+    }
+    i = (timui_cpr_head_ + timui_cpr_count_) % TIMUI_CPR_MAX;
+    timui_cpr_[i].cp = cp;
+    timui_cpr_[i].col = col;
+    timui_cpr_count_++;
+}
+/* A cursor report at the 1-based column @col answers the oldest question.
+ * Returns what was asked: TIMUI_CPR_NONE for a report nobody asked for,
+ * TIMUI_CPR_LOCATE for the band's row, TIMUI_CPR_GLYPH for a glyph, whose
+ * advance is then recorded. */
+TIMUI_API int timui_cpr_answer(int col){
+    uint32_t cp;
+    int start, adv, i;
+    if(!timui_cpr_count_) return TIMUI_CPR_NONE;
+    cp = timui_cpr_[timui_cpr_head_].cp;
+    start = timui_cpr_[timui_cpr_head_].col;
+    timui_cpr_head_ = (timui_cpr_head_ + 1) % TIMUI_CPR_MAX;
+    timui_cpr_count_--;
+    if(!cp) return TIMUI_CPR_LOCATE;
+    adv = col - 1 - start;
+    i = timui_glyph_find_(cp);
+    if(i < 0) return TIMUI_CPR_GLYPH;
+    timui_glyphs_[i].asked = 0;
+    /* Only an advance of one or two columns says what the glyph takes. */
+    if(adv != 1 && adv != 2) return TIMUI_CPR_GLYPH;
+    if(timui_glyphs_[i].width != adv){
+        timui_glyphs_[i].width = (unsigned char)adv;
+        /* Two columns is what was drawn already; one changes the cells. */
+        if(adv == 1) timui_glyphs_changed_ = 1;
+    }
+    return TIMUI_CPR_GLYPH;
+}
+/* Whether the advance of @cp is to be asked for now: not known, and not
+ * asked already. Marks it asked. */
+static int timui_glyph_ask_(uint32_t cp){
+    int i = timui_glyph_find_(cp);
+    if(i < 0){
+        if(timui_nglyphs_ == TIMUI_GLYPHS_MAX) return 0;
+        i = timui_nglyphs_++;
+        timui_glyphs_[i].cp = cp;
+        timui_glyphs_[i].width = 0;
+        timui_glyphs_[i].asked = 0;
+    }
+    if(timui_glyphs_[i].width || timui_glyphs_[i].asked) return 0;
+    timui_glyphs_[i].asked = 1;
+    return 1;
+}
+
 /* U+FE0F asks for the emoji presentation of the glyph at (x,y): a terminal
  * draws such a one-column glyph as two columns then. Widen its cell and blank
  * the continuation, as a wide glyph does. Returns 1 when the cell widened. */
@@ -242,7 +343,8 @@ static int widen_emoji_(TimuiCellBuffer *buf, int x, int y){
        x + 1 >= buf->clip.x + buf->clip.w)) return 0;
     c = timui_cells_get(buf, x, y);
     if(!c || c->width != 1 || (c->flags & TIMUI_CELL_CONTINUATION) ||
-       !timui_emoji_vs_base_(c->codepoint)) return 0;
+       !timui_emoji_vs_base_(c->codepoint) ||
+       timui_glyph_vs_width_(c->codepoint) != 2) return 0;
     clear_wide_pair_touching_(buf, x + 1, y);
     c->width = 2;
     memset(&cont, 0, sizeof cont);
@@ -547,6 +649,41 @@ static void emit_cup(TimuiTransport *t, int x, int y){
     n += fmt_uint(buf + n, (unsigned)(x + 1)); buf[n++] = 'H';
     r_emit(t, buf, (size_t)n);
 }
+/* A glyph whose advance the terminal decides: an emoji base that U+FE0F
+ * selects. */
+static int glyph_uncertain_(const TimuiCell *c){
+    int i;
+    if(!c->codepoint || !timui_emoji_vs_base_(c->codepoint)) return 0;
+    for(i = 0; i < TIMUI_CELL_COMBINING_MAX; i++)
+        if(c->combining[i] == 0xFE0F) return 1;
+    return 0;
+}
+/* The cursor to the 0-based column @x of its row. */
+static void emit_cha_(TimuiTransport *t, int x){
+    char buf[16];
+    int n = 0;
+    buf[n++] = 0x1b; buf[n++] = '[';
+    n += fmt_uint(buf + n, (unsigned)(x + 1));
+    buf[n++] = 'G';
+    r_emit(t, buf, (size_t)n);
+}
+/* Before a glyph of uncertain advance: its column, absolutely. */
+static void glyph_before_(TimuiTransport *t, const TimuiCell *c, int x){
+    if(glyph_uncertain_(c)) emit_cha_(t, x);
+}
+/* After it: the first time, a question for the cursor, whose reply is the
+ * advance; then the next column absolutely, wherever the terminal left the
+ * cursor. Returns 1 for such a glyph. */
+static int glyph_after_(TimuiTransport *t, const TimuiCell *c, int x){
+    if(!glyph_uncertain_(c)) return 0;
+    if(timui_glyph_ask_(c->codepoint)){
+        R_EMIT(t, "\x1b[6n");
+        timui_cpr_expect(c->codepoint, x);
+    }
+    emit_cha_(t, x + (c->width >= 2 ? 2 : 1));
+    return 1;
+}
+
 /* Write the marks that belong to a cell, after its base character. */
 static void emit_combining_(TimuiTransport *t, const TimuiCell *c){
     char gb[4];
@@ -659,9 +796,11 @@ TIMUI_API void timui_render_diff(TimuiTransport *t, const TimuiCellBuffer *prev,
             emit_sgr(t, r, cc);
             /* OSC 8 on a link-state change (open/close) or a URI change. */
             link_follow_(t, r, curr, cc);
+            glyph_before_(t, cc, x);
             gn = timui_utf8_encode_(render_safe_cp(cc->codepoint), gb);
             r_emit(t, gb, (size_t)gn);
             emit_combining_(t, cc);
+            (void)glyph_after_(t, cc, x);
             r->last_x = x + (cc->width >= 2 ? 2 : 1);   /* wide glyph advances cursor by 2 */
             r->last_y = y;
         }
@@ -715,9 +854,11 @@ TIMUI_API void timui_inline_paint(TimuiTransport *t, const TimuiCellBuffer *buf)
             if(c->flags & TIMUI_CELL_CONTINUATION) continue;   /* wide glyph tail */
             emit_sgr(t, &r, c);
             link_follow_(t, &r, buf, c);
+            glyph_before_(t, c, x);
             gn = timui_utf8_encode_(render_safe_cp(c->codepoint), gb);
             r_emit(t, gb, (size_t)gn);
             emit_combining_(t, c);
+            (void)glyph_after_(t, c, x);
         }
     }
     link_close_(t, &r);
@@ -783,9 +924,11 @@ TIMUI_API void timui_inline_paint_diff(TimuiTransport *t,
             if(c->flags & TIMUI_CELL_CONTINUATION) continue;   /* wide glyph tail */
             emit_sgr(t, &r, c);
             link_follow_(t, &r, curr, c);
+            glyph_before_(t, c, x);
             gn = timui_utf8_encode_(render_safe_cp(c->codepoint), gb);
             r_emit(t, gb, (size_t)gn);
             emit_combining_(t, c);
+            (void)glyph_after_(t, c, x);
         }
         link_close_(t, &r);
         R_EMIT(t, "\x1b[0m");                    /* leave SGR clean for commits */

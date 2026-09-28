@@ -1529,6 +1529,16 @@ static bool cells_run_(void *user, const char *text, size_t len,
     return true;
 }
 
+int fytim_glyph_width(uint32_t cp)
+{
+    return timui_glyph_width(cp);
+}
+
+void fytim_glyph_reset(void)
+{
+    timui_glyph_reset();
+}
+
 int fytim_cells_draw_text(struct fytim_cell *grid, int grid_rows,
                           int grid_cols, int row, int col, int width,
                           int height, const char *text, size_t len)
@@ -6289,6 +6299,12 @@ enum fytim_result fytim_pump(struct fytim *ft)
     if(ft->held.len && !ft->held_lost) ft->pump_again = true;
     if(ft->held_lost)
         ev_push(ft, FYTIM_EVENT_KEYS_LOST, NULL, 0, 0, 0);
+    /* A glyph measured narrower than it was drawn moves every cell after
+     * each of its places: draw the screen again, and tell the host. */
+    if(timui_glyph_changed()){
+        timui_full_redraw(ft->ui);
+        ev_push(ft, FYTIM_EVENT_GLYPH_WIDTH, NULL, 0, 0, 0);
+    }
 
     /* free the previous pop's text now that a pump invalidates it */
     free(ft->ev_last);

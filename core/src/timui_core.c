@@ -403,6 +403,7 @@ static void inline_anchor_advance_(Timui *ui, int committed){
     if(ui->inline_anchor_row < 0 && !ui->inline_locating &&
        (ui->cfg.flags & TIMUI_FLAG_MOUSE) && ui->transport.write){
         (void)ui->transport.write(&ui->transport, "\x1b[6n", 4);
+        timui_cpr_expect(0, 0);
         ui->inline_locating = 1;
         ui->inline_locate_committed = 0;
     }
@@ -896,7 +897,8 @@ TIMUI_API TimuiResult timui_begin_result(Timui *ui, TimuiFrame **out_frame){
             } else if(ev.kind == TIMUI_EVENT_CURSOR_REPORT){
                 /* The answer to the question the band asked. A report that
                  * nobody asked for, such as a key, is not an answer. */
-                if(ui->inline_locating){
+                if(timui_cpr_answer(ev.as.cursor.col) == TIMUI_CPR_LOCATE &&
+                   ui->inline_locating){
                     ui->inline_locating = 0;
                     ui->inline_anchor_row = ev.as.cursor.row - 1 +
                                             ui->inline_locate_committed;

@@ -133,6 +133,17 @@ int fytim_cells_draw_text(struct fytim_cell *grid, int grid_rows,
  * link takes 0. With @links NULL no cell is linked, as fytim_cells_draw_text
  * draws. The text of a link whose URI cannot be kept is drawn unlinked.
  */
+/*
+ * The columns the terminal gives an emoji base @cp that U+FE0F selects:
+ * 1 or 2 once the library has measured it, 0 before (the library then takes
+ * 2). The library measures a glyph the first time it writes one, and
+ * reports a narrower measure with FYTIM_EVENT_GLYPH_WIDTH. A host that lays
+ * out text for the same terminal uses the same widths.
+ * fytim_glyph_reset() forgets every measure.
+ */
+int fytim_glyph_width(uint32_t cp) FYTIM_EXPORT;
+void fytim_glyph_reset(void) FYTIM_EXPORT;
+
 int fytim_cells_draw_text_links(struct fytim_cell *grid, int grid_rows,
                                 int grid_cols, int row, int col, int width,
                                 int height, const char *text, size_t len,
