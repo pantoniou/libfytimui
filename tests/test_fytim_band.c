@@ -254,17 +254,17 @@ static void test_completion(void)
     CHECK(strcmp(fytim_input(h.ft), "/help") == 0);
 
     /* "/h" matches both and the prefix adds nothing: Tab opens the popup
-     * and leaves the line alone. Tab moves the selection and Enter takes it
+     * and leaves the line alone. Down moves the selection and Tab takes it
      * without submitting the line. */
     CHECK(fytim_set_input(h.ft, "/h") == FYTIM_OK);
     h_keys(&h, "\t");
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     CHECK(fytim_completion_active(h.ft));
     CHECK(strcmp(fytim_input(h.ft), "/h") == 0);
-    h_keys(&h, "\t");
+    h_keys(&h, "\x1b[B");
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     CHECK(strcmp(fytim_input(h.ft), "/h") == 0);
-    h_keys(&h, "\r");
+    h_keys(&h, "\t");
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     CHECK(!fytim_completion_active(h.ft));
     CHECK(strcmp(fytim_input(h.ft), "/history") == 0);

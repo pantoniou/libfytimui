@@ -558,7 +558,9 @@ if(VTERM_FOUND)
               completion_popup_keys completion_popup_narrows
               completion_popup_scrolls completion_popup_rejects
               completion_popup_inline_fits completion_popup_tab_after_text
-              completion_popup_mouse)
+              completion_popup_mouse completion_popup_clips
+              completion_popup_styles completion_popup_enter_submits
+              completion_popup_auto)
         add_test(NAME fytim.vt.${t} COMMAND test_fytim_vt ${t})
     endforeach()
 endif()

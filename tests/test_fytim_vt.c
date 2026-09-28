@@ -823,8 +823,8 @@ static void test_completion_popup_is_a_layer(void)
     vth_close(&h);
 }
 
-/* Down and Tab move on, Up and Shift-Tab move back, Enter takes the
- * selection without submitting, Escape interrupts nothing. */
+/* Down moves on, Up and Shift-Tab move back, Tab and Enter take the selection without
+ * submitting, Escape interrupts nothing. */
 static void test_completion_popup_keys(void)
 {
     struct vth h;
@@ -833,14 +833,22 @@ static void test_completion_popup_keys(void)
     if(!vth_open_popup(&h)){ CHECK(0); return; }
     vth_keys(&h, "\t");
     vth_pump_ready(&h);
-    vth_keys(&h, "\x1b[B\t\x1b[Z\x1b[A\x1b[B");
+    vth_keys(&h, "\x1b[B\x1b[B\x1b[Z\x1b[B\x1b[A");
     vth_pump_ready(&h);
     CHECK(strcmp(fytim_input(h.ft), "/b") == 0);
-    vth_keys(&h, "\r");
+    vth_keys(&h, "\t");
     vth_pump_ready(&h);
     CHECK(!fytim_completion_active(h.ft));
     CHECK(strcmp(fytim_input(h.ft), "/branches") == 0);
     vth_keys(&h, "\x7f\x7f\x7f\x7f\x7f\x7f\x7f");
+    vth_pump_ready(&h);
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    vth_keys(&h, "\x1b[B\x1b[B\r");
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/btw") == 0);
+    vth_keys(&h, "\x7f\x7f\x7f");
     vth_pump_ready(&h);
     vth_keys(&h, "\t");
     vth_pump_ready(&h);
@@ -1046,6 +1054,174 @@ static void test_completion_popup_mouse(void)
     vth_close(&h);
 }
 
+/* A label wider than the screen ends in an ellipsis one column before the
+ * right frame, and draws nothing over it. */
+static void long_items(void *user, const char *text,
+                       struct fytim_completions *c)
+{
+    (void)user;
+    (void)text;
+    CHECK(fytim_completion_add_item(c, "/a", "a", "short") == FYTIM_OK);
+    CHECK(fytim_completion_add_item(c, "/b", "b",
+          "a description that is much too long for a screen of forty "
+          "columns") == FYTIM_OK);
+    CHECK(fytim_completion_set_anchor(c, 1) == FYTIM_OK);
+}
+
+static void test_completion_popup_clips(void)
+{
+    struct vth h;
+    char line[512];
+    int y;
+
+    if(!vth_open_pty_screen(&h, 24, 40, FYTIM_SCREEN_ALT)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, long_items, NULL) == FYTIM_OK);
+    vth_pump_ready(&h);
+    vth_keys(&h, "/\t");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    y = vth_find_row(&h, "a description");
+    CHECK(y >= 0);
+    vth_row(&h, y, line, sizeof line);
+    /* "l… │": the ellipsis, a blank, and the frame in the last column; the
+     * row reads a glyph it does not draw as '?'. */
+    CHECK(strlen(line) == 40);
+    CHECK(!strcmp(line + 36, "l? ?"));
+    vth_close(&h);
+}
+
+/* The start of a label that repeats the typed word takes the match style;
+ * the rest of the label does not. The selected row carries the mark, and
+ * the frame takes the border style. */
+static void test_completion_popup_styles(void)
+{
+    struct vth h;
+    struct fyvt_screen_cell cell;
+    struct fyvt_pos p;
+    int y, x;
+
+    if(!vth_open_pty_screen(&h, 24, 80, FYTIM_SCREEN_ALT)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, popup_items, NULL) == FYTIM_OK);
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_POPUP_MATCH,
+                                 "\x1b[4m") == FYTIM_OK);
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_POPUP_BORDER,
+                                 "\x1b[38;2;255;0;0m") == FYTIM_OK);
+    CHECK(fytim_set_chrome_style(h.ft, FYTIM_CHROME_POPUP_SELECTED,
+                                 "\x1b[48;2;0;0;255m") == FYTIM_OK);
+    CHECK(fytim_set_completion_mark(h.ft, "\x1b[1m>\x1b[0m") == FYTIM_OK);
+    CHECK(fytim_set_completion_mark(h.ft, "ab") == FYTIM_ERR_INVALID);
+    vth_pump_ready(&h);
+    vth_keys(&h, "/br");
+    vth_pump_ready(&h);
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    y = vth_find_row(&h, "Create and list");
+    x = vth_col(&h, y, "branch");
+    CHECK(y >= 0 && x > 1);
+    p.row = y;
+    p.col = x;
+    fyvt_screen_get_cell(h.vs, p, &cell);
+    CHECK(cell.attrs.underline);
+    /* Tab extended the line to the common prefix "/branch". */
+    CHECK(strcmp(fytim_input(h.ft), "/branch") == 0);
+    p.col = x + 5;
+    fyvt_screen_get_cell(h.vs, p, &cell);
+    CHECK(cell.attrs.underline);
+    p.row = y + 1;
+    p.col = x + 6;
+    fyvt_screen_get_cell(h.vs, p, &cell);
+    CHECK(!cell.attrs.underline);
+    p.row = y;
+    CHECK(vth_col(&h, y, ">branch") == x - 1);
+    CHECK(vth_col(&h, y + 1, ">") < 0);
+    p.col = x - 2;
+    fyvt_screen_get_cell(h.vs, p, &cell);
+    CHECK(vth_rgb_equal(&h, cell.fg, 0xff0000));
+    /* A styled selection is its wash, without the reverse video of the
+     * default. */
+    p.col = x;
+    fyvt_screen_get_cell(h.vs, p, &cell);
+    CHECK(!cell.attrs.reverse);
+    CHECK(vth_rgb_equal(&h, cell.bg, 0x0000ff));
+    vth_close(&h);
+}
+
+/* Enter on a selection that the line already holds submits the line. */
+static void test_completion_popup_enter_submits(void)
+{
+    struct vth h;
+    struct fytim_event ev;
+    bool line = false;
+
+    if(!vth_open_pty_screen(&h, 24, 80, FYTIM_SCREEN_ALT)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, popup_items, NULL) == FYTIM_OK);
+    CHECK(fytim_set_completion_auto(h.ft, true) == FYTIM_OK);
+    vth_pump_ready(&h);
+    vth_keys(&h, "/branch");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    vth_keys(&h, "\r");
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    while(fytim_next_event(h.ft, &ev))
+        if(ev.type == FYTIM_EVENT_LINE && !strcmp(ev.text, "/branch"))
+            line = true;
+    CHECK(line);
+    vth_close(&h);
+}
+
+/* An automatic popup opens as the line is typed, with one candidate too,
+ * and takes nothing on its own; one candidate that is the line opens
+ * nothing. Escape keeps it closed until the line changes; a line from the
+ * history does not open it. */
+static void test_completion_popup_auto(void)
+{
+    struct vth h;
+
+    if(!vth_open_pty_screen(&h, 24, 80, FYTIM_SCREEN_ALT)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, popup_items, NULL) == FYTIM_OK);
+    CHECK(fytim_set_completion_auto(h.ft, true) == FYTIM_OK);
+    vth_pump_ready(&h);
+    vth_keys(&h, "/");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(vth_find_row(&h, "Ask a side") >= 0);
+    CHECK(strcmp(fytim_input(h.ft), "/") == 0);
+    vth_keys(&h, "bt");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/bt") == 0);
+    vth_keys(&h, "w");
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    vth_keys(&h, "\x7f");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    vth_keys(&h, "\x1b[27u");
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    vth_keys(&h, "\x7f");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(vth_find_row(&h, "Pick a branch") >= 0);
+    CHECK(fytim_history_add(h.ft, "/branch") == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "") == FYTIM_OK);
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    vth_keys(&h, "\x1b[A");
+    vth_pump_ready(&h);
+    CHECK(strcmp(fytim_input(h.ft), "/branch") == 0);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(fytim_set_completion_auto(h.ft, false) == FYTIM_OK);
+    vth_keys(&h, "e");
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    vth_close(&h);
+}
+
 /* Outside the callback a candidate is refused, and so is an anchor past the
  * line. */
 static void test_completion_popup_rejects(void)
@@ -1066,6 +1242,11 @@ int main(int argc, char **argv)
         { "completion_popup_narrows", test_completion_popup_narrows },
         { "completion_popup_scrolls", test_completion_popup_scrolls },
         { "completion_popup_rejects", test_completion_popup_rejects },
+        { "completion_popup_clips", test_completion_popup_clips },
+        { "completion_popup_styles", test_completion_popup_styles },
+        { "completion_popup_enter_submits",
+          test_completion_popup_enter_submits },
+        { "completion_popup_auto", test_completion_popup_auto },
         { "completion_popup_inline_fits", test_completion_popup_inline_fits },
         { "completion_popup_mouse", test_completion_popup_mouse },
         { "completion_popup_tab_after_text",
