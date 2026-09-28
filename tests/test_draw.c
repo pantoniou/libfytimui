@@ -38,6 +38,14 @@ TIMUI_TEST(test_draw_text_emoji_selector_widens){
     TIMUI_CHECK(g && (g->flags & TIMUI_CELL_CONTINUATION));
     g = timui_cells_get(&b, 2, 0);
     TIMUI_CHECK(g && g->codepoint == 'x');
+    /* U+2605 has no emoji form: the selector leaves it one column */
+    timui_draw_text(&b, 0, 2, TIMUI_STR_LIT("\xE2\x98\x85\xEF\xB8\x8Fx"), s);
+    g = timui_cells_get(&b, 0, 2);
+    TIMUI_CHECK(g && g->codepoint == 0x2605 && g->width == 1);
+    g = timui_cells_get(&b, 1, 2);
+    TIMUI_CHECK(g && g->codepoint == 'x');
+    TIMUI_CHECK(timui_grapheme_width("\xE2\x98\x85\xEF\xB8\x8F", 6) == 1);
+    TIMUI_CHECK(timui_grapheme_width("\xE2\x9C\x88\xEF\xB8\x8F", 6) == 2);
     /* a letter keeps one column: the selector has no emoji to widen */
     timui_draw_text(&b, 0, 1, TIMUI_STR_LIT("a\xEF\xB8\x8Fx"), s);
     g = timui_cells_get(&b, 0, 1);
