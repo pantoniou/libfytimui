@@ -90,6 +90,13 @@ static const TimuiCodepointRange timui_wide_ranges[] = {
 #include "timui_wcwidth_wide.h"
 };
 
+/* The codepoints that U+FE0F asks to draw in emoji presentation. CMake makes
+ * the table from core/data/emoji-variation-sequences.txt when the project is
+ * configured. */
+static const TimuiCodepointRange timui_emoji_vs_ranges[] = {
+#include "timui_emoji_vs.h"
+};
+
 static int codepoint_in_ranges_(uint32_t cp,
                                 const TimuiCodepointRange *ranges,
                                 size_t count){
@@ -219,9 +226,14 @@ static void put_combining_(TimuiCellBuffer *buf, int x, int y, uint32_t cp){
         return;
     }
 }
-static int timui_grapheme_emoji_base_(uint32_t cp);
+/* U+FE0F asks for the emoji presentation of a codepoint that Unicode lists
+ * in its emoji variation sequences. */
+static int timui_emoji_vs_base_(uint32_t cp){
+    return codepoint_in_ranges_(cp, timui_emoji_vs_ranges,
+        sizeof timui_emoji_vs_ranges / sizeof timui_emoji_vs_ranges[0]);
+}
 /* U+FE0F asks for the emoji presentation of the glyph at (x,y): a terminal
- * draws a one-column emoji base as two columns then. Widen its cell and blank
+ * draws such a one-column glyph as two columns then. Widen its cell and blank
  * the continuation, as a wide glyph does. Returns 1 when the cell widened. */
 static int widen_emoji_(TimuiCellBuffer *buf, int x, int y){
     TimuiCell *c, cont;
@@ -230,7 +242,7 @@ static int widen_emoji_(TimuiCellBuffer *buf, int x, int y){
        x + 1 >= buf->clip.x + buf->clip.w)) return 0;
     c = timui_cells_get(buf, x, y);
     if(!c || c->width != 1 || (c->flags & TIMUI_CELL_CONTINUATION) ||
-       !timui_grapheme_emoji_base_(c->codepoint)) return 0;
+       !timui_emoji_vs_base_(c->codepoint)) return 0;
     clear_wide_pair_touching_(buf, x + 1, y);
     c->width = 2;
     memset(&cont, 0, sizeof cont);

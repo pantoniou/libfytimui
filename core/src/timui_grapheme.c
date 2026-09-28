@@ -103,6 +103,7 @@ TIMUI_API size_t timui_grapheme_prev(const char *s, size_t len, size_t off){
 TIMUI_API int timui_grapheme_width(const char *s, size_t len){
     size_t end, i;
     int w = 0, saw_ri = 0, saw_zwj = 0, saw_vs16 = 0, saw_emoji = 0;
+    int saw_vs_base = 0;
     if(!s || len == 0) return 0;
     end = timui_grapheme_next(s, len, 0);
     for(i = 0; i < end;){
@@ -115,12 +116,14 @@ TIMUI_API int timui_grapheme_width(const char *s, size_t len){
         if(timui_grapheme_extend_(cp)){ i = n; continue; }
         if(timui_grapheme_ri_(cp)){ saw_ri++; saw_emoji = 1; i = n; continue; }
         if(timui_grapheme_emoji_base_(cp)) saw_emoji = 1;
+        if(timui_emoji_vs_base_(cp)) saw_vs_base = 1;
         cw = timui_utf8_width(cp);
         if(cw > w) w = cw;
         i = n;
     }
     if(saw_ri >= 1) return 2;
     if(saw_zwj && saw_emoji) return 2;
-    if(saw_vs16 && saw_emoji && w < 2) return 2;
+    /* The selector widens only a codepoint it has an emoji form for. */
+    if(saw_vs16 && saw_vs_base && w < 2) return 2;
     return w;
 }

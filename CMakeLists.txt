@@ -69,10 +69,17 @@ endif()
 # libfytimui statically, so no timui_* symbol reaches the public ABI. The
 # public headers never include timui.h.
 # ---------------------------------------------------------------------------
+# The codepoints that U+FE0F widens, from the Unicode emoji data.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmojiVariation.cmake)
+emoji_variation_table(
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/data/emoji-variation-sequences.txt
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/timui_emoji_vs.h)
+
 add_library(fytimui-core OBJECT core/src/timui.c)
 target_include_directories(fytimui-core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core/include
-    ${CMAKE_CURRENT_SOURCE_DIR})
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set_target_properties(fytimui-core PROPERTIES
     C_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
