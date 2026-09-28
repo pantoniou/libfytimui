@@ -102,6 +102,14 @@ static void vth_pump(struct vth *h)
     fyvt_screen_flush_damage(h->vs);
 }
 
+/* What the terminal answers, such as a cursor report, reaches the library. */
+static void vth_reply(const char *s, size_t len, void *user)
+{
+    struct vth *h = user;
+    ssize_t n = write(h->in[1], s, len);
+    CHECK(n == (ssize_t)len);
+}
+
 static uint32_t ch_at(struct vth *h, int row, int col)
 {
     struct fyvt_screen_cell c;
@@ -671,6 +679,63 @@ static void test_a_scroll_elsewhere_keeps_the_selection(void)
     vth_close(&h);
 }
 
+/* The page "a<heart>x|" on a terminal that draws an emoji base with U+FE0F
+ * in @wide columns: whether FYTIM_EVENT_GLYPH_WIDTH was seen, and the
+ * columns of 'x' after the first frame and after the reply. */
+static bool emoji_page(bool wide, int *x_first, int *x_after, int *bar_after,
+                       int *row)
+{
+    static const char page[] = "a\xe2\x9d\xa4\xef\xb8\x8fx|\n";
+    struct fytim_event ev;
+    struct vth h;
+    bool seen = false;
+    int i;
+
+    fytim_glyph_reset();
+    if(!vth_open(&h)){ CHECK(0); return false; }
+    fyvt_set_emoji_vs_wide(h.vt, wide);
+    fyvt_output_set_callback(h.vt, vth_reply, &h);
+    CHECK(fytim_page_set(h.ft, page, sizeof(page) - 1, NULL, 0) == FYTIM_OK);
+    vth_pump(&h);
+    *row = find_char(&h, 'x', x_first);
+    /* The reply is read by the next pump, which draws again if it must. */
+    for(i = 0; i < 3; i++){
+        vth_pump(&h);
+        while(fytim_next_event(h.ft, &ev))
+            if(ev.type == FYTIM_EVENT_GLYPH_WIDTH) seen = true;
+    }
+    *row = find_char(&h, 'x', x_after);
+    *bar_after = -1;
+    (void)find_char(&h, '|', bar_after);
+    vth_close(&h);
+    return seen;
+}
+
+/* A terminal that draws the emoji in one column: 'x' stands where the page
+ * put it before the reply comes, and one column nearer once the glyph is
+ * measured, with nothing left of where it stood. */
+static void test_an_emoji_selector_is_measured_narrow(void)
+{
+    int first = -1, after = -1, bar = -1, row;
+    bool seen = emoji_page(false, &first, &after, &bar, &row);
+
+    CHECK(first == 3);
+    CHECK(fytim_glyph_width(0x2764) == 1);
+    CHECK(seen);
+    CHECK(after == 2 && bar == 3);
+}
+
+/* A terminal that draws it in two columns keeps the page as it was. */
+static void test_an_emoji_selector_is_measured_wide(void)
+{
+    int first = -1, after = -1, bar = -1, row;
+    bool seen = emoji_page(true, &first, &after, &bar, &row);
+
+    CHECK(first == 3 && after == 3 && bar == 4);
+    CHECK(fytim_glyph_width(0x2764) == 2);
+    CHECK(!seen);
+}
+
 static const struct { const char *name; void (*fn)(void); } cases[] = {
     { "a_selection_is_drawn_in_reverse", test_a_selection_is_drawn_in_reverse },
     { "a_scroll_clears_the_selection", test_a_scroll_clears_the_selection },
@@ -693,6 +758,10 @@ static const struct { const char *name; void (*fn)(void); } cases[] = {
       test_bound_tiles_stand_in_their_slots },
     { "tiles_of_a_row_share_their_head",
       test_tiles_of_a_row_share_their_head },
+    { "an_emoji_selector_is_measured_narrow",
+      test_an_emoji_selector_is_measured_narrow },
+    { "an_emoji_selector_is_measured_wide",
+      test_an_emoji_selector_is_measured_wide },
 };
 
 int main(int argc, char **argv)

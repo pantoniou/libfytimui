@@ -487,7 +487,9 @@ if(VTERM_FOUND)
               a_tile_page_frames_its_screen a_prompt_card_frames_the_editor
               a_tile_page_frames_its_screen_in_a_grid
               a_page_view_draws_its_part bound_tiles_stand_in_their_slots
-              tiles_of_a_row_share_their_head)
+              tiles_of_a_row_share_their_head
+              an_emoji_selector_is_measured_narrow
+              an_emoji_selector_is_measured_wide)
         add_test(NAME fytim.page.vt.${t} COMMAND test_fytim_page_vt ${t})
     endforeach()
 endif()
