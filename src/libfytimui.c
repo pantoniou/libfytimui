@@ -3164,8 +3164,7 @@ static bool complete_key(struct fytim *ft, TimuiKey key, uint32_t mods)
     if(!ft->comp_active) return false;
     mods &= TIMUI_MOD_SHIFT | TIMUI_MOD_ALT | TIMUI_MOD_CTRL;
     if(key == TIMUI_KEY_TAB && mods == TIMUI_MOD_SHIFT) complete_move(ft, -1);
-    else if(key == TIMUI_KEY_TAB && !mods)
-        (void)complete_take(ft, ft->comp_idx);
+    else if(key == TIMUI_KEY_TAB && !mods) complete_move(ft, 1);
     else if(key == TIMUI_KEY_DOWN && !mods) complete_move(ft, 1);
     else if(key == TIMUI_KEY_UP && !mods) complete_move(ft, -1);
     else if(key == TIMUI_KEY_PAGE_DOWN && !mods)
@@ -4466,7 +4465,7 @@ static void draw_completion_ribbon(struct fytim *ft, TimuiFrame *f,
                                    const struct fytim_rect *r, TimuiStyle st)
 {
     static const char hint[] =
-        " \xe2\x86\x91\xe2\x86\x93 select \xc2\xb7 Tab/Enter take \xc2\xb7 Esc close";
+        " \xe2\x86\x91\xe2\x86\x93/Tab select \xc2\xb7 Enter take \xc2\xb7 Esc close";
 
     (void)ft;
     draw_row_styled(f, timui_frame_buffer(f), r->x, r->y, r->w, hint, st);
