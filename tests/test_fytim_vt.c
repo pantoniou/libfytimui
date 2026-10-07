@@ -968,6 +968,27 @@ static void test_completion_popup_inline_fits(void)
     vth_close(&h);
 }
 
+/* A popup of one row has nothing to cycle to: Tab completes with it, and the
+ * popup closes. */
+static void test_completion_popup_tab_single(void)
+{
+    struct vth h;
+
+    if(!vth_open_pty_screen(&h, 24, 80, FYTIM_SCREEN_ALT)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, popup_items, NULL) == FYTIM_OK);
+    CHECK(fytim_set_completion_auto(h.ft, true) == FYTIM_OK);
+    vth_pump_ready(&h);
+    vth_keys(&h, "/bt");
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/bt") == 0);
+    vth_keys(&h, "\t");
+    vth_pump_ready(&h);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/btw") == 0);
+    vth_close(&h);
+}
+
 /* Text and a Tab that arrive together complete the text: the Tab is acted on
  * in the order it was typed. */
 static void test_completion_popup_tab_after_text(void)
@@ -1253,6 +1274,8 @@ int main(int argc, char **argv)
         { "completion_popup_auto", test_completion_popup_auto },
         { "completion_popup_inline_fits", test_completion_popup_inline_fits },
         { "completion_popup_mouse", test_completion_popup_mouse },
+        { "completion_popup_tab_single",
+          test_completion_popup_tab_single },
         { "completion_popup_tab_after_text",
           test_completion_popup_tab_after_text },
         { "prompt_wraps_and_grows", test_prompt_wraps_and_grows },
