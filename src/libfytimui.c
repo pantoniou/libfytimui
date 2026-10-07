@@ -3164,7 +3164,11 @@ static bool complete_key(struct fytim *ft, TimuiKey key, uint32_t mods)
     if(!ft->comp_active) return false;
     mods &= TIMUI_MOD_SHIFT | TIMUI_MOD_ALT | TIMUI_MOD_CTRL;
     if(key == TIMUI_KEY_TAB && mods == TIMUI_MOD_SHIFT) complete_move(ft, -1);
-    else if(key == TIMUI_KEY_TAB && !mods) complete_move(ft, 1);
+    else if(key == TIMUI_KEY_TAB && !mods){
+        /* One row has nothing to cycle to: Tab completes with it. */
+        if(ft->comp_n == 1) (void)complete_take(ft, 0);
+        else complete_move(ft, 1);
+    }
     else if(key == TIMUI_KEY_DOWN && !mods) complete_move(ft, 1);
     else if(key == TIMUI_KEY_UP && !mods) complete_move(ft, -1);
     else if(key == TIMUI_KEY_PAGE_DOWN && !mods)
