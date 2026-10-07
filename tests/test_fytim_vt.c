@@ -823,8 +823,8 @@ static void test_completion_popup_is_a_layer(void)
     vth_close(&h);
 }
 
-/* Down moves on, Up and Shift-Tab move back, Tab and Enter take the selection without
- * submitting, Escape interrupts nothing. */
+/* Down and Tab move on and wrap, Up and Shift-Tab move back, Enter takes the
+ * selection without submitting, Escape interrupts nothing. */
 static void test_completion_popup_keys(void)
 {
     struct vth h;
@@ -836,7 +836,11 @@ static void test_completion_popup_keys(void)
     vth_keys(&h, "\x1b[B\x1b[B\x1b[Z\x1b[B\x1b[A");
     vth_pump_ready(&h);
     CHECK(strcmp(fytim_input(h.ft), "/b") == 0);
-    vth_keys(&h, "\t");
+    vth_keys(&h, "\t");              /* the last row, the first, the second */
+    vth_pump_ready(&h);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/b") == 0);
+    vth_keys(&h, "\t\t\r");
     vth_pump_ready(&h);
     CHECK(!fytim_completion_active(h.ft));
     CHECK(strcmp(fytim_input(h.ft), "/branches") == 0);
