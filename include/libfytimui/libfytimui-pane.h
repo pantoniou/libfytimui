@@ -45,7 +45,10 @@ struct fytim_cfg {
                                 then fires only for Escape, and the host must
                                 handle SIGINT itself -- which is the point: a
                                 host whose loop is wedged cannot read ^C,
-                                because reading it needs that same loop. ^\
+                                because reading it needs that same loop. A
+                                terminal that reports ^C as a key, with the
+                                keyboard protocol, sends no SIGINT: the
+                                library raises it from the key report. ^\
                                 and ^Z stay application keys. */
     enum fytim_screen screen; /* FYTIM_SCREEN_INLINE unless the host takes
                                  the alternate screen */
