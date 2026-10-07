@@ -307,9 +307,9 @@ enum fytim_result fytim_history_set_max_len(struct fytim *ft, int max_len) FYTIM
  * each with its label and a one-line description; the start of a label that
  * repeats the word typed so far is drawn in FYTIM_CHROME_POPUP_MATCH. Down
  * and Tab select the next, wrapping at the end, Up and Shift-Tab the
- * previous, and PageDown and PageUp move a page. Enter puts the selection
- * into the line without submitting it, and Enter on a selection that
- * changes nothing but trailing blanks submits the line.
+ * previous, and PageDown and PageUp move a page. With one row, Tab takes it.
+ * Enter puts the selection into the line without submitting it, and Enter on
+ * a selection that changes nothing but trailing blanks submits the line.
  * Escape closes the popup. With the mouse grabbed, the wheel over the popup
  * moves the selection, a click on a row takes it, and a click elsewhere
  * closes it. Typing edits the line, and the library asks the host again for
