@@ -344,7 +344,9 @@ if(ASAN_C_FLAGS)
 endif()
 
 foreach(t typed_text_reaches_the_surface enter_is_a_return
-          control_chord_is_a_control_byte every_control_byte_arrives
+          control_chord_is_a_control_byte shift_tab_is_csi_z
+          ctrl_c_key_report_is_sigint ctrl_c_key_report_is_an_event
+          every_control_byte_arrives
           arrow_is_a_csi_sequence
           editing_keys_keep_their_codes keys_keep_their_order
           repeated_keys_all_arrive prompt_does_not_see_the_keys

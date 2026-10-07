@@ -11,6 +11,7 @@
 #include "libfytimui.h"
 
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,7 +32,7 @@ struct harness {
     int out[2];
 };
 
-static int h_open(struct harness *h)
+static int h_open_cfg(struct harness *h, bool intr_signal)
 {
     struct fytim_cfg cfg;
     memset(h, 0, sizeof *h);
@@ -41,8 +42,14 @@ static int h_open(struct harness *h)
     fytim_cfg_default(&cfg);
     cfg.input_fd  = h->in[0];
     cfg.output_fd = h->out[1];
+    cfg.intr_signal = intr_signal;
     h->ft = fytim_create(&cfg);
     return h->ft != NULL;
+}
+
+static int h_open(struct harness *h)
+{
+    return h_open_cfg(h, false);
 }
 
 static void h_close(struct harness *h)
@@ -149,6 +156,89 @@ static void test_control_chord_is_a_control_byte(void)
     CHECK(interrupts == 0);
     fytim_surface_close(s);
     h_close(&h);
+}
+
+/* Shift-Tab is CSI Z, as a terminal sends it, whether the terminal reported
+ * it with the legacy sequence or with the keyboard protocol. */
+static void test_shift_tab_is_csi_z(void)
+{
+    struct harness h;
+    struct fytim_surface *s;
+    char got[64];
+    if(!h_open(&h)){ CHECK(0); return; }
+    s = fytim_surface_open(h.ft, 2, 8);
+    CHECK(fytim_surface_set_keys(s, true) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+    CHECK(type(&h, s, "\x1b[Z", 3, got, sizeof got) == 3);
+    CHECK(strcmp(got, "\x1b[Z") == 0);
+    CHECK(type(&h, s, "\x1b[9;2u", 6, got, sizeof got) == 3);
+    CHECK(strcmp(got, "\x1b[Z") == 0);
+    CHECK(type(&h, s, "\t", 1, got, sizeof got) == 1);
+    CHECK(got[0] == '\t');
+    fytim_surface_close(s);
+    h_close(&h);
+}
+
+static volatile sig_atomic_t sigints;
+
+static void count_sigint(int signo)
+{
+    (void)signo;
+    sigints++;
+}
+
+/* Run @bytes through a library that was asked for ^C as SIGINT, or not, and
+ * count the signals and the interrupt events. */
+static void intr_run(bool intr_signal, const char *bytes, int *signals,
+                     int *events)
+{
+    struct sigaction sa, old;
+    struct fytim_event ev;
+    struct harness h;
+
+    *signals = *events = 0;
+    if(!h_open_cfg(&h, intr_signal)){ CHECK(0); return; }
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = count_sigint;
+    sigemptyset(&sa.sa_mask);
+    CHECK(sigaction(SIGINT, &sa, &old) == 0);
+    sigints = 0;
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+    h_keys(&h, bytes, strlen(bytes));
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_drain(&h);
+    while(fytim_next_event(h.ft, &ev))
+        if(ev.type == FYTIM_EVENT_INTERRUPT) (*events)++;
+    *signals = sigints;
+    CHECK(sigaction(SIGINT, &old, NULL) == 0);
+    h_close(&h);
+}
+
+/* The keyboard protocol reports ^C as a key, so the terminal sends no SIGINT.
+ * A host that asked for the signal gets it from the key report, and no
+ * interrupt event: that is left to Escape. */
+static void test_ctrl_c_key_report_is_sigint(void)
+{
+    int signals, events;
+
+    intr_run(true, "\x1b[99;5u", &signals, &events);
+    CHECK(signals == 1);
+    CHECK(events == 0);
+    intr_run(true, "\x1b[27u", &signals, &events);
+    CHECK(signals == 0);
+    CHECK(events == 1);
+}
+
+/* Without the request ^C stays an interrupt event, as the host reads it. */
+static void test_ctrl_c_key_report_is_an_event(void)
+{
+    int signals, events;
+
+    intr_run(false, "\x1b[99;5u", &signals, &events);
+    CHECK(signals == 0);
+    CHECK(events == 1);
 }
 
 /* Every control byte reaches the program, not only the letters: ^\ (0x1c) is
@@ -482,6 +572,9 @@ static const struct case_ent cases[] = {
     { "typed_text_reaches_the_surface",  test_typed_text_reaches_the_surface },
     { "enter_is_a_return",               test_enter_is_a_return },
     { "control_chord_is_a_control_byte", test_control_chord_is_a_control_byte },
+    { "shift_tab_is_csi_z",              test_shift_tab_is_csi_z },
+    { "ctrl_c_key_report_is_sigint",     test_ctrl_c_key_report_is_sigint },
+    { "ctrl_c_key_report_is_an_event",   test_ctrl_c_key_report_is_an_event },
     { "every_control_byte_arrives",      test_every_control_byte_arrives },
     { "arrow_is_a_csi_sequence",         test_arrow_is_a_csi_sequence },
     { "editing_keys_keep_their_codes",   test_editing_keys_keep_their_codes },
