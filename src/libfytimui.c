@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <signal.h>
 #include <unistd.h>
 
 #ifndef FYTIM_VERSION_STRING
@@ -186,6 +187,7 @@ struct fytim {
     bool               closed;
     bool               suspended;  /* terminal released to a child process */
     bool               mouse;      /* the grab the host asked for */
+    bool               intr_signal; /* ^C is SIGINT, also as a key report */
     /* The right part of the header and its acts, from the first column of
      * the text; the acts are drawn at @header_right_x on @header_right_y of
      * the frame @header_right_seq. */
@@ -405,6 +407,7 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
      */
     if(cfg->mouse) tcfg.flags |= TIMUI_FLAG_MOUSE;
     ft->mouse = cfg->mouse;
+    ft->intr_signal = cfg->intr_signal;
     ft->screen = cfg->screen;
     ft->clipboard = cfg->clipboard;
     if(ft->screen == FYTIM_SCREEN_ALT) ft->mouse = true;
@@ -6342,8 +6345,17 @@ enum fytim_result fytim_pump(struct fytim *ft)
         bool zoom_rows_next = ctrl && cp == 't' &&
             timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN,
                                    TIMUI_MOD_CTRL | TIMUI_MOD_SHIFT);
-        if(ctrl && cp == 'c')
-            ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
+        /*
+         * The keyboard protocol reports ^C as a key, so the terminal never
+         * turns it into SIGINT. A host that asked for the signal gets it
+         * the same way.
+         */
+        if(ctrl && cp == 'c'){
+            if(ft->intr_signal)
+                raise(SIGINT);
+            else
+                ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
+        }
         if(ctrl && cp == 'd' && !ft->input[0])
             ev_push(ft, FYTIM_EVENT_QUIT, NULL, 0, 0, 0);
         if(ctrl && cp == 'l'){
