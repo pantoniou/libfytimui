@@ -5256,6 +5256,10 @@ static void surface_keys_collect(struct fytim *ft, TimuiFrame *f)
             key_put(&k, utf8, fytim_utf8_put_(utf8, rec.codepoint));
             continue;
         }
+        if(rec.key == TIMUI_KEY_TAB && (rec.mods & TIMUI_MOD_SHIFT)){
+            key_put_str(&k, "\x1b[Z");
+            continue;
+        }
         seq = key_sequence(rec.key);
         if(seq){
             key_put_str(&k, seq);
