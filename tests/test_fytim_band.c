@@ -282,6 +282,50 @@ static void test_completion(void)
     h_close(&h);
 }
 
+static void prefix_cb(void *user, const char *text,
+                      struct fytim_completions *c)
+{
+    static const char *const cands[] = {
+        "/reasoning-effort ", "/reasoning-summary ",
+    };
+    size_t i;
+
+    (void)user;
+    for(i = 0; i < sizeof cands / sizeof cands[0]; i++)
+        if(!strncmp(cands[i], text, strlen(text)))
+            CHECK(fytim_completion_add(c, cands[i]) == FYTIM_OK);
+}
+
+/* A popup that opened as the line was typed takes the first Tab to extend the
+ * line to what the candidates share, and the Tabs after it cycle. */
+static void test_completion_auto_prefix(void)
+{
+    struct harness h;
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, prefix_cb, NULL) == FYTIM_OK);
+    CHECK(fytim_set_completion_auto(h.ft, true) == FYTIM_OK);
+
+    h_keys(&h, "/reason");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/reason") == 0);
+    h_keys(&h, "\t");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/reasoning-") == 0);
+    /* Nothing more is shared, so the next Tab selects the second row. */
+    h_keys(&h, "\t");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/reasoning-") == 0);
+    h_keys(&h, "\r");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/reasoning-summary ") == 0);
+    h_close(&h);
+}
+
 /* Chrome and live work-band content reach the band. */
 static void test_chrome_and_workband(void)
 {
@@ -1141,6 +1185,7 @@ int main(int argc, char **argv)
       test_wheel_emits_scrollback_with_its_direction },
         { "history_recall", test_history_recall },
         { "completion", test_completion },
+        { "completion_auto_prefix", test_completion_auto_prefix },
         { "chrome_and_workband", test_chrome_and_workband },
         { "workband_lifecycle", test_workband_lifecycle },
         { "workband_caps_last_rows", test_workband_caps_last_rows },
