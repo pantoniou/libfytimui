@@ -3029,11 +3029,44 @@ static bool complete_collect(struct fytim *ft)
     return ft->comp_n > 0;
 }
 
-static void complete_tab(struct fytim *ft)
+/*
+ * Extend the line to the longest common prefix of the candidates, when that
+ * is longer than the line. The candidates stay as they are, and the line
+ * counts as the query they answer. Returns whether the line changed, and
+ * false when it could not keep the line, with the popup closed.
+ */
+static bool complete_extend(struct fytim *ft)
 {
     size_t plen, common;
+    char *q;
     int i;
 
+    plen = strlen(ft->input);
+    common = strlen(ft->comp[0].cand);
+    for(i = 1; i < ft->comp_n; i++){
+        size_t j = 0;
+        while(j < common && ft->comp[i].cand[j] == ft->comp[0].cand[j]) j++;
+        common = j;
+    }
+    if(common <= plen || common >= sizeof ft->input ||
+       strncmp(ft->comp[0].cand, ft->input, plen))
+        return false;
+    memcpy(ft->input, ft->comp[0].cand, common);
+    ft->input[common] = '\0';
+    ft->pst.cursor = common;
+    ft->pst.scroll_y = 0;
+    q = strdup(ft->input);
+    if(!q){
+        complete_leave(ft);
+        return false;
+    }
+    free(ft->comp_query);
+    ft->comp_query = q;
+    return true;
+}
+
+static void complete_tab(struct fytim *ft)
+{
     if(!ft->complete_fn) return;
     if(!complete_collect(ft)){                    /* nothing matches */
         complete_leave(ft);
@@ -3046,30 +3079,8 @@ static void complete_tab(struct fytim *ft)
     }
     /* The line first extends to the longest common prefix, and the popup
      * then offers what is left to choose. */
-    plen = strlen(ft->input);
-    common = strlen(ft->comp[0].cand);
-    for(i = 1; i < ft->comp_n; i++){
-        size_t j = 0;
-        while(j < common && ft->comp[i].cand[j] == ft->comp[0].cand[j]) j++;
-        common = j;
-    }
-    if(common > plen && common < sizeof ft->input &&
-       !strncmp(ft->comp[0].cand, ft->input, plen)){
-        char *q;
-
-        memcpy(ft->input, ft->comp[0].cand, common);
-        ft->input[common] = '\0';
-        ft->pst.cursor = common;
-        ft->pst.scroll_y = 0;
-        q = strdup(ft->input);
-        if(!q){
-            complete_leave(ft);
-            return;
-        }
-        free(ft->comp_query);
-        ft->comp_query = q;
-    }
-    ft->comp_active = 1;
+    (void)complete_extend(ft);
+    if(ft->comp_n > 0) ft->comp_active = 1;
 }
 
 /* Whether candidate @idx is the line, but for trailing blanks. */
@@ -3165,9 +3176,11 @@ static bool complete_key(struct fytim *ft, TimuiKey key, uint32_t mods)
     mods &= TIMUI_MOD_SHIFT | TIMUI_MOD_ALT | TIMUI_MOD_CTRL;
     if(key == TIMUI_KEY_TAB && mods == TIMUI_MOD_SHIFT) complete_move(ft, -1);
     else if(key == TIMUI_KEY_TAB && !mods){
-        /* One row has nothing to cycle to: Tab completes with it. */
+        /* One row has nothing to cycle to: Tab completes with it. Several
+         * first extend the line to what they share, as the Tab that opened
+         * the popup does, and only then cycle. */
         if(ft->comp_n == 1) (void)complete_take(ft, 0);
-        else complete_move(ft, 1);
+        else if(!complete_extend(ft)) complete_move(ft, 1);
     }
     else if(key == TIMUI_KEY_DOWN && !mods) complete_move(ft, 1);
     else if(key == TIMUI_KEY_UP && !mods) complete_move(ft, -1);
