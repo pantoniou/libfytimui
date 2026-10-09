@@ -1142,6 +1142,497 @@ static void test_ctrl_shift_t_cycles_zoom_rows(void)
     h_close(&h);
 }
 
+/* Bind one key in @mode. */
+static enum fytim_result bind_one(struct harness *h, const char *mode,
+                                  const char *key, const char *action)
+{
+    struct fytim_keymap_entry e = { key, action };
+
+    return fytim_mode_bind(h->ft, mode, &e, 1);
+}
+
+/* The type of the first event of the pump after @bytes, or -1 for none. */
+static int event_after(struct harness *h, const char *bytes)
+{
+    struct fytim_event ev;
+
+    h_keys(h, bytes);
+    if(fytim_pump(h->ft) != FYTIM_OK) return -2;
+    return fytim_next_event(h->ft, &ev) ? (int)ev.type : -1;
+}
+
+/* A key of the library is data: it moves to another key, and a key can be
+ * left unbound. */
+static void test_a_key_of_the_library_can_move(void)
+{
+    struct harness h;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(event_after(&h, "\x0c") == FYTIM_EVENT_REDRAW);
+    CHECK(bind_one(&h, "prompt", "Ctrl-l", "") == FYTIM_OK);
+    CHECK(event_after(&h, "\x0c") == -1);
+    CHECK(bind_one(&h, "prompt", "F5", "fytim.redraw") == FYTIM_OK);
+    CHECK(event_after(&h, "\x1b[15~") == FYTIM_EVENT_REDRAW);
+    /* Ctrl-D quits on an empty line only; on text it is the editor's. */
+    CHECK(event_after(&h, "\x04") == FYTIM_EVENT_QUIT);
+    h_keys(&h, "ab");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(event_after(&h, "\x04") == -1);
+    /* The defaults come back. */
+    CHECK(fytim_mode_reset(h.ft, "prompt", 1) == FYTIM_OK);
+    CHECK(event_after(&h, "\x0c") == FYTIM_EVENT_REDRAW);
+    CHECK(event_after(&h, "\x1b[15~") == -1);
+    h_close(&h);
+}
+
+/* A mode of the host inherits what it does not bind. A key it binds with a
+ * name of the host is reported with that name, and an empty action hides the
+ * key of the parent. */
+static void test_a_mode_inherits_its_parent(void)
+{
+    static const struct fytim_keymap_entry keys[] = {
+        { "Up", "ask.up" }, { "Enter", "ask.pick" },
+        { "Escape", "ask.cancel" }, { "Ctrl-l", "" },
+    };
+    struct harness h;
+    struct fytim_event ev;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(!strcmp(fytim_mode(h.ft), "prompt"));
+    CHECK(fytim_mode_bind(h.ft, "ask", keys, 4) == FYTIM_OK);
+    CHECK(fytim_mode_set_parent(h.ft, "ask", "prompt") == FYTIM_OK);
+    CHECK(fytim_set_mode(h.ft, "ask") == FYTIM_OK);
+    CHECK(!strcmp(fytim_mode(h.ft), "ask"));
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+
+    h_keys(&h, "\x1b[A");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(next_key_is(&h, "ask.up"));
+    h_keys(&h, "\r");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(next_key_is(&h, "ask.pick"));
+    /* Escape is the host's here and interrupts nothing. */
+    h_keys(&h, "\x1b[27u");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(next_key_is(&h, "ask.cancel"));
+    CHECK(!fytim_next_event(h.ft, &ev));
+    /* ^L is hidden, and ^D comes from the parent. */
+    CHECK(event_after(&h, "\x0c") == -1);
+    CHECK(event_after(&h, "\x04") == FYTIM_EVENT_QUIT);
+
+    CHECK(fytim_set_mode(h.ft, NULL) == FYTIM_OK);
+    CHECK(!strcmp(fytim_mode(h.ft), "prompt"));
+    CHECK(event_after(&h, "\x1b[A") == -1);
+    CHECK(event_after(&h, "\x0c") == FYTIM_EVENT_REDRAW);
+    CHECK(event_after(&h, "\x1b[27u") == FYTIM_EVENT_INTERRUPT);
+    h_close(&h);
+}
+
+/* A bad call is refused whole and leaves the mode as it was. */
+static void test_mode_tables_are_checked(void)
+{
+    static const struct fytim_keymap_entry twice[] = {
+        { "Down", "a" }, { "Down", "b" },
+    };
+    static const struct fytim_keymap_entry same_key[] = {
+        { "Ctrl-i", "a" }, { "Tab", "b" },
+    };
+    static const struct fytim_keymap_entry no_exit[] = {
+        { "Escape", "" }, { "Ctrl-c", "" }, { "Ctrl-d", "" },
+    };
+    struct fytim_keymap_entry many[FYTIM_MODE_KEYS_MAX + 1];
+    char names[FYTIM_MODE_KEYS_MAX + 1][2];
+    struct harness h;
+    size_t i;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_mode(h.ft, "nothing") == FYTIM_ERR_INVALID);
+    CHECK(fytim_set_mode(NULL, "prompt") == FYTIM_ERR_INVALID);
+    CHECK(bind_one(&h, "m", "Down", "fytim.nothing") == FYTIM_ERR_INVALID);
+    CHECK(bind_one(&h, "m", "Down", "has space") == FYTIM_ERR_INVALID);
+    CHECK(bind_one(&h, "m", "Hyper-x", "a") == FYTIM_ERR_INVALID);
+    CHECK(bind_one(&h, "bad name", "Down", "a") == FYTIM_ERR_INVALID);
+    CHECK(bind_one(&h, "", "Down", "a") == FYTIM_ERR_INVALID);
+    CHECK(fytim_mode_bind(h.ft, "m", twice, 2) == FYTIM_ERR_INVALID);
+    /* Ctrl-I is Tab: the same key under two names. */
+    CHECK(fytim_mode_bind(h.ft, "m", same_key, 2) == FYTIM_ERR_INVALID);
+    /* None of them made the mode. */
+    CHECK(fytim_set_mode(h.ft, "m") == FYTIM_ERR_INVALID);
+
+    /* A table has a bound. */
+    for(i = 0; i <= FYTIM_MODE_KEYS_MAX; i++){
+        names[i][0] = (char)('!' + i);
+        names[i][1] = '\0';
+        many[i].key = names[i];
+        many[i].action = "a";
+    }
+    CHECK(fytim_mode_bind(h.ft, "m", many, FYTIM_MODE_KEYS_MAX + 1) ==
+          FYTIM_ERR_INVALID);
+    CHECK(fytim_mode_bind(h.ft, "m", many, FYTIM_MODE_KEYS_MAX) == FYTIM_OK);
+    CHECK(bind_one(&h, "m", "Down", "a") == FYTIM_ERR_INVALID);
+
+    /* The prompt keeps a way out, and cannot be emptied. */
+    CHECK(fytim_mode_bind(h.ft, "prompt", no_exit, 3) == FYTIM_ERR_INVALID);
+    CHECK(fytim_mode_bind(h.ft, "prompt", no_exit, 2) == FYTIM_OK);
+    CHECK(bind_one(&h, "prompt", "Ctrl-d", "") == FYTIM_ERR_INVALID);
+    CHECK(fytim_mode_reset(h.ft, "prompt", 0) == FYTIM_ERR_INVALID);
+    CHECK(event_after(&h, "\x04") == FYTIM_EVENT_QUIT);
+
+    /* Parents: known modes, and no loop. */
+    CHECK(fytim_mode_set_parent(h.ft, "m", "nothing") == FYTIM_ERR_INVALID);
+    CHECK(fytim_mode_set_parent(h.ft, "m", "m") == FYTIM_ERR_INVALID);
+    CHECK(fytim_mode_set_parent(h.ft, "nothing", "m") == FYTIM_ERR_INVALID);
+    CHECK(bind_one(&h, "n", "Down", "a") == FYTIM_OK);
+    CHECK(fytim_mode_set_parent(h.ft, "n", "m") == FYTIM_OK);
+    CHECK(fytim_mode_set_parent(h.ft, "m", "n") == FYTIM_ERR_INVALID);
+    CHECK(fytim_mode_set_parent(h.ft, "n", NULL) == FYTIM_OK);
+
+    /* The names that the library knows. */
+    CHECK(fytim_key_valid("Ctrl-Shift-F5") == FYTIM_OK);
+    CHECK(fytim_key_valid("Ctrl-") == FYTIM_ERR_INVALID);
+    CHECK(!strcmp(fytim_action_name(0), "fytim.interrupt"));
+    for(i = 0; fytim_action_name(i); i++)
+        CHECK(!strncmp(fytim_action_name(i), "fytim.", 6));
+    CHECK(i > 10);
+    h_close(&h);
+}
+
+/* Ctrl-I, Ctrl-M and Ctrl-[ are Tab, Enter and Escape, as a terminal sends
+ * them. */
+static void test_chords_that_are_keys_are_those_keys(void)
+{
+    struct harness h;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(bind_one(&h, "prompt", "Ctrl-I", "h.tab") == FYTIM_OK);
+    CHECK(bind_one(&h, "prompt", "Ctrl-m", "h.enter") == FYTIM_OK);
+    CHECK(bind_one(&h, "prompt", "Ctrl-[", "h.esc") == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_keys(&h, "\t");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(next_key_is(&h, "h.tab"));
+    h_keys(&h, "\r");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(next_key_is(&h, "h.enter"));
+    h_keys(&h, "\x1b\x1b");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(next_key_is(&h, "h.esc"));
+    h_close(&h);
+}
+
+/* Shift tells a chord from the chord with Shift: Ctrl-T moves the focus and
+ * Ctrl-Shift-T the height of the pane, and neither is the other when one of
+ * them is unbound. */
+static void test_shift_tells_chords_apart(void)
+{
+    struct harness h;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(bind_one(&h, "prompt", "Ctrl-Shift-t", "") == FYTIM_OK);
+    CHECK(event_after(&h, "\x1b[116;6u") == -1);
+    CHECK(event_after(&h, "\x14") == FYTIM_EVENT_FOCUS_NEXT);
+    CHECK(bind_one(&h, "prompt", "Ctrl-Shift-t", "fytim.zoom-rows.next") ==
+          FYTIM_OK);
+    CHECK(bind_one(&h, "prompt", "Ctrl-t", "") == FYTIM_OK);
+    CHECK(event_after(&h, "\x14") == -1);
+    CHECK(event_after(&h, "\x1b[116;6u") == FYTIM_EVENT_ZOOM_ROWS_NEXT);
+    h_close(&h);
+}
+
+/* A surface that holds the keys gets every key but the ones of the mode
+ * "surface", and the bytes typed before one reach it first. */
+static void test_the_surface_mode_binds_a_host_key(void)
+{
+    struct fytim_surface *sf;
+    struct fytim_event ev;
+    struct harness h;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(bind_one(&h, "surface", "Ctrl-]", "host.release") == FYTIM_OK);
+    sf = fytim_surface_open(h.ft, 2, 10);
+    CHECK(sf != NULL && fytim_surface_set_keys(sf, true) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_keys(&h, "ab\x1b[93;5uc");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_SURFACE_KEYS &&
+          ev.text_len == 2 && !memcmp(ev.text, "ab", 2));
+    CHECK(next_key_is(&h, "host.release"));
+    CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_SURFACE_KEYS &&
+          ev.text_len == 1 && ev.text[0] == 'c');
+    CHECK(!fytim_next_event(h.ft, &ev));
+    CHECK(event_after(&h, "\x1b[9;5u") == FYTIM_EVENT_FOCUS_NEXT);
+    CHECK(event_after(&h, "\x03") == FYTIM_EVENT_SURFACE_KEYS);
+    /* The keys of the prompt are not the surface's. */
+    CHECK(bind_one(&h, "prompt", "F6", "host.f6") == FYTIM_OK);
+    CHECK(event_after(&h, "\x1b[17~") == FYTIM_EVENT_SURFACE_KEYS);
+    h_close(&h);
+}
+
+/* The popup has a mode of its own, and the prompt behind it. */
+static void test_the_completion_mode_keys_move(void)
+{
+    struct harness h;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, prefix_cb, NULL) == FYTIM_OK);
+    CHECK(fytim_set_completion_auto(h.ft, true) == FYTIM_OK);
+    CHECK(bind_one(&h, "completion", "F2", "fytim.complete.next") == FYTIM_OK);
+    CHECK(bind_one(&h, "completion", "Enter", "") == FYTIM_OK);
+    CHECK(bind_one(&h, "completion", "Ctrl-y", "fytim.complete.accept") ==
+          FYTIM_OK);
+    h_keys(&h, "/reason");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_completion_active(h.ft));
+    h_keys(&h, "\x1bOQ");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_completion_active(h.ft));
+    /* Enter is unbound in the popup, so it is the line's. */
+    h_keys(&h, "\x19");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(!strcmp(fytim_input(h.ft), "/reasoning-summary "));
+    h_close(&h);
+}
+
+static uint64_t fake_now_ms;
+
+static uint64_t fake_clock(void *user)
+{
+    (void)user;
+    return fake_now_ms;
+}
+
+/* The events of the queue, one word each: I interrupt, K:action, C:keys of a
+ * chord (C: when it ended) and ?N for any other. */
+static const char *events_log(struct harness *h)
+{
+    static char buf[256];
+    struct fytim_event ev;
+    size_t n = 0;
+
+    buf[0] = '\0';
+    while(fytim_next_event(h->ft, &ev) && n + 40 < sizeof buf){
+        if(n) buf[n++] = ' ';
+        if(ev.type == FYTIM_EVENT_INTERRUPT)
+            n += (size_t)snprintf(buf + n, sizeof buf - n, "I");
+        else if(ev.type == FYTIM_EVENT_KEY)
+            n += (size_t)snprintf(buf + n, sizeof buf - n, "K:%.*s",
+                                  (int)ev.text_len, ev.text);
+        else if(ev.type == FYTIM_EVENT_CHORD)
+            n += (size_t)snprintf(buf + n, sizeof buf - n, "C:%.*s",
+                                  (int)ev.text_len, ev.text ? ev.text : "");
+        else
+            n += (size_t)snprintf(buf + n, sizeof buf - n, "?%d", (int)ev.type);
+    }
+    return buf;
+}
+
+/* Type @bytes, pump, and say what the host was told. */
+static const char *typed(struct harness *h, const char *bytes)
+{
+    h_keys(h, bytes);
+    if(fytim_pump(h->ft) != FYTIM_OK) return "pump failed";
+    return events_log(h);
+}
+
+static int chord_open(struct harness *h)
+{
+    if(!h_open(h)) return 0;
+    fake_now_ms = 5000;
+    if(fytim_set_clock(h->ft, fake_clock, NULL) != FYTIM_OK) return 0;
+    return fytim_pump(h->ft) == FYTIM_OK;
+}
+
+/* A chord is taken key by key, and the host is told how it stands. */
+static void test_a_chord_runs_its_action(void)
+{
+    struct harness h;
+
+    if(!chord_open(&h)){ CHECK(0); return; }
+    CHECK(bind_one(&h, "prompt", "Ctrl-x Ctrl-e", "host.edit") == FYTIM_OK);
+    CHECK(!strcmp(typed(&h, "\x18"), "C:Ctrl-x"));
+    CHECK(!strcmp(fytim_chord_pending(h.ft), "Ctrl-x"));
+    CHECK(!strcmp(typed(&h, "\x05"), "K:host.edit C:"));
+    CHECK(!strcmp(fytim_chord_pending(h.ft), ""));
+    CHECK(!strcmp(fytim_input(h.ft), ""));
+    /* Alone, the second key is the editor's again. */
+    CHECK(!strcmp(typed(&h, "ab\x05"), ""));
+    h_close(&h);
+}
+
+/* A key that does not continue the chord ends it, and is then a key of its
+ * own. */
+static void test_a_broken_chord_drops_its_keys(void)
+{
+    struct harness h;
+
+    if(!chord_open(&h)){ CHECK(0); return; }
+    CHECK(bind_one(&h, "prompt", "Ctrl-x Ctrl-e", "host.edit") == FYTIM_OK);
+    CHECK(bind_one(&h, "prompt", "F5", "host.f5") == FYTIM_OK);
+    CHECK(!strcmp(typed(&h, "\x18z"), "C:Ctrl-x C:"));
+    CHECK(!strcmp(fytim_input(h.ft), "z"));
+    /* The key that broke it can begin the next one, or be bound. */
+    CHECK(!strcmp(typed(&h, "\x18\x1b[15~"), "C:Ctrl-x C: K:host.f5"));
+    CHECK(!strcmp(typed(&h, "\x18\x18"), "C:Ctrl-x C: C:Ctrl-x"));
+    h_close(&h);
+}
+
+/* A chord waits for the time it is given, by the clock it is given. */
+static void test_a_chord_ends_when_time_is_up(void)
+{
+    struct harness h;
+
+    if(!chord_open(&h)){ CHECK(0); return; }
+    CHECK(bind_one(&h, "prompt", "Ctrl-x Ctrl-e", "host.edit") == FYTIM_OK);
+    CHECK(fytim_chord_remaining_ms(h.ft) == -1);
+    CHECK(!strcmp(typed(&h, "\x18"), "C:Ctrl-x"));
+    CHECK(fytim_chord_remaining_ms(h.ft) == FYTIM_CHORD_TIMEOUT_MS);
+    fake_now_ms += 400;
+    CHECK(fytim_chord_remaining_ms(h.ft) == FYTIM_CHORD_TIMEOUT_MS - 400);
+    CHECK(!strcmp(typed(&h, "\x05"), "K:host.edit C:"));
+
+    /* A pump with no key ends it too. */
+    CHECK(!strcmp(typed(&h, "\x18"), "C:Ctrl-x"));
+    fake_now_ms += FYTIM_CHORD_TIMEOUT_MS - 1;
+    CHECK(!strcmp(typed(&h, ""), ""));
+    fake_now_ms += 1;
+    CHECK(fytim_chord_remaining_ms(h.ft) == 0);
+    CHECK(!strcmp(typed(&h, ""), "C:"));
+    CHECK(fytim_chord_remaining_ms(h.ft) == -1);
+
+    /* A key after the time is not the second key of the chord. */
+    CHECK(!strcmp(typed(&h, "\x18"), "C:Ctrl-x"));
+    fake_now_ms += FYTIM_CHORD_TIMEOUT_MS;
+    CHECK(!strcmp(typed(&h, "\x05"), "C:"));
+
+    /* The time is the host's to set, and 0 is for ever. */
+    CHECK(fytim_set_chord_timeout(h.ft, 50) == FYTIM_OK);
+    CHECK(!strcmp(typed(&h, "\x18"), "C:Ctrl-x"));
+    fake_now_ms += 50;
+    CHECK(!strcmp(typed(&h, ""), "C:"));
+    CHECK(fytim_set_chord_timeout(h.ft, 0) == FYTIM_OK);
+    CHECK(!strcmp(typed(&h, "\x18"), "C:Ctrl-x"));
+    fake_now_ms += 1000000;
+    CHECK(!strcmp(typed(&h, "\x05"), "K:host.edit C:"));
+    h_close(&h);
+}
+
+/* A double tap: the single press acts at once, and a second one inside the
+ * time runs the action of the chord. */
+static void test_a_double_tap_adds_an_action(void)
+{
+    struct harness h;
+
+    if(!chord_open(&h)){ CHECK(0); return; }
+    CHECK(bind_one(&h, "prompt", "Escape Escape", "host.rewind") == FYTIM_OK);
+    CHECK(!strcmp(typed(&h, "\x1b[27u"), "I C:Escape"));
+    CHECK(!strcmp(typed(&h, "\x1b[27u"), "K:host.rewind C:"));
+    /* Late, it is a single press again. */
+    CHECK(!strcmp(typed(&h, "\x1b[27u"), "I C:Escape"));
+    fake_now_ms += FYTIM_CHORD_TIMEOUT_MS;
+    CHECK(!strcmp(typed(&h, "\x1b[27u"), "C: I C:Escape"));
+    CHECK(!strcmp(typed(&h, "\x1b[27u"), "K:host.rewind C:"));
+    /* Another key between the taps. */
+    CHECK(!strcmp(typed(&h, "\x1b[27ux"), "I C:Escape C:"));
+    CHECK(!strcmp(fytim_input(h.ft), "x"));
+    h_close(&h);
+}
+
+/* Leaving the mode ends the chord of the mode. */
+static void test_a_chord_belongs_to_its_mode(void)
+{
+    struct harness h;
+
+    if(!chord_open(&h)){ CHECK(0); return; }
+    CHECK(bind_one(&h, "prompt", "Ctrl-x Ctrl-e", "host.edit") == FYTIM_OK);
+    CHECK(bind_one(&h, "other", "Ctrl-e", "host.other") == FYTIM_OK);
+    CHECK(!strcmp(typed(&h, "\x18"), "C:Ctrl-x"));
+    CHECK(fytim_set_mode(h.ft, "other") == FYTIM_OK);
+    CHECK(!strcmp(events_log(&h), "C:"));
+    CHECK(!strcmp(typed(&h, "\x05"), "K:host.other"));
+    h_close(&h);
+}
+
+/* A chord of three keys, and a name that is no chord. */
+static void test_chords_are_checked(void)
+{
+    struct harness h;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_key_valid("Ctrl-x Ctrl-e") == FYTIM_OK);
+    CHECK(fytim_key_valid("a b c d") == FYTIM_OK);
+    CHECK(fytim_key_valid("a b c d e") == FYTIM_ERR_INVALID);
+    CHECK(fytim_key_valid("a  b") == FYTIM_ERR_INVALID);
+    CHECK(fytim_key_valid(" a") == FYTIM_ERR_INVALID);
+    CHECK(fytim_key_valid("a ") == FYTIM_ERR_INVALID);
+    CHECK(fytim_key_valid("a Hyper-b") == FYTIM_ERR_INVALID);
+    /* A program holds the keys of a surface. */
+    CHECK(bind_one(&h, "surface", "Ctrl-x Ctrl-e", "a") == FYTIM_ERR_INVALID);
+    /* The same chord twice, and the same chord under two names. */
+    {
+        static const struct fytim_keymap_entry same[] = {
+            { "Ctrl-x Ctrl-i", "a" }, { "Ctrl-x Tab", "b" },
+        };
+        CHECK(fytim_mode_bind(h.ft, "m", same, 2) == FYTIM_ERR_INVALID);
+    }
+    CHECK(fytim_set_clock(NULL, NULL, NULL) == FYTIM_ERR_INVALID);
+    CHECK(fytim_set_chord_timeout(NULL, 1) == FYTIM_ERR_INVALID);
+    CHECK(!strcmp(fytim_chord_pending(NULL), ""));
+    h_close(&h);
+
+    if(!chord_open(&h)){ CHECK(0); return; }
+    CHECK(bind_one(&h, "prompt", "a b c", "host.abc") == FYTIM_OK);
+    CHECK(bind_one(&h, "prompt", "a b", "host.ab") == FYTIM_OK);
+    CHECK(bind_one(&h, "prompt", "F2", "host.f2") == FYTIM_OK);
+    /* "a b" is a binding and begins "a b c": it acts and the chord goes on. */
+    CHECK(!strcmp(typed(&h, "a"), "C:a"));
+    CHECK(!strcmp(typed(&h, "b"), "K:host.ab C:a b"));
+    CHECK(!strcmp(typed(&h, "c"), "K:host.abc C:"));
+    h_close(&h);
+}
+
+/* A key that the terminal cannot send is known by its capabilities. */
+static void test_a_key_may_not_be_sendable(void)
+{
+    struct harness h;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_caps(h.ft, 0, FYTIM_CAP_KITTY_KEYBOARD) == FYTIM_OK);
+    CHECK(fytim_key_available(h.ft, "Ctrl-x Ctrl-e"));
+    CHECK(fytim_key_available(h.ft, "Up"));
+    CHECK(fytim_key_available(h.ft, "Shift-Tab"));
+    CHECK(fytim_key_available(h.ft, "Alt-Enter"));
+    CHECK(!fytim_key_available(h.ft, "Ctrl-Tab"));
+    CHECK(!fytim_key_available(h.ft, "Ctrl-Shift-t"));
+    CHECK(!fytim_key_available(h.ft, "Shift-Enter"));
+    CHECK(!fytim_key_available(h.ft, "Ctrl-1"));
+    CHECK(!fytim_key_available(h.ft, "Ctrl-x Ctrl-Enter"));
+    CHECK(!fytim_key_available(h.ft, "Hyper-x"));
+    CHECK(fytim_set_caps(h.ft, FYTIM_CAP_KITTY_KEYBOARD, 0) == FYTIM_OK);
+    CHECK(fytim_key_available(h.ft, "Ctrl-Tab"));
+    CHECK(fytim_key_available(h.ft, "Ctrl-Shift-t"));
+    CHECK(!fytim_key_available(h.ft, "Hyper-x"));
+    CHECK(!fytim_key_available(NULL, "Up"));
+    h_close(&h);
+}
+
+/* The poll timeout of the host counts the time a chord has left. */
+static void test_the_poll_timeout_counts_a_chord(void)
+{
+    struct harness h;
+
+    if(!chord_open(&h)){ CHECK(0); return; }
+    CHECK(bind_one(&h, "prompt", "Ctrl-x Ctrl-e", "host.edit") == FYTIM_OK);
+    CHECK(!strcmp(typed(&h, "\x18"), "C:Ctrl-x"));
+    fake_now_ms += 100;
+    CHECK(fytim_poll_timeout_ms(h.ft) >= 0 &&
+          fytim_poll_timeout_ms(h.ft) <= FYTIM_CHORD_TIMEOUT_MS - 100);
+    h_close(&h);
+}
+
 /* Every entry point survives NULL/degenerate arguments. */
 static void test_null_safety(void)
 {
@@ -1231,6 +1722,24 @@ int main(int argc, char **argv)
         { "ctrl_g_edit_and_suspend", test_ctrl_g_edit_and_suspend },
         { "bound_keys_leave_the_prompt", test_bound_keys_leave_the_prompt },
         { "key_bindings_are_checked", test_key_bindings_are_checked },
+        { "a_key_of_the_library_can_move", test_a_key_of_the_library_can_move },
+        { "a_mode_inherits_its_parent", test_a_mode_inherits_its_parent },
+        { "mode_tables_are_checked", test_mode_tables_are_checked },
+        { "chords_that_are_keys_are_those_keys",
+          test_chords_that_are_keys_are_those_keys },
+        { "shift_tells_chords_apart", test_shift_tells_chords_apart },
+        { "the_surface_mode_binds_a_host_key",
+          test_the_surface_mode_binds_a_host_key },
+        { "the_completion_mode_keys_move", test_the_completion_mode_keys_move },
+        { "a_chord_runs_its_action", test_a_chord_runs_its_action },
+        { "a_broken_chord_drops_its_keys", test_a_broken_chord_drops_its_keys },
+        { "a_chord_ends_when_time_is_up", test_a_chord_ends_when_time_is_up },
+        { "a_double_tap_adds_an_action", test_a_double_tap_adds_an_action },
+        { "a_chord_belongs_to_its_mode", test_a_chord_belongs_to_its_mode },
+        { "chords_are_checked", test_chords_are_checked },
+        { "a_key_may_not_be_sendable", test_a_key_may_not_be_sendable },
+        { "the_poll_timeout_counts_a_chord",
+          test_the_poll_timeout_counts_a_chord },
         { "a_surface_with_the_keys_ignores_bindings",
           test_a_surface_with_the_keys_ignores_bindings },
         { "ctrl_t_focus_next", test_ctrl_t_focus_next },
