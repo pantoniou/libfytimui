@@ -2798,6 +2798,12 @@ static void key_binding_canon_(struct fytim_key_binding *b)
     }
     if((b->mods & TIMUI_MOD_CTRL) && b->cp >= 'A' && b->cp <= 'Z')
         b->cp += 'a' - 'A';
+    /* The codes 0x1c to 0x1f are Ctrl-\, Ctrl-], Ctrl-^ and Ctrl-_: the
+     * input parser gives the code and not the character. */
+    if(b->cp >= 0x1c && b->cp <= 0x1f){
+        b->cp += 0x40;
+        b->mods |= TIMUI_MOD_CTRL;
+    }
     if(!(b->mods & (TIMUI_MOD_CTRL | TIMUI_MOD_ALT)))
         b->mods &= ~(uint32_t)TIMUI_MOD_SHIFT;
 }
