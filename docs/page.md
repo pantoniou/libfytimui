@@ -83,6 +83,8 @@ A call that binds keys is refused whole when a name is not a key, an action is
 not known, a key is bound twice, the table is too big, or the `prompt` mode
 would lose every key that leaves the program. Ctrl-I, Ctrl-M and Ctrl-[ are
 Tab, Enter and Escape, because a terminal sends them as the same code.
+The codes 0x1c to 0x1f, which a terminal without the kitty keyboard protocol
+sends for Ctrl-\, Ctrl-], Ctrl-^ and Ctrl-_, are those chords.
 
 A key is found by one hash of its sequence for each mode of the chain, and
 not by a scan of the bindings.
