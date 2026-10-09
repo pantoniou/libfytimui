@@ -1229,6 +1229,17 @@ static void test_a_mode_inherits_its_parent(void)
     h_close(&h);
 }
 
+static void test_regression_empty_mode_bind(void)
+{
+    static const struct fytim_keymap_entry key = { "Down", "a" };
+    struct harness h;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_mode_bind(h.ft, "empty", NULL, 0) == FYTIM_OK);
+    CHECK(fytim_mode_bind(h.ft, "empty", &key, 1) == FYTIM_OK);
+    h_close(&h);
+}
+
 /* A bad call is refused whole and leaves the mode as it was. */
 static void test_mode_tables_are_checked(void)
 {
@@ -1733,6 +1744,7 @@ int main(int argc, char **argv)
         { "a_key_of_the_library_can_move", test_a_key_of_the_library_can_move },
         { "a_mode_inherits_its_parent", test_a_mode_inherits_its_parent },
         { "mode_tables_are_checked", test_mode_tables_are_checked },
+        { "regression/empty_mode_bind", test_regression_empty_mode_bind },
         { "chords_that_are_keys_are_those_keys",
           test_chords_that_are_keys_are_those_keys },
         { "shift_tells_chords_apart", test_shift_tells_chords_apart },

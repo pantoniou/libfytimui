@@ -142,7 +142,8 @@ foreach(t create_paints_inline commit_batches_into_pump
           ctrl_shift_t_cycles_zoom_rows bound_keys_leave_the_prompt
           key_bindings_are_checked a_surface_with_the_keys_ignores_bindings
           a_key_of_the_library_can_move a_mode_inherits_its_parent
-          mode_tables_are_checked chords_that_are_keys_are_those_keys
+          mode_tables_are_checked regression/empty_mode_bind
+          chords_that_are_keys_are_those_keys
           shift_tells_chords_apart the_surface_mode_binds_a_host_key
           the_completion_mode_keys_move a_chord_runs_its_action
           a_broken_chord_drops_its_keys a_chord_ends_when_time_is_up
