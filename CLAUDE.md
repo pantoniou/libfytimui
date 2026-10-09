@@ -88,6 +88,13 @@ Everything runs under CTest. Two suites:
   than the library, so internal units (the SGR parser) are testable without
   exporting them.
 
+A test that depends on real time - a child process, a pseudo-terminal read
+with a deadline, a sleeping thread, a poll loop - carries the CTest label
+`timing`: add its name to `FYTIM_TIMING_TESTS` in `tests/CMakeLists.txt`, or
+to `TIMING_RE` for a case of the core. The GitHub runners keep time badly, so
+CI runs `ctest -LE timing`. A test of a clock gives the library a clock of its
+own (`fytim_set_clock()`) and moves it itself; it never sleeps.
+
 A new test runner must support `--list`, `<name>`, and no-argument
 (run-everything) invocation so it can be discovered the same way.
 

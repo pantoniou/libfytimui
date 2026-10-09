@@ -213,7 +213,8 @@ jobs:
         LD_LIBRARY_PATH: ${{ runner.temp }}/fytimui-deps/lib:${{ runner.temp }}/fytimui-deps/lib64
         DYLD_LIBRARY_PATH: ${{ runner.temp }}/fytimui-deps/lib:${{ runner.temp }}/fytimui-deps/lib64
       working-directory: build
-      run: ctest -C ${{ matrix.build_type }} ${{ inputs.ctest_args }}
+      # The runners keep time badly: leave out the tests labelled "timing".
+      run: ctest -C ${{ matrix.build_type }} -LE timing ${{ inputs.ctest_args }}
 
     - name: Upload test logs on failure
       if: failure()

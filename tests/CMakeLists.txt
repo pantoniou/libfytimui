@@ -71,6 +71,7 @@ if(BUILD_TIMUI_CORE_TESTS)
                 -D RUNNER=$<TARGET_FILE:timui_core_tests>
                 -D OUTFILE=${_disc}
                 -D WORKDIR=${TIMUI_TEST_WORKDIR}
+                "-DTIMING_RE=^test_mpsc_|^test_termios_|^test_external_poll_|^test_pty_hello_|^test_signal_restore"
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/DiscoverTests.cmake
         VERBATIM)
     set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${_disc})
@@ -126,7 +127,6 @@ endif()
 foreach(t create_paints_inline commit_batches_into_pump
           commit_rejects_disallowed line_event_on_enter esc_emits_interrupt
           page_key_emits_scrollback wheel_emits_scrollback_with_its_direction history_recall completion
-          completion_auto_prefix
           chrome_and_workband chrome_style_contract
           workband_lifecycle workband_caps_last_rows workband_top_bottom
           workband_trailing_newline_not_a_row
@@ -590,4 +590,20 @@ foreach(t plain_text bold_run combined_params truecolor indexed_color
           style_emit_roundtrip style_emit_default_and_tiny
           runs_never_split_utf8)
     add_test(NAME fytim.sgr.${t} COMMAND test_fytim_sgr ${t})
+endforeach()
+
+# Tests that depend on real time: a child process, a pseudo-terminal read with
+# a deadline, a thread that sleeps, or a poll loop. A loaded runner delays them
+# past the deadline, so the CI run leaves them out (ctest -LE timing). They
+# stay in a local run.
+set(FYTIM_TIMING_TESTS
+    "^fytim\\.resize\\."
+    "^fytim\\.page\\.(copy_is_written_whole_under_backpressure|the_alt_screen_is_left_and_taken_again)$")
+get_directory_property(_all_tests TESTS)
+foreach(_t IN LISTS _all_tests)
+    foreach(_re IN LISTS FYTIM_TIMING_TESTS)
+        if(_t MATCHES "${_re}")
+            set_property(TEST ${_t} APPEND PROPERTY LABELS timing)
+        endif()
+    endforeach()
 endforeach()

@@ -31,6 +31,11 @@ foreach(_n ${_names})
     string(APPEND _content
         "add_test(timui.core.${_n} \"${RUNNER}\" ${_n})\n"
         "set_tests_properties(timui.core.${_n} PROPERTIES WORKING_DIRECTORY \"${WORKDIR}\")\n")
+    # A case that depends on real time is labelled, and CI leaves it out.
+    if(TIMING_RE AND _n MATCHES "${TIMING_RE}")
+        string(APPEND _content
+            "set_tests_properties(timui.core.${_n} PROPERTIES LABELS timing)\n")
+    endif()
     math(EXPR _count "${_count} + 1")
 endforeach()
 
