@@ -3541,7 +3541,7 @@ enum fytim_result fytim_mode_bind(struct fytim *ft, const char *mode,
     slots = calloc((m ? m->nslots : 0) + count + 1, sizeof *slots);
     if(!slots) return FYTIM_ERR_NOMEM;
     n = 0;
-    if(m){
+    if(m && m->nslots){
         memcpy(slots, m->slots, m->nslots * sizeof *slots);
         n = m->nslots;
     }
