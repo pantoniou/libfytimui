@@ -16,8 +16,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <errno.h>
 #include <signal.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef FYTIM_VERSION_STRING
@@ -161,18 +163,59 @@ struct fytim_completions {
      * completion mode is active so Tab can keep cycling */
 };
 
-/* A key the host takes from the prompt. */
+/* A key of a mode. */
 struct fytim_key_binding {
     TimuiKey key;
     uint32_t cp;        /* the character of a key the table cannot name */
     uint32_t mods;      /* TIMUI_MOD_CTRL, TIMUI_MOD_ALT, TIMUI_MOD_SHIFT */
-    char name[FYTIM_KEY_NAME_MAX + 1];
 };
 
+/* A sequence of one to FYTIM_CHORD_MAX keys. */
+struct fytim_chord {
+    struct fytim_key_binding keys[FYTIM_CHORD_MAX];
+    int n;
+};
+
+/* A binding and its action; an empty action unbinds it in this mode. */
+struct fytim_keymap_slot {
+    struct fytim_chord seq;
+    char text[FYTIM_BINDING_NAME_MAX + 1];
+    char action[FYTIM_ACTION_NAME_MAX + 1];
+};
+
+/*
+ * A sequence that a binding of the mode is, or starts. A key looks for its
+ * sequence, the keys typed before it and itself, in one probe.
+ */
+struct fytim_chord_node {
+    struct fytim_chord seq;
+    bool has_action;                    /* a binding ends here */
+    bool prefix;                        /* a longer binding starts here */
+    char text[FYTIM_BINDING_NAME_MAX + 1];  /* the keys so far, as named */
+    char action[FYTIM_ACTION_NAME_MAX + 1];
+};
+
+/* A named table of keys. What it does not bind is looked up in the parent. */
+struct fytim_mode {
+    char name[FYTIM_MODE_NAME_MAX + 1];
+    struct fytim_mode *parent;          /* NULL for none; modes are never freed
+                                         * before the library */
+    struct fytim_keymap_slot *slots;
+    size_t nslots;
+    struct fytim_chord_node *nodes;     /* the sequences of @slots and their
+                                         * prefixes */
+    size_t nnodes;
+    uint32_t *index;                    /* open-addressed hash of @nodes, each
+                                         * entry a node number plus 1 */
+    size_t index_mask;                  /* size of @index less 1, a power of 2 */
+};
+
+
 static int key_filter_(void *user, TimuiKey key, uint32_t cp, uint32_t mods);
+static bool modes_init_(struct fytim *ft);
+static void modes_free_(struct fytim *ft);
 static void complete_leave(struct fytim *ft);
 static void complete_seen(struct fytim *ft);
-static bool complete_key(struct fytim *ft, TimuiKey key, uint32_t mods);
 
 /* Bytes of keys, bounded: a key past the bound is not written. */
 struct key_out {
@@ -233,9 +276,21 @@ struct fytim {
      * order fixes the stacking only; bands commit in completion order. */
     struct fytim_workband *wbands;
     struct fytim_surface  *keys;   /* the surface the keys go to, or NULL */
-    /* Keys the host takes from the prompt: FYTIM_EVENT_KEY, not the editor. */
-    struct fytim_key_binding bindings[FYTIM_KEY_BINDINGS_MAX];
-    int   nbindings;
+    /* The modes: tables of keys. @mode is the one the host selected; a
+     * surface that holds the keys and an open popup select their own. */
+    struct fytim_mode *modes[FYTIM_MODES_MAX];
+    size_t nmodes;
+    struct fytim_mode *mode;       /* never NULL once the library is open */
+    struct fytim_mode *mode_completion, *mode_surface;
+    /* The keys of a chord that has begun, in the mode that began it. */
+    struct fytim_key_binding chord_keys[FYTIM_CHORD_MAX];
+    int    chord_n;
+    struct fytim_mode *chord_mode;
+    uint64_t chord_time;           /* ms of the last key of the chord */
+    unsigned chord_timeout_ms;
+    char   chord_text[FYTIM_BINDING_NAME_MAX + 1];
+    fytim_clock_fn clock_fn;
+    void  *clock_user;
     int   wb_default_max;
     int   wb_finish_seq;
 
@@ -441,8 +496,11 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
     }
     timui_set_key_filter(ft->ui, key_filter_, ft);
 
+    ft->chord_timeout_ms = FYTIM_CHORD_TIMEOUT_MS;
     ft->transcript = pane_new(ft, NULL);
-    if(!ft->transcript){
+    if(!ft->transcript || !modes_init_(ft)){
+        if(ft->transcript) pane_free(ft->transcript);
+        modes_free_(ft);
         timui_close(ft->ui);
         free(ft);
         return NULL;
@@ -557,6 +615,7 @@ void fytim_destroy(struct fytim *ft)
     free(ft->status[0]);
     free(ft->status[1]);
     free(ft->marker);
+    modes_free_(ft);
     free(ft->prompt_edge);
     free(ft->tail);
     for(i = 0; i < ft->hist_n; i++) free(ft->hist[i]);
@@ -618,8 +677,15 @@ int fytim_poll_fd(const struct fytim *ft)
 
 int fytim_poll_timeout_ms(const struct fytim *ft)
 {
+    int t, chord;
+
     if(!ft) return -1;
-    return ft->pump_again ? 0 : timui_poll_timeout_ms(ft->ui);
+    if(ft->pump_again) return 0;
+    t = timui_poll_timeout_ms(ft->ui);
+    /* A chord that nobody continues ends in a pump of its own. */
+    chord = fytim_chord_remaining_ms(ft);
+    if(chord >= 0 && (t < 0 || chord < t)) t = chord;
+    return t;
 }
 
 struct fytim_pane *fytim_transcript(struct fytim *ft)
@@ -2629,6 +2695,8 @@ static const struct { const char *name; TimuiKey key; } key_names_[] = {
     { "F10", TIMUI_KEY_F10 }, { "F11", TIMUI_KEY_F11 }, { "F12", TIMUI_KEY_F12 },
 };
 
+static void key_binding_canon_(struct fytim_key_binding *b);
+
 /* Parse a key name into @b; false for a name that is not a key. */
 static bool key_binding_parse_(const char *name, struct fytim_key_binding *b)
 {
@@ -2655,28 +2723,92 @@ static bool key_binding_parse_(const char *name, struct fytim_key_binding *b)
         /* A chord arrives with the letter in lower case. */
         if((b->mods & TIMUI_MOD_CTRL) && b->cp >= 'A' && b->cp <= 'Z')
             b->cp += 'a' - 'A';
+        /*
+         * A terminal sends these chords as the key they are the code of, so
+         * they are that key: Ctrl-I is Tab, Ctrl-M is Enter and Ctrl-[ is
+         * Escape.
+         */
+        if((b->mods & TIMUI_MOD_CTRL) && !(b->mods & (TIMUI_MOD_ALT |
+                                                     TIMUI_MOD_SHIFT))){
+            if(b->cp == 'i') b->key = TIMUI_KEY_TAB;
+            else if(b->cp == 'm') b->key = TIMUI_KEY_ENTER;
+            else if(b->cp == '[') b->key = TIMUI_KEY_ESCAPE;
+            if(b->key != TIMUI_KEY_UNKNOWN){
+                b->cp = 0;
+                b->mods &= ~(uint32_t)TIMUI_MOD_CTRL;
+            }
+        }
     }
-    memcpy(b->name, name, strlen(name) + 1);
+    key_binding_canon_(b);
     return true;
 }
 
-/* The keys of the library that a host cannot take. */
-static bool key_binding_reserved_(const struct fytim_key_binding *b)
+static bool key_binding_same_(const struct fytim_key_binding *a,
+                              const struct fytim_key_binding *b)
 {
-    if(!(b->mods & TIMUI_MOD_CTRL)) return false;
-    if(b->key == TIMUI_KEY_TAB) return true;
-    return b->key == TIMUI_KEY_UNKNOWN && (b->cp == 'c' || b->cp == 't');
+    return a->key == b->key && a->cp == b->cp && a->mods == b->mods;
 }
 
-static bool key_binding_hit_(const struct fytim_key_binding *b, TimuiKey key,
-                             uint32_t cp, uint32_t mods)
+static bool chord_same_(const struct fytim_chord *a, const struct fytim_chord *b)
 {
-    uint32_t want = TIMUI_MOD_CTRL | TIMUI_MOD_ALT |
-                    (b->mods & TIMUI_MOD_SHIFT);
+    int i;
 
-    if(b->key != key) return false;
-    if(key == TIMUI_KEY_UNKNOWN && b->cp != cp) return false;
-    return (mods & want) == b->mods;
+    if(a->n != b->n) return false;
+    for(i = 0; i < a->n; i++)
+        if(!key_binding_same_(&a->keys[i], &b->keys[i])) return false;
+    return true;
+}
+
+/* Parse keys named in order, apart by blanks, into @c. */
+static bool chord_parse_(const char *name, struct fytim_chord *c)
+{
+    char key[FYTIM_KEY_NAME_MAX + 1];
+    const char *p = name, *e;
+    size_t len;
+
+    memset(c, 0, sizeof *c);
+    if(!name || !*name || strlen(name) > FYTIM_BINDING_NAME_MAX) return false;
+    while(*p){
+        e = strchr(p, ' ');
+        len = e ? (size_t)(e - p) : strlen(p);
+        if(!len || len > FYTIM_KEY_NAME_MAX || c->n >= FYTIM_CHORD_MAX)
+            return false;
+        memcpy(key, p, len);
+        key[len] = '\0';
+        if(!key_binding_parse_(key, &c->keys[c->n])) return false;
+        c->n++;
+        p = e ? e + 1 : p + len;
+        if(e && !*p) return false;
+    }
+    return true;
+}
+
+/*
+ * The form of a key in which equal keys are equal bytes. Shift counts for a
+ * named key and for a chord, where it tells Ctrl-T from Ctrl-Shift-T; on a
+ * typed character the case already says it. A chord arrives with its letter
+ * in lower case.
+ */
+static void key_binding_canon_(struct fytim_key_binding *b)
+{
+    b->mods &= TIMUI_MOD_CTRL | TIMUI_MOD_ALT | TIMUI_MOD_SHIFT;
+    if(b->key != TIMUI_KEY_UNKNOWN){
+        b->cp = 0;              /* a named key has no character */
+        return;
+    }
+    if((b->mods & TIMUI_MOD_CTRL) && b->cp >= 'A' && b->cp <= 'Z')
+        b->cp += 'a' - 'A';
+    if(!(b->mods & (TIMUI_MOD_CTRL | TIMUI_MOD_ALT)))
+        b->mods &= ~(uint32_t)TIMUI_MOD_SHIFT;
+}
+
+static uint32_t key_binding_hash_(const struct fytim_key_binding *b)
+{
+    uint32_t h = (uint32_t)b->key * 0x9e3779b1u;
+
+    h ^= b->cp * 0x85ebca6bu;
+    h ^= b->mods * 0xc2b2ae35u;
+    return h ^ (h >> 15);
 }
 
 /* The filter of the core: a bound key becomes FYTIM_EVENT_KEY. A surface that
@@ -2685,14 +2817,6 @@ static void key_put(struct key_out *k, const char *bytes, size_t n);
 static void key_put_str(struct key_out *k, const char *s);
 static const char *key_sequence(TimuiKey key);
 static char key_control_byte(uint32_t cp);
-
-/* A focus key: Ctrl-T, Ctrl-Tab. Ctrl-Shift-T is the pane height instead. */
-static bool key_is_focus_(TimuiKey key, uint32_t cp, uint32_t mods)
-{
-    if(key == TIMUI_KEY_TAB && (mods & TIMUI_MOD_CTRL)) return true;
-    return key == TIMUI_KEY_UNKNOWN && (cp == 't' || cp == 'T') &&
-           (mods & (TIMUI_MOD_CTRL | TIMUI_MOD_SHIFT)) == TIMUI_MOD_CTRL;
-}
 
 /*
  * The bytes that decode to the same key again: a named key keeps its
@@ -2755,12 +2879,842 @@ static void key_hold_(struct key_out *k, TimuiKey key, uint32_t cp,
     if(named) key_put_str(k, named);
 }
 
+/* ---- modes -------------------------------------------------------------- */
+
+/* The context of a key that runs an action. */
+struct key_ctx {
+    TimuiKey key;
+    uint32_t cp;
+    uint32_t mods;
+};
+
+static bool act_interrupt_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
+    return true;
+}
+
+/*
+ * The keyboard protocol reports ^C as a key, so the terminal never turns it
+ * into SIGINT. A host that asked for the signal gets it the same way.
+ */
+static bool act_interrupt_tty_(struct fytim *ft, const struct key_ctx *kc)
+{
+    if(ft->intr_signal) raise(SIGINT);
+    else return act_interrupt_(ft, kc);
+    return true;
+}
+
+static bool act_quit_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    /* On a line with text the key is the editor's. */
+    if(ft->input[0]) return false;
+    ev_push(ft, FYTIM_EVENT_QUIT, NULL, 0, 0, 0);
+    return true;
+}
+
+static bool act_redraw_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    timui_full_redraw(ft->ui);
+    ev_push(ft, FYTIM_EVENT_REDRAW, NULL, 0, 0, 0);
+    return true;
+}
+
+static bool act_edit_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    ev_push(ft, FYTIM_EVENT_EDIT, NULL, 0, 0, 0);
+    return true;
+}
+
+static bool act_zoom_rows_next_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    ev_push(ft, FYTIM_EVENT_ZOOM_ROWS_NEXT, NULL, 0, 0, 0);
+    return true;
+}
+
+/* After a focus key the input of the frame is the next owner's. */
+static bool act_focus_next_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    ev_push(ft, FYTIM_EVENT_FOCUS_NEXT, NULL, 0, 0, 0);
+    ft->focus_hold = true;
+    return true;
+}
+
+static void surface_keys_emit(struct fytim *ft, struct key_out *k);
+static void hist_prev(struct fytim *ft);
+static void hist_next(struct fytim *ft);
+static int cursor_on_first_line(const struct fytim *ft);
+static int cursor_on_last_line(const struct fytim *ft);
+
+static bool act_history_prev_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    hist_prev(ft);
+    return true;
+}
+
+static bool act_history_next_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    hist_next(ft);
+    return true;
+}
+
+/* From the first line only: elsewhere the key moves the cursor. */
+static bool act_history_prev_edge_(struct fytim *ft, const struct key_ctx *kc)
+{
+    if(!cursor_on_first_line(ft)) return false;
+    return act_history_prev_(ft, kc);
+}
+
+static bool act_history_next_edge_(struct fytim *ft, const struct key_ctx *kc)
+{
+    if(!cursor_on_last_line(ft)) return false;
+    return act_history_next_(ft, kc);
+}
+
+/* The host moves the text of the region, or whatever it chooses. */
+static void scrollback_push_(struct fytim *ft, int delta)
+{
+    struct fytim_event *sev;
+
+    fytim_selection_clear(ft);
+    ev_push(ft, FYTIM_EVENT_SCROLLBACK, NULL, 0, 0, 0);
+    sev = &ft->evq[(ft->ev_head + ft->ev_n - 1) % FYTIM_EVQ_CAP];
+    if(sev->type == FYTIM_EVENT_SCROLLBACK) sev->delta = delta;
+}
+
+static bool act_scroll_page_up_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    scrollback_push_(ft, ft->term_h > 1 ? ft->term_h - 1 : 1);
+    return true;
+}
+
+static bool act_scroll_page_down_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    scrollback_push_(ft, -(ft->term_h > 1 ? ft->term_h - 1 : 1));
+    return true;
+}
+
+static void complete_move(struct fytim *ft, int delta);
+static void complete_move_clamp(struct fytim *ft, int delta);
+static int complete_page_rows(const struct fytim *ft);
+static bool complete_extend(struct fytim *ft);
+static bool complete_take(struct fytim *ft, int idx);
+
+/*
+ * Tab completes the line as it stands at the Tab: the text typed before it
+ * reaches the editor in this frame, and what follows it waits for the next
+ * one.
+ */
+static bool act_complete_open_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    if(!ft->complete_fn) return false;
+    ft->comp_tab = true;
+    ft->focus_hold = true;
+    return true;
+}
+
+/*
+ * One row has nothing to cycle to: the key completes with it. Several first
+ * extend the line to what they share, as the key that opened the popup does,
+ * and only then cycle.
+ */
+static bool act_complete_tab_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    if(ft->comp_n == 1) (void)complete_take(ft, 0);
+    else if(!complete_extend(ft)) complete_move(ft, 1);
+    return true;
+}
+
+static bool act_complete_next_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    complete_move(ft, 1);
+    return true;
+}
+
+static bool act_complete_prev_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    complete_move(ft, -1);
+    return true;
+}
+
+static bool act_complete_page_down_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    complete_move_clamp(ft, complete_page_rows(ft));
+    return true;
+}
+
+static bool act_complete_page_up_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    complete_move_clamp(ft, -complete_page_rows(ft));
+    return true;
+}
+
+static bool act_complete_accept_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    return complete_take(ft, ft->comp_idx);
+}
+
+/* Closing the popup interrupts nothing. */
+static bool act_complete_cancel_(struct fytim *ft, const struct key_ctx *kc)
+{
+    (void)kc;
+    complete_leave(ft);
+    complete_seen(ft);
+    return true;
+}
+
+static const struct fytim_action_def {
+    const char *name;
+    bool (*fn)(struct fytim *ft, const struct key_ctx *kc);
+} actions_[] = {
+    { "fytim.interrupt", act_interrupt_ },
+    { "fytim.interrupt.tty", act_interrupt_tty_ },
+    { "fytim.quit", act_quit_ },
+    { "fytim.redraw", act_redraw_ },
+    { "fytim.edit", act_edit_ },
+    { "fytim.focus.next", act_focus_next_ },
+    { "fytim.zoom-rows.next", act_zoom_rows_next_ },
+    { "fytim.history.prev", act_history_prev_ },
+    { "fytim.history.next", act_history_next_ },
+    { "fytim.history.prev-edge", act_history_prev_edge_ },
+    { "fytim.history.next-edge", act_history_next_edge_ },
+    { "fytim.scroll.page-up", act_scroll_page_up_ },
+    { "fytim.scroll.page-down", act_scroll_page_down_ },
+    { "fytim.complete.open", act_complete_open_ },
+    { "fytim.complete.tab", act_complete_tab_ },
+    { "fytim.complete.next", act_complete_next_ },
+    { "fytim.complete.prev", act_complete_prev_ },
+    { "fytim.complete.page-down", act_complete_page_down_ },
+    { "fytim.complete.page-up", act_complete_page_up_ },
+    { "fytim.complete.accept", act_complete_accept_ },
+    { "fytim.complete.cancel", act_complete_cancel_ },
+};
+
+#define ACTIONS_N (sizeof actions_ / sizeof actions_[0])
+
+const char *fytim_action_name(size_t index)
+{
+    return index < ACTIONS_N ? actions_[index].name : NULL;
+}
+
+static const struct fytim_action_def *action_find_(const char *name)
+{
+    size_t i;
+
+    for(i = 0; i < ACTIONS_N; i++)
+        if(!strcmp(actions_[i].name, name)) return &actions_[i];
+    return NULL;
+}
+
+static bool action_is_host_(const char *name)
+{
+    const char *p;
+
+    if(!name || !*name || strlen(name) > FYTIM_ACTION_NAME_MAX) return false;
+    if(!strncmp(name, "fytim.", 6)) return false;
+    for(p = name; *p; p++)
+        if((unsigned char)*p <= 0x20 || (unsigned char)*p >= 0x7f) return false;
+    return true;
+}
+
+/* A built-in action, a name of the host, or "" to unbind. */
+static bool action_valid_(const char *name)
+{
+    if(!name || !*name) return true;
+    return action_find_(name) || action_is_host_(name);
+}
+
+/*
+ * The built-in modes and their keys, as the library had them before they
+ * were data. An action of the host takes the key from the editor and reports
+ * it as FYTIM_EVENT_KEY.
+ */
+struct mode_default {
+    const char *key;
+    const char *action;
+};
+
+static const struct mode_default prompt_defaults_[] = {
+    { "Escape", "fytim.interrupt" },
+    { "Ctrl-c", "fytim.interrupt.tty" },
+    { "Ctrl-d", "fytim.quit" },
+    { "Ctrl-l", "fytim.redraw" },
+    { "Ctrl-g", "fytim.edit" },
+    { "Ctrl-t", "fytim.focus.next" },
+    { "Ctrl-Tab", "fytim.focus.next" },
+    { "Ctrl-Shift-t", "fytim.zoom-rows.next" },
+    { "Tab", "fytim.complete.open" },
+    { "Ctrl-p", "fytim.history.prev" },
+    { "Ctrl-n", "fytim.history.next" },
+    { "Up", "fytim.history.prev-edge" },
+    { "Down", "fytim.history.next-edge" },
+    { "PageUp", "fytim.scroll.page-up" },
+    { "PageDown", "fytim.scroll.page-down" },
+};
+
+static const struct mode_default completion_defaults_[] = {
+    { "Tab", "fytim.complete.tab" },
+    { "Shift-Tab", "fytim.complete.prev" },
+    { "Down", "fytim.complete.next" },
+    { "Up", "fytim.complete.prev" },
+    { "PageDown", "fytim.complete.page-down" },
+    { "PageUp", "fytim.complete.page-up" },
+    { "Enter", "fytim.complete.accept" },
+    { "Escape", "fytim.complete.cancel" },
+};
+
+/* A surface that holds the keys passes every key but these. */
+static const struct mode_default surface_defaults_[] = {
+    { "Ctrl-Tab", "fytim.focus.next" },
+    { "Ctrl-Shift-t", "fytim.zoom-rows.next" },
+};
+
+static const struct {
+    const char *name;
+    const char *parent;
+    const struct mode_default *keys;
+    size_t n;
+} builtin_modes_[] = {
+    { "prompt", "", prompt_defaults_,
+      sizeof prompt_defaults_ / sizeof prompt_defaults_[0] },
+    { "completion", "prompt", completion_defaults_,
+      sizeof completion_defaults_ / sizeof completion_defaults_[0] },
+    { "surface", "", surface_defaults_,
+      sizeof surface_defaults_ / sizeof surface_defaults_[0] },
+};
+
+#define BUILTIN_MODES_N (sizeof builtin_modes_ / sizeof builtin_modes_[0])
+
+static bool mode_name_valid_(const char *name)
+{
+    const char *p;
+
+    if(!name || !*name || strlen(name) > FYTIM_MODE_NAME_MAX) return false;
+    for(p = name; *p; p++)
+        if(!isalnum((unsigned char)*p) && *p != '-' && *p != '_' &&
+           *p != '.' && *p != ':')
+            return false;
+    return true;
+}
+
+static struct fytim_mode *mode_find_(const struct fytim *ft, const char *name)
+{
+    size_t i;
+
+    for(i = 0; i < ft->nmodes; i++)
+        if(!strcmp(ft->modes[i]->name, name)) return ft->modes[i];
+    return NULL;
+}
+
+static void mode_free_(struct fytim_mode *m)
+{
+    if(!m) return;
+    free(m->slots);
+    free(m->nodes);
+    free(m->index);
+    free(m);
+}
+
+static void modes_free_(struct fytim *ft)
+{
+    size_t i;
+
+    for(i = 0; i < ft->nmodes; i++) mode_free_(ft->modes[i]);
+    ft->nmodes = 0;
+}
+
+static uint32_t chord_hash_(const struct fytim_key_binding *keys, int n)
+{
+    uint32_t h = 0x811c9dc5u;
+    int i;
+
+    for(i = 0; i < n; i++)
+        h = (h ^ key_binding_hash_(&keys[i])) * 0x01000193u;
+    return h ^ (h >> 13);
+}
+
+/* The node of the sequence @keys in @m itself; NULL for none. */
+static const struct fytim_chord_node *
+mode_node_(const struct fytim_mode *m, const struct fytim_key_binding *keys,
+           int n, uint32_t h)
+{
+    const struct fytim_chord_node *nd;
+    uint32_t e;
+    int i;
+
+    if(!m->index) return NULL;
+    for(e = h & m->index_mask; m->index[e]; e = (e + 1) & m->index_mask){
+        nd = &m->nodes[m->index[e] - 1];
+        if(nd->seq.n != n) continue;
+        for(i = 0; i < n; i++)
+            if(!key_binding_same_(&nd->seq.keys[i], &keys[i])) break;
+        if(i == n) return nd;
+    }
+    return NULL;
+}
+
+/*
+ * The node of a sequence in @m or, when @m has none, in the modes it
+ * inherits. This runs for every key typed: it hashes the sequence once and
+ * probes a table for each mode of the chain.
+ */
+static const struct fytim_chord_node *
+keymap_find_(const struct fytim_mode *m, const struct fytim_key_binding *keys,
+             int n)
+{
+    const struct fytim_chord_node *nd;
+    uint32_t h = chord_hash_(keys, n);
+    int depth;
+
+    for(depth = 0; m && depth < FYTIM_MODES_MAX; m = m->parent, depth++){
+        nd = mode_node_(m, keys, n, h);
+        if(nd) return nd;
+    }
+    return NULL;
+}
+
+/* Run an action. False: the key is not taken and goes on. */
+static bool action_run_(struct fytim *ft, const char *action,
+                        const struct key_ctx *kc)
+{
+    const struct fytim_action_def *def;
+    char *name;
+
+    def = action_find_(action);
+    if(def) return def->fn(ft, kc);
+    name = strdup(action);
+    /* Without memory the key goes to the prompt rather than nowhere. */
+    if(!name) return false;
+    ev_push(ft, FYTIM_EVENT_KEY, name, strlen(name), 0, 0);
+    return true;
+}
+
+static uint64_t clock_ms_(const struct fytim *ft)
+{
+    struct timespec ts;
+
+    if(ft->clock_fn) return ft->clock_fn(ft->clock_user);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+/* End the chord that has begun; the host is told when @notify. */
+static void chord_clear_(struct fytim *ft, bool notify)
+{
+    if(!ft->chord_n) return;
+    ft->chord_n = 0;
+    ft->chord_mode = NULL;
+    ft->chord_text[0] = '\0';
+    if(notify) ev_push(ft, FYTIM_EVENT_CHORD, NULL, 0, 0, 0);
+}
+
+static bool chord_expired_(const struct fytim *ft)
+{
+    return ft->chord_timeout_ms &&
+           clock_ms_(ft) - ft->chord_time >= ft->chord_timeout_ms;
+}
+
+/* The chord has begun with @k, and ends with the keys of @nd. */
+static void chord_arm_(struct fytim *ft, struct fytim_mode *m,
+                       const struct fytim_key_binding *k,
+                       const struct fytim_chord_node *nd)
+{
+    char *text;
+
+    ft->chord_keys[ft->chord_n++] = *k;
+    ft->chord_mode = m;
+    ft->chord_time = clock_ms_(ft);
+    snprintf(ft->chord_text, sizeof ft->chord_text, "%s", nd->text);
+    text = strdup(nd->text);
+    if(text) ev_push(ft, FYTIM_EVENT_CHORD, text, strlen(text), 0, 0);
+}
+
+/*
+ * One key in mode @m. A key that begins a chord, or continues the chord that
+ * has begun, is taken; a key that the chord does not continue ends it and is
+ * looked up again alone. A key that is a binding and begins a longer one runs
+ * its action at once and keeps the chord open, so a single press waits for
+ * nothing. When @flush is not NULL the bytes it holds are given to the host
+ * before an action runs. Returns whether the key was taken.
+ */
+static int key_dispatch_(struct fytim *ft, struct fytim_mode *m, TimuiKey key,
+                         uint32_t cp, uint32_t mods, struct key_out *flush)
+{
+    struct fytim_key_binding seq[FYTIM_CHORD_MAX], k = { key, cp, mods };
+    const struct fytim_chord_node *nd;
+    struct key_ctx kc = { key, cp, mods };
+    bool taken;
+
+    key_binding_canon_(&k);
+    if(ft->chord_n && (ft->chord_mode != m || chord_expired_(ft)))
+        chord_clear_(ft, true);
+    for(;;){
+        memcpy(seq, ft->chord_keys, (size_t)ft->chord_n * sizeof seq[0]);
+        seq[ft->chord_n] = k;
+        nd = keymap_find_(m, seq, ft->chord_n + 1);
+        if(nd || !ft->chord_n) break;
+        chord_clear_(ft, true);
+    }
+    if(!nd) return 0;
+    taken = nd->prefix;
+    if(nd->has_action && nd->action[0]){
+        if(flush) surface_keys_emit(ft, flush);
+        taken = action_run_(ft, nd->action, &kc) || nd->prefix;
+    }
+    if(nd->prefix && taken){
+        chord_arm_(ft, m, &k, nd);
+        return 1;
+    }
+    chord_clear_(ft, true);
+    return taken;
+}
+
+/* The library must keep a key that leaves the program. */
+static bool slots_can_leave_(const struct fytim_keymap_slot *slots, size_t n)
+{
+    size_t i;
+
+    for(i = 0; i < n; i++)
+        if(!strcmp(slots[i].action, "fytim.interrupt") ||
+           !strcmp(slots[i].action, "fytim.interrupt.tty") ||
+           !strcmp(slots[i].action, "fytim.quit"))
+            return true;
+    return false;
+}
+
+/* The length of the text of the first @k keys of a binding named @text. */
+static size_t chord_text_len_(const char *text, int k)
+{
+    size_t i;
+
+    for(i = 0; text[i]; i++)
+        if(text[i] == ' ' && --k == 0) break;
+    return i;
+}
+
+/* The node of @c in @nodes, which it adds when the table has none. */
+static struct fytim_chord_node *
+nodes_get_(struct fytim_chord_node *nodes, size_t *nnodes, uint32_t *index,
+           size_t mask, const struct fytim_chord *c, const char *text,
+           size_t textlen)
+{
+    struct fytim_chord_node *nd;
+    uint32_t e = chord_hash_(c->keys, c->n) & mask;
+
+    for(; index[e]; e = (e + 1) & mask){
+        nd = &nodes[index[e] - 1];
+        if(chord_same_(&nd->seq, c)) return nd;
+    }
+    nd = &nodes[(*nnodes)++];
+    nd->seq = *c;
+    memcpy(nd->text, text, textlen);
+    nd->text[textlen] = '\0';
+    index[e] = (uint32_t)*nnodes;
+    return nd;
+}
+
+/*
+ * Take @slots (owned) as the bindings of @m and index them: every binding
+ * and every prefix of one is a node. The index is at most half full, so a
+ * probe ends at an empty entry. Without memory the mode keeps its old keys
+ * and false is returned.
+ */
+static bool mode_set_slots_(struct fytim_mode *m,
+                            struct fytim_keymap_slot *slots, size_t n)
+{
+    struct fytim_chord_node *nodes = NULL, *nd;
+    uint32_t *index = NULL;
+    struct fytim_chord c;
+    size_t cap = 0, nnodes = 0, i, len;
+    const char *p;
+    int k;
+
+    if(n){
+        for(cap = 8; cap < n * FYTIM_CHORD_MAX * 2; cap <<= 1)
+            ;
+        nodes = calloc(n * FYTIM_CHORD_MAX, sizeof *nodes);
+        index = calloc(cap, sizeof *index);
+        if(!nodes || !index){
+            free(nodes);
+            free(index);
+            free(slots);
+            return false;
+        }
+        for(i = 0; i < n; i++){
+            c = slots[i].seq;
+            p = slots[i].text;
+            for(k = 1; k <= c.n; k++){
+                struct fytim_chord pre = c;
+
+                pre.n = k;
+                len = chord_text_len_(p, k);
+                nd = nodes_get_(nodes, &nnodes, index, cap - 1, &pre, p, len);
+                if(k < c.n){
+                    nd->prefix = true;
+                }else{
+                    nd->has_action = true;
+                    memcpy(nd->action, slots[i].action, sizeof nd->action);
+                }
+            }
+        }
+    }
+    free(m->slots);
+    free(m->nodes);
+    free(m->index);
+    m->slots = slots;
+    m->nslots = n;
+    m->nodes = nodes;
+    m->nnodes = nnodes;
+    m->index = index;
+    m->index_mask = cap ? cap - 1 : 0;
+    return true;
+}
+
+static struct fytim_mode *mode_create_(struct fytim *ft, const char *name,
+                                       const char *parent)
+{
+    struct fytim_mode *m;
+
+    if(ft->nmodes >= FYTIM_MODES_MAX) return NULL;
+    m = calloc(1, sizeof *m);
+    if(!m) return NULL;
+    snprintf(m->name, sizeof m->name, "%s", name);
+    m->parent = parent && *parent ? mode_find_(ft, parent) : NULL;
+    ft->modes[ft->nmodes++] = m;
+    return m;
+}
+
+enum fytim_result fytim_key_valid(const char *name)
+{
+    struct fytim_chord c;
+
+    return chord_parse_(name, &c) ? FYTIM_OK : FYTIM_ERR_INVALID;
+}
+
+enum fytim_result fytim_mode_bind(struct fytim *ft, const char *mode,
+                                  const struct fytim_keymap_entry *entries,
+                                  size_t count)
+{
+    struct fytim_chord seqs[FYTIM_MODE_KEYS_MAX];
+    struct fytim_keymap_slot *slots;
+    struct fytim_mode *m;
+    size_t i, j, n;
+
+    if(!ft || !mode_name_valid_(mode) || (count && !entries) ||
+       count > FYTIM_MODE_KEYS_MAX)
+        return FYTIM_ERR_INVALID;
+    for(i = 0; i < count; i++){
+        if(!chord_parse_(entries[i].key, &seqs[i]) ||
+           !action_valid_(entries[i].action))
+            return FYTIM_ERR_INVALID;
+        /* A program holds the keys of a surface: it cannot lose the first
+         * of a chord. */
+        if(!strcmp(mode, "surface") && seqs[i].n > 1) return FYTIM_ERR_INVALID;
+        for(j = 0; j < i; j++)
+            if(chord_same_(&seqs[i], &seqs[j])) return FYTIM_ERR_INVALID;
+    }
+    m = mode_find_(ft, mode);
+    if(!m && ft->nmodes >= FYTIM_MODES_MAX) return FYTIM_ERR_INVALID;
+    slots = calloc((m ? m->nslots : 0) + count + 1, sizeof *slots);
+    if(!slots) return FYTIM_ERR_NOMEM;
+    n = 0;
+    if(m){
+        memcpy(slots, m->slots, m->nslots * sizeof *slots);
+        n = m->nslots;
+    }
+    for(i = 0; i < count; i++){
+        for(j = 0; j < n; j++)
+            if(chord_same_(&slots[j].seq, &seqs[i])) break;
+        if(j == n) n++;
+        slots[j].seq = seqs[i];
+        snprintf(slots[j].text, sizeof slots[j].text, "%s", entries[i].key);
+        snprintf(slots[j].action, sizeof slots[j].action, "%s",
+                 entries[i].action ? entries[i].action : "");
+    }
+    if(n > FYTIM_MODE_KEYS_MAX ||
+       (!strcmp(mode, "prompt") && !slots_can_leave_(slots, n))){
+        free(slots);
+        return FYTIM_ERR_INVALID;
+    }
+    if(!m) m = mode_create_(ft, mode, "");
+    if(!m){
+        free(slots);
+        return FYTIM_ERR_NOMEM;
+    }
+    return mode_set_slots_(m, slots, n) ? FYTIM_OK : FYTIM_ERR_NOMEM;
+}
+
+enum fytim_result fytim_mode_reset(struct fytim *ft, const char *mode,
+                                   int defaults)
+{
+    struct fytim_keymap_entry e[FYTIM_MODE_KEYS_MAX];
+    struct fytim_mode *m;
+    size_t i, b;
+
+    if(!ft || !mode_name_valid_(mode)) return FYTIM_ERR_INVALID;
+    m = mode_find_(ft, mode);
+    if(!m) return FYTIM_ERR_INVALID;
+    for(b = 0; b < BUILTIN_MODES_N; b++)
+        if(!strcmp(builtin_modes_[b].name, mode)) break;
+    if(b == BUILTIN_MODES_N)
+        return mode_set_slots_(m, NULL, 0) ? FYTIM_OK : FYTIM_ERR_NOMEM;
+    if(!defaults){
+        /* Nothing is bound, so a prompt would have no way out. */
+        if(b == 0) return FYTIM_ERR_INVALID;
+        return mode_set_slots_(m, NULL, 0) ? FYTIM_OK : FYTIM_ERR_NOMEM;
+    }
+    for(i = 0; i < builtin_modes_[b].n; i++){
+        e[i].key = builtin_modes_[b].keys[i].key;
+        e[i].action = builtin_modes_[b].keys[i].action;
+    }
+    if(!mode_set_slots_(m, NULL, 0)) return FYTIM_ERR_NOMEM;
+    m->parent = *builtin_modes_[b].parent ?
+                mode_find_(ft, builtin_modes_[b].parent) : NULL;
+    return fytim_mode_bind(ft, mode, e, builtin_modes_[b].n);
+}
+
+enum fytim_result fytim_mode_set_parent(struct fytim *ft, const char *mode,
+                                        const char *parent)
+{
+    const struct fytim_mode *p;
+    struct fytim_mode *m, *np;
+    int depth;
+
+    if(!ft || !mode_name_valid_(mode)) return FYTIM_ERR_INVALID;
+    m = mode_find_(ft, mode);
+    if(!m) return FYTIM_ERR_INVALID;
+    if(!parent || !*parent){
+        m->parent = NULL;
+        return FYTIM_OK;
+    }
+    if(!mode_name_valid_(parent)) return FYTIM_ERR_INVALID;
+    np = mode_find_(ft, parent);
+    if(!np) return FYTIM_ERR_INVALID;
+    /* A mode cannot inherit from itself, directly or by a chain. */
+    for(p = np, depth = 0; p && depth <= FYTIM_MODES_MAX; p = p->parent, depth++)
+        if(p == m) return FYTIM_ERR_INVALID;
+    m->parent = np;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_set_mode(struct fytim *ft, const char *mode)
+{
+    struct fytim_mode *m;
+
+    if(!ft) return FYTIM_ERR_INVALID;
+    if(!mode || !*mode) mode = "prompt";
+    if(!mode_name_valid_(mode)) return FYTIM_ERR_INVALID;
+    m = mode_find_(ft, mode);
+    if(!m) return FYTIM_ERR_INVALID;
+    if(ft->mode != m) chord_clear_(ft, true);
+    ft->mode = m;
+    return FYTIM_OK;
+}
+
+const char *fytim_mode(const struct fytim *ft)
+{
+    return ft && ft->mode ? ft->mode->name : "";
+}
+
+enum fytim_result fytim_set_chord_timeout(struct fytim *ft, unsigned ms)
+{
+    if(!ft) return FYTIM_ERR_INVALID;
+    ft->chord_timeout_ms = ms;
+    return FYTIM_OK;
+}
+
+enum fytim_result fytim_set_clock(struct fytim *ft, fytim_clock_fn fn,
+                                  void *user)
+{
+    if(!ft) return FYTIM_ERR_INVALID;
+    ft->clock_fn = fn;
+    ft->clock_user = fn ? user : NULL;
+    return FYTIM_OK;
+}
+
+const char *fytim_chord_pending(const struct fytim *ft)
+{
+    return ft ? ft->chord_text : "";
+}
+
+int fytim_chord_remaining_ms(const struct fytim *ft)
+{
+    uint64_t gone;
+
+    if(!ft || !ft->chord_n || !ft->chord_timeout_ms) return -1;
+    gone = clock_ms_(ft) - ft->chord_time;
+    return gone >= ft->chord_timeout_ms ? 0 :
+           (int)(ft->chord_timeout_ms - gone);
+}
+
+/*
+ * Whether the terminal can send @name: without the kitty keyboard protocol a
+ * chord of Ctrl with Tab, Enter, Escape, Backspace, a digit or a symbol, any
+ * Ctrl-Shift chord and Shift with Enter, Escape or Backspace arrive as
+ * another key, or not at all.
+ */
+bool fytim_key_available(const struct fytim *ft, const char *name)
+{
+    const struct fytim_key_binding *b;
+    struct fytim_chord c;
+    int i;
+
+    if(!ft || !ft->ui || !chord_parse_(name, &c)) return false;
+    if(timui_caps_has(timui_caps(ft->ui), TIMUI_CAP_KITTY_KEYBOARD))
+        return true;
+    for(i = 0; i < c.n; i++){
+        b = &c.keys[i];
+        if((b->mods & TIMUI_MOD_CTRL) && (b->mods & TIMUI_MOD_SHIFT))
+            return false;
+        if(b->key == TIMUI_KEY_ENTER || b->key == TIMUI_KEY_ESCAPE ||
+           b->key == TIMUI_KEY_BACKSPACE){
+            if(b->mods & (TIMUI_MOD_CTRL | TIMUI_MOD_SHIFT)) return false;
+        }else if(b->key == TIMUI_KEY_TAB){
+            if(b->mods & TIMUI_MOD_CTRL) return false;
+        }else if(b->key == TIMUI_KEY_UNKNOWN && (b->mods & TIMUI_MOD_CTRL) &&
+                 !(b->cp >= 'a' && b->cp <= 'z') && !strchr("@[\\]^_", (int)b->cp))
+            return false;
+    }
+    return true;
+}
+
+static bool modes_init_(struct fytim *ft)
+{
+    size_t b;
+
+    for(b = 0; b < BUILTIN_MODES_N; b++){
+        if(!mode_create_(ft, builtin_modes_[b].name, builtin_modes_[b].parent))
+            return false;
+        if(fytim_mode_reset(ft, builtin_modes_[b].name, 1) != FYTIM_OK)
+            return false;
+    }
+    ft->mode = mode_find_(ft, "prompt");
+    ft->mode_completion = mode_find_(ft, "completion");
+    ft->mode_surface = mode_find_(ft, "surface");
+    return true;
+}
+
 static int key_filter_(void *user, TimuiKey key, uint32_t cp, uint32_t mods)
 {
     struct fytim *ft = user;
     size_t before;
-    char *name;
-    int i;
 
     if(!ft || ft->keys) return 0;
     /* After a focus key the input of the frame is the next owner's. */
@@ -2770,52 +3724,9 @@ static int key_filter_(void *user, TimuiKey key, uint32_t cp, uint32_t mods)
         if(ft->held.len == before) ft->held_lost = true;
         return 1;
     }
-    if(complete_key(ft, key, mods)) return 1;
-    /*
-     * Tab completes the line as it stands at the Tab: the text typed before
-     * it reaches the editor in this frame, and what follows it waits for the
-     * next one.
-     */
-    if(key == TIMUI_KEY_TAB && !(mods & (TIMUI_MOD_SHIFT | TIMUI_MOD_ALT |
-                                         TIMUI_MOD_CTRL)) &&
-       ft->complete_fn){
-        ft->comp_tab = true;
-        ft->focus_hold = true;
-        return 1;
-    }
-    if(key_is_focus_(key, cp, mods)){
-        ev_push(ft, FYTIM_EVENT_FOCUS_NEXT, NULL, 0, 0, 0);
-        ft->focus_hold = true;
-        return 1;
-    }
-    if(ft->nbindings == 0) return 0;
-    if((mods & TIMUI_MOD_CTRL) && cp >= 'A' && cp <= 'Z') cp += 'a' - 'A';
-    for(i = 0; i < ft->nbindings; i++){
-        if(!key_binding_hit_(&ft->bindings[i], key, cp, mods)) continue;
-        name = strdup(ft->bindings[i].name);
-        /* Without memory the key goes to the prompt rather than nowhere. */
-        if(!name) return 0;
-        ev_push(ft, FYTIM_EVENT_KEY, name, strlen(name), 0, 0);
-        return 1;
-    }
-    return 0;
-}
-
-enum fytim_result fytim_set_key_bindings(struct fytim *ft,
-                                         const char *const *names,
-                                         size_t count)
-{
-    struct fytim_key_binding b[FYTIM_KEY_BINDINGS_MAX];
-    size_t i;
-
-    if(!ft || (count && !names) || count > FYTIM_KEY_BINDINGS_MAX)
-        return FYTIM_ERR_INVALID;
-    for(i = 0; i < count; i++)
-        if(!key_binding_parse_(names[i], &b[i]) || key_binding_reserved_(&b[i]))
-            return FYTIM_ERR_INVALID;
-    if(count) memcpy(ft->bindings, b, count * sizeof b[0]);
-    ft->nbindings = (int)count;
-    return FYTIM_OK;
+    /* An open popup has its own keys, and the prompt's behind them. */
+    return key_dispatch_(ft, ft->comp_active ? ft->mode_completion : ft->mode,
+                         key, cp, mods, NULL);
 }
 
 /* ---- history ------------------------------------------------------------ */
@@ -3163,38 +4074,6 @@ static bool complete_take(struct fytim *ft, int idx)
     complete_leave(ft);
     if(!changed) complete_seen(ft);
     return changed;
-}
-
-/*
- * The keys of an open popup: they move and take the selection, and neither
- * the editor nor the keys of the library see them. Escape closes the popup
- * and interrupts nothing.
- */
-static bool complete_key(struct fytim *ft, TimuiKey key, uint32_t mods)
-{
-    if(!ft->comp_active) return false;
-    mods &= TIMUI_MOD_SHIFT | TIMUI_MOD_ALT | TIMUI_MOD_CTRL;
-    if(key == TIMUI_KEY_TAB && mods == TIMUI_MOD_SHIFT) complete_move(ft, -1);
-    else if(key == TIMUI_KEY_TAB && !mods){
-        /* One row has nothing to cycle to: Tab completes with it. Several
-         * first extend the line to what they share, as the Tab that opened
-         * the popup does, and only then cycle. */
-        if(ft->comp_n == 1) (void)complete_take(ft, 0);
-        else if(!complete_extend(ft)) complete_move(ft, 1);
-    }
-    else if(key == TIMUI_KEY_DOWN && !mods) complete_move(ft, 1);
-    else if(key == TIMUI_KEY_UP && !mods) complete_move(ft, -1);
-    else if(key == TIMUI_KEY_PAGE_DOWN && !mods)
-        complete_move_clamp(ft, complete_page_rows(ft));
-    else if(key == TIMUI_KEY_PAGE_UP && !mods)
-        complete_move_clamp(ft, -complete_page_rows(ft));
-    else if(key == TIMUI_KEY_ENTER && !mods)
-        return complete_take(ft, ft->comp_idx);
-    else if(key == TIMUI_KEY_ESCAPE && !mods){
-        complete_leave(ft);
-        complete_seen(ft);
-    }else return false;
-    return true;
 }
 
 /*
@@ -5257,20 +6136,12 @@ static void surface_keys_collect(struct fytim *ft, TimuiFrame *f)
     n = timui_input_log_count(f);
     for(i = 0; i < n; i++){
         if(!timui_input_log_at(f, i, &rec)) break;
-        if(!rec.is_text && rec.key == TIMUI_KEY_UNKNOWN &&
-           rec.codepoint == 't' &&
-           (rec.mods & (TIMUI_MOD_CTRL | TIMUI_MOD_SHIFT)) ==
-               (TIMUI_MOD_CTRL | TIMUI_MOD_SHIFT)){
-            surface_keys_emit(ft, &k);
-            ev_push(ft, FYTIM_EVENT_ZOOM_ROWS_NEXT, NULL, 0, 0, 0);
+        /* The keys of the surface mode are the host's or the library's; the
+         * bytes before one are the program's. */
+        if(!rec.is_text &&
+           key_dispatch_(ft, ft->mode_surface, rec.key, rec.codepoint,
+                         rec.mods, &k))
             continue;
-        }
-        if(!rec.is_text && rec.key == TIMUI_KEY_TAB &&
-           (rec.mods & TIMUI_MOD_CTRL)){
-            surface_keys_emit(ft, &k);
-            ev_push(ft, FYTIM_EVENT_FOCUS_NEXT, NULL, 0, 0, 0);
-            continue;
-        }
         if(rec.is_text){
             key_put(&k, utf8, fytim_utf8_put_(utf8, rec.codepoint));
             continue;
@@ -6187,7 +7058,7 @@ static const char *page_region_at(const struct fytim *ft, int x, int y)
  * can move the keys either way. PageUp and PageDown scroll only when @paging:
  * a tile that holds the keys takes them.
  */
-static void pump_mouse(struct fytim *ft, TimuiFrame *f, bool paging)
+static void pump_mouse(struct fytim *ft, TimuiFrame *f)
 {
     bool page_took;
 
@@ -6198,26 +7069,17 @@ static void pump_mouse(struct fytim *ft, TimuiFrame *f, bool paging)
         if(timui_mouse_clicked(f, &cx, &cy) && header_act_click(ft, cx, cy))
             page_took = true;
     }
-    if(!pane_mouse(ft, f, page_took) &&
-       (timui_mouse_wheel(f) ||
-        (paging && (timui_key_pressed(f, TIMUI_KEY_PAGE_UP) ||
-                    timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN))))){
+    if(!pane_mouse(ft, f, page_took) && timui_mouse_wheel(f)){
         struct fytim_event *sev;
-        int page = ft->term_h > 1 ? ft->term_h - 1 : 1;
         int delta = timui_mouse_wheel(f) * 3;
         int mx = 0, my = 0, down = 0;
-        const char *region = NULL;
+        const char *region;
         char *text;
 
-        if(timui_mouse_wheel(f)){
-            (void)timui_mouse_state(f, &mx, &my, &down);
-            region = page_region_at(ft, mx, my);
-        }
-        if(paging && timui_key_pressed(f, TIMUI_KEY_PAGE_UP)) delta += page;
-        if(paging && timui_key_pressed(f, TIMUI_KEY_PAGE_DOWN))
-            delta -= page;
+        (void)timui_mouse_state(f, &mx, &my, &down);
+        region = page_region_at(ft, mx, my);
         /* The host moves the text of the region: a selection there would
-         * stand on other text. A key moves whatever the host chooses. */
+         * stand on other text. */
         if(!region || !strcmp(region, ft->sel_id))
             fytim_selection_clear(ft);
         text = region ? strdup(region) : NULL;
@@ -6303,6 +7165,8 @@ enum fytim_result fytim_pump(struct fytim *ft)
         }
     }
 
+    /* A chord that nobody continued ends, though no key said so. */
+    if(ft->chord_n && chord_expired_(ft)) chord_clear_(ft, true);
     ft->focus_hold = false;
     ft->held.len = 0;
     ft->held_lost = false;
@@ -6339,7 +7203,7 @@ enum fytim_result fytim_pump(struct fytim *ft)
      * key of its own and finds it in the bytes it is given.
      */
     if(ft->keys){
-        pump_mouse(ft, f, false);
+        pump_mouse(ft, f);
         surface_keys_collect(ft, f);
         draw_screen(ft, f, &submitted);
         timui_end(f);
@@ -6350,46 +7214,9 @@ enum fytim_result fytim_pump(struct fytim *ft)
         return FYTIM_OK;
     }
 
-    if(timui_key_pressed(f, TIMUI_KEY_ESCAPE))
-        ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
     /* A layer takes the mouse before what it covers. */
     if(!complete_mouse(ft, f))
-        pump_mouse(ft, f, true);
-    {
-        int ctrl = timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN, TIMUI_MOD_CTRL);
-        uint32_t cp = timui_key_codepoint(f);
-        bool zoom_rows_next = ctrl && cp == 't' &&
-            timui_key_pressed_mods(f, TIMUI_KEY_UNKNOWN,
-                                   TIMUI_MOD_CTRL | TIMUI_MOD_SHIFT);
-        /*
-         * The keyboard protocol reports ^C as a key, so the terminal never
-         * turns it into SIGINT. A host that asked for the signal gets it
-         * the same way.
-         */
-        if(ctrl && cp == 'c'){
-            if(ft->intr_signal)
-                raise(SIGINT);
-            else
-                ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
-        }
-        if(ctrl && cp == 'd' && !ft->input[0])
-            ev_push(ft, FYTIM_EVENT_QUIT, NULL, 0, 0, 0);
-        if(ctrl && cp == 'l'){
-            timui_full_redraw(ft->ui);
-            ev_push(ft, FYTIM_EVENT_REDRAW, NULL, 0, 0, 0);
-        }
-        if(ctrl && cp == 'g')
-            ev_push(ft, FYTIM_EVENT_EDIT, NULL, 0, 0, 0);
-        if(zoom_rows_next)
-            ev_push(ft, FYTIM_EVENT_ZOOM_ROWS_NEXT, NULL, 0, 0, 0);
-        /* The key filter takes a focus key, in order with what follows. */
-        if((ctrl && cp == 'p') ||
-           (timui_key_pressed(f, TIMUI_KEY_UP) && cursor_on_first_line(ft)))
-            hist_prev(ft);
-        else if((ctrl && cp == 'n') ||
-                (timui_key_pressed(f, TIMUI_KEY_DOWN) && cursor_on_last_line(ft)))
-            hist_next(ft);
-    }
+        pump_mouse(ft, f);
 
     draw_screen(ft, f, &submitted);
 

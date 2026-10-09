@@ -60,9 +60,9 @@ enum fytim_event_type {
     /* A click on an act region of the page. The id is in text/text_len,
      * with the lifetime of FYTIM_EVENT_LINE text. */
     FYTIM_EVENT_ACT,
-    /* A key that the host bound with fytim_set_key_bindings, taken from the
-     * prompt. Its name, as bound, is in text/text_len, with the lifetime of
-     * FYTIM_EVENT_LINE text. */
+    /* A key whose action in the active mode is a name of the host. The
+     * action is in text/text_len, with the lifetime of FYTIM_EVENT_LINE
+     * text. */
     FYTIM_EVENT_KEY,
     /* A drag over a text region of the page ended. The id of the region is
      * in text/text_len, with the lifetime of FYTIM_EVENT_LINE text; @row and
@@ -90,7 +90,11 @@ enum fytim_event_type {
      * it was drawn: the library repaints its own cells, and a host that
      * made rows with the old width makes them again. fytim_glyph_width()
      * says what the terminal does. */
-    FYTIM_EVENT_GLYPH_WIDTH
+    FYTIM_EVENT_GLYPH_WIDTH,
+    /* A chord began or went on, or ended. The keys so far are in text/text_len
+     * with the lifetime of FYTIM_EVENT_LINE text, and text is NULL when the
+     * chord ended, whether it was done, broken or out of time. */
+    FYTIM_EVENT_CHORD
 };
 
 struct fytim_event {

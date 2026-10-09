@@ -261,22 +261,106 @@ enum fytim_result fytim_set_input(struct fytim *ft, const char *text) FYTIM_EXPO
 const char *fytim_input(const struct fytim *ft) FYTIM_EXPORT;
 
 /*
- * Keys that the host takes from the prompt, by name: "Up", "Down", "Left",
- * "Right", "Home", "End", "PageUp", "PageDown", "Enter", "Escape", "Tab",
- * "Backspace", "Delete", "Insert", "F1" to "F12", "Space", or one printable
- * character, each with any of the prefixes "Ctrl-", "Alt-" and "Shift-". While
- * no surface holds the keys, a bound key is reported as FYTIM_EVENT_KEY with
- * its name, and neither the editor nor the keys of the library see it. Ctrl-C,
- * Ctrl-T and Ctrl-Tab cannot be bound. A set holds at most
- * FYTIM_KEY_BINDINGS_MAX names of at most FYTIM_KEY_NAME_MAX bytes, and a
- * count of 0 removes every binding. A name that is not a key, or a key that
- * cannot be bound, rejects the whole set and keeps the bindings as they were.
+ * Keys are bound in modes. A mode is a named table of keys and actions, and
+ * a key that the table does not bind is looked up in the parent of the mode.
+ * A key is named "Up", "Down", "Left", "Right", "Home", "End", "PageUp",
+ * "PageDown", "Enter", "Escape", "Tab", "Backspace", "Delete", "Insert",
+ * "F1" to "F12", "Space", or one printable character, each with any of the
+ * prefixes "Ctrl-", "Alt-" and "Shift-". Ctrl-I, Ctrl-M and Ctrl-[ are Tab,
+ * Enter and Escape: a terminal sends them as the same code.
+ *
+ * A binding is one key or a chord of up to FYTIM_CHORD_MAX keys named in
+ * order and apart by blanks, such as "Ctrl-x Ctrl-e". "Escape Escape" is a
+ * double tap: it is a chord of one key twice. The keys of a chord are taken
+ * and the host is told by FYTIM_EVENT_CHORD, with the keys so far. A key that
+ * the chord does not continue, or no key within the time that
+ * fytim_set_chord_timeout() sets, ends the chord, and the keys it took are
+ * dropped. A key that is a binding and also begins a longer one runs its
+ * action at once and keeps the chord open, so a single press has no delay and
+ * a second press inside the time runs the action of the chord too. A mode
+ * that binds a sequence hides the same sequence of its parents, with the
+ * chords that begin with it. The mode "surface" binds single keys only.
+ *
+ * An action is a built-in action of the library, whose name starts with
+ * "fytim." (fytim_action_name() lists them), or a name of the host. The host
+ * action of a key is reported as FYTIM_EVENT_KEY, and neither the editor nor
+ * the other keys of the library see the key. An empty action unbinds the key
+ * in this mode, and so hides the binding of a parent.
+ *
+ * The library has three modes, with the keys it had before they were data:
+ *   "prompt"      the mode that is selected at the start;
+ *   "completion"  selected while the popup is open, with "prompt" as parent;
+ *   "surface"     selected while a surface holds the keys, which then gets
+ *                 every key but the ones this mode binds.
+ * A host makes other modes by binding keys in a new name, and selects one
+ * with fytim_set_mode(). The "prompt" mode keeps an action that leaves the
+ * program (fytim.interrupt, fytim.interrupt.tty or fytim.quit).
  */
-#define FYTIM_KEY_BINDINGS_MAX 32
-#define FYTIM_KEY_NAME_MAX     31
-enum fytim_result fytim_set_key_bindings(struct fytim *ft,
-                                         const char *const *names,
-                                         size_t count) FYTIM_EXPORT;
+#define FYTIM_KEY_NAME_MAX      31
+#define FYTIM_CHORD_MAX         4
+#define FYTIM_BINDING_NAME_MAX  127
+#define FYTIM_CHORD_TIMEOUT_MS  1000
+#define FYTIM_ACTION_NAME_MAX   47
+#define FYTIM_MODE_NAME_MAX     31
+#define FYTIM_MODES_MAX         16
+#define FYTIM_MODE_KEYS_MAX     64
+
+struct fytim_keymap_entry {
+    const char *key;
+    const char *action;      /* "" or NULL unbinds the key */
+};
+
+/* Whether @name is a key name or a chord that a mode can bind. */
+enum fytim_result fytim_key_valid(const char *name) FYTIM_EXPORT;
+/* The name of the built-in action at @index, or NULL past the last. */
+const char *fytim_action_name(size_t index) FYTIM_EXPORT;
+/*
+ * Bind @count keys in @mode, which a first call makes. A key that is bound
+ * already gets the new action. A name that is not a key, an action that is
+ * not known, the same key twice, a table that outgrows FYTIM_MODE_KEYS_MAX,
+ * or a "prompt" mode with no way out rejects the whole call and keeps the
+ * mode as it was.
+ */
+enum fytim_result fytim_mode_bind(struct fytim *ft, const char *mode,
+                                  const struct fytim_keymap_entry *entries,
+                                  size_t count) FYTIM_EXPORT;
+/*
+ * Empty @mode, or give a built-in mode its keys and parent again when
+ * @defaults is not 0. The "prompt" mode cannot be empty.
+ */
+enum fytim_result fytim_mode_reset(struct fytim *ft, const char *mode,
+                                   int defaults) FYTIM_EXPORT;
+/* Make @parent the mode that @mode inherits from; NULL for none. */
+enum fytim_result fytim_mode_set_parent(struct fytim *ft, const char *mode,
+                                        const char *parent) FYTIM_EXPORT;
+/* Select the mode of the prompt; NULL selects "prompt". */
+enum fytim_result fytim_set_mode(struct fytim *ft, const char *mode) FYTIM_EXPORT;
+const char *fytim_mode(const struct fytim *ft) FYTIM_EXPORT;
+
+/*
+ * Whether the terminal can send @name, by the capabilities now known. A
+ * terminal without the kitty keyboard protocol sends Ctrl-I as Tab, no
+ * Ctrl-Tab, and no Shift with Enter. A host that finds a key missing binds
+ * another one to the action.
+ */
+bool fytim_key_available(const struct fytim *ft, const char *name) FYTIM_EXPORT;
+
+/* The time a chord waits for its next key, in ms; 0 waits for ever. */
+enum fytim_result fytim_set_chord_timeout(struct fytim *ft,
+                                          unsigned ms) FYTIM_EXPORT;
+/* The keys of the chord that has begun, as bound, or "". */
+const char *fytim_chord_pending(const struct fytim *ft) FYTIM_EXPORT;
+/*
+ * The ms before the chord ends, or -1 for none. fytim_poll_timeout_ms()
+ * counts it, so a host that polls with that timeout pumps then, and the chord
+ * ends in that pump.
+ */
+int fytim_chord_remaining_ms(const struct fytim *ft) FYTIM_EXPORT;
+/* The clock of the chord timeout, in ms; NULL for the monotonic clock. A test
+ * gives a clock it moves itself. */
+typedef uint64_t (*fytim_clock_fn)(void *user);
+enum fytim_result fytim_set_clock(struct fytim *ft, fytim_clock_fn fn,
+                                  void *user) FYTIM_EXPORT;
 
 /* ---- external editor ---------------------------------------------------- *
  * ^G emits FYTIM_EVENT_EDIT. The host then releases the terminal with

@@ -282,6 +282,7 @@ static void test_completion(void)
     h_close(&h);
 }
 
+/* Two whole-line candidates that share a prefix longer than the line. */
 static void prefix_cb(void *user, const char *text,
                       struct fytim_completions *c)
 {
@@ -935,7 +936,32 @@ static int next_key_is(struct harness *h, const char *name)
            ev.text_len == strlen(name) && !memcmp(ev.text, name, ev.text_len);
 }
 
-/* A bound key is taken from the prompt: the host is told its name, and the
+/* Bind each key of @names in the mode "prompt" to a host action of the same
+ * name, on the keys the library gives the mode. */
+static enum fytim_result bind_more(struct fytim *ft, const char *const *names,
+                                   size_t count)
+{
+    struct fytim_keymap_entry e[FYTIM_MODE_KEYS_MAX + 1];
+    size_t i;
+
+    if(!names && count) return FYTIM_ERR_INVALID;
+    if(count > sizeof e / sizeof e[0]) return FYTIM_ERR_INVALID;
+    for(i = 0; i < count; i++){
+        e[i].key = names[i];
+        e[i].action = names[i];
+    }
+    return fytim_mode_bind(ft, "prompt", e, count);
+}
+
+/* The same on the keys the library gives the mode, and no others. */
+static enum fytim_result bind_names(struct fytim *ft, const char *const *names,
+                                    size_t count)
+{
+    if(fytim_mode_reset(ft, "prompt", 1) != FYTIM_OK) return FYTIM_ERR_INVALID;
+    return bind_more(ft, names, count);
+}
+
+/* A bound key is taken from the prompt: the host is told its action, and the
  * editor and the keys of the library do not see it. */
 static void test_bound_keys_leave_the_prompt(void)
 {
@@ -944,7 +970,7 @@ static void test_bound_keys_leave_the_prompt(void)
     struct fytim_event ev;
 
     if(!h_open(&h)){ CHECK(0); return; }
-    CHECK(fytim_set_key_bindings(h.ft, keys, 4) == FYTIM_OK);
+    CHECK(bind_names(h.ft, keys, 4) == FYTIM_OK);
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     h_keys(&h, "ab");
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
@@ -976,7 +1002,7 @@ static void test_bound_keys_leave_the_prompt(void)
     CHECK(!fytim_next_event(h.ft, &ev));
     CHECK(!strcmp(fytim_input(h.ft), "abc2"));
     /* without bindings Enter submits again */
-    CHECK(fytim_set_key_bindings(h.ft, NULL, 0) == FYTIM_OK);
+    CHECK(bind_names(h.ft, NULL, 0) == FYTIM_OK);
     h_keys(&h, "\r");
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_LINE &&
@@ -984,30 +1010,29 @@ static void test_bound_keys_leave_the_prompt(void)
     h_close(&h);
 }
 
-/* A set with a reserved key or a name that is no key is refused whole, and
- * the bindings before it stay. */
+/* A set with a name that is no key is refused whole, and the bindings before
+ * it stay. */
 static void test_key_bindings_are_checked(void)
 {
     static const char *const down[] = { "Down" };
     static const char *const bad[][2] = {
-        { "Down", "Ctrl-c" }, { "Down", "Ctrl-t" }, { "Down", "Ctrl-Tab" },
-        { "Down", "Hyper-x" }, { "Down", "ab" }, { "Down", "" },
+        { "Down", "Down" }, { "Down", "Hyper-x" }, { "Down", "ab" }, { "Down", "" },
         { "Down", "Ctrl-" },
     };
-    const char *many[FYTIM_KEY_BINDINGS_MAX + 1];
+    const char *many[FYTIM_MODE_KEYS_MAX + 1];
     struct harness h;
     size_t i;
 
     if(!h_open(&h)){ CHECK(0); return; }
-    CHECK(fytim_set_key_bindings(h.ft, down, 1) == FYTIM_OK);
+    CHECK(bind_names(h.ft, down, 1) == FYTIM_OK);
     for(i = 0; i < sizeof bad / sizeof bad[0]; i++)
-        CHECK(fytim_set_key_bindings(h.ft, bad[i], 2) == FYTIM_ERR_INVALID);
+        CHECK(bind_more(h.ft, bad[i], 2) == FYTIM_ERR_INVALID);
     for(i = 0; i < sizeof many / sizeof many[0]; i++)
         many[i] = "Down";
-    CHECK(fytim_set_key_bindings(h.ft, many, FYTIM_KEY_BINDINGS_MAX + 1) ==
+    CHECK(bind_more(h.ft, many, FYTIM_MODE_KEYS_MAX + 1) ==
           FYTIM_ERR_INVALID);
-    CHECK(fytim_set_key_bindings(h.ft, NULL, 1) == FYTIM_ERR_INVALID);
-    CHECK(fytim_set_key_bindings(NULL, down, 1) == FYTIM_ERR_INVALID);
+    CHECK(bind_more(h.ft, NULL, 1) == FYTIM_ERR_INVALID);
+    CHECK(fytim_mode_bind(NULL, "prompt", NULL, 0) == FYTIM_ERR_INVALID);
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
     h_keys(&h, "\x1b[B");
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
@@ -1024,7 +1049,7 @@ static void test_a_surface_with_the_keys_ignores_bindings(void)
     struct harness h;
 
     if(!h_open(&h)){ CHECK(0); return; }
-    CHECK(fytim_set_key_bindings(h.ft, keys, 1) == FYTIM_OK);
+    CHECK(bind_names(h.ft, keys, 1) == FYTIM_OK);
     sf = fytim_surface_open(h.ft, 2, 10);
     CHECK(sf != NULL && fytim_surface_set_keys(sf, true) == FYTIM_OK);
     CHECK(fytim_pump(h.ft) == FYTIM_OK);
