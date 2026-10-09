@@ -1362,6 +1362,14 @@ static void test_the_surface_mode_binds_a_host_key(void)
     CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_SURFACE_KEYS &&
           ev.text_len == 1 && ev.text[0] == 'c');
     CHECK(!fytim_next_event(h.ft, &ev));
+    /* A terminal without the kitty protocol sends Ctrl-] as the code 0x1d. */
+    h_keys(&h, "x\x1dy");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_SURFACE_KEYS &&
+          ev.text_len == 1 && ev.text[0] == 'x');
+    CHECK(next_key_is(&h, "host.release"));
+    CHECK(fytim_next_event(h.ft, &ev) && ev.type == FYTIM_EVENT_SURFACE_KEYS &&
+          ev.text_len == 1 && ev.text[0] == 'y');
     CHECK(event_after(&h, "\x1b[9;5u") == FYTIM_EVENT_FOCUS_NEXT);
     CHECK(event_after(&h, "\x03") == FYTIM_EVENT_SURFACE_KEYS);
     /* The keys of the prompt are not the surface's. */
