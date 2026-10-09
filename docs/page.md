@@ -57,14 +57,56 @@ each row of its grid, after it places the tiles. A tile that spans both columns
 covers the rule on its rows, and the tiles in the rows under it keep the rule
 between them.
 
-## Keys the host takes
+## Keys are bound in modes
 
-`fytim_set_key_bindings()` names the keys that the host takes from the prompt,
-such as `Up`, `Escape` or `Ctrl-G`. While no surface holds the keys, a bound
-key is `FYTIM_EVENT_KEY` with its name, and neither the editor nor the keys of
-the library see it. Ctrl-C, Ctrl-T and Ctrl-Tab cannot be bound, and a set
-with a name that is not a key is refused whole. A surface that holds the keys
-gets every key, bound or not.
+A mode is a named table of keys and actions. A key that the table does not
+bind is looked up in the parent of the mode. The library has three modes, and
+each has the keys the library had before they were data:
+
+- `prompt` is selected at the start. It binds Escape, Ctrl-C, Ctrl-D, Ctrl-L,
+  Ctrl-G, Ctrl-T, Ctrl-Tab, Ctrl-Shift-T, Tab, Ctrl-P, Ctrl-N, Up, Down,
+  PageUp and PageDown.
+- `completion` is selected while the popup is open. Its parent is `prompt`,
+  so a key that the popup does not bind is the prompt's.
+- `surface` is selected while a surface holds the keys. The surface gets every
+  key but the ones this mode binds: Ctrl-Tab and Ctrl-Shift-T.
+
+An action is a built-in action of the library, with a name that starts with
+`fytim.` (`fytim_action_name()` lists them), or a name of the host. A key whose
+action is a name of the host is `FYTIM_EVENT_KEY` with that action, and
+neither the editor nor the other keys of the library see it. An empty action
+unbinds a key and so hides the binding of a parent. A host makes a mode of its
+own with `fytim_mode_bind()`, gives it a parent with `fytim_mode_set_parent()`
+and selects it with `fytim_set_mode()`.
+
+A call that binds keys is refused whole when a name is not a key, an action is
+not known, a key is bound twice, the table is too big, or the `prompt` mode
+would lose every key that leaves the program. Ctrl-I, Ctrl-M and Ctrl-[ are
+Tab, Enter and Escape, because a terminal sends them as the same code.
+
+A key is found by one hash of its sequence for each mode of the chain, and
+not by a scan of the bindings.
+
+### Chords and double taps
+
+A binding is one key or a chord of up to four keys named in order, such as
+`Ctrl-x Ctrl-e`. The keys of a chord are taken, and `FYTIM_EVENT_CHORD` gives
+the keys so far, or no text when the chord has ended. A key that the chord does
+not continue ends it and is then looked up alone. A chord also ends when
+`fytim_set_chord_timeout()` milliseconds pass with no key. The pump ends it
+even when no key comes, and `fytim_poll_timeout_ms()` counts the time that is
+left, so a host that polls with it needs no timer of its own. The clock is the
+monotonic clock, or the one that `fytim_set_clock()` gives, which a test moves
+itself.
+
+A double tap is a chord of one key twice, such as `Escape Escape`. A key that
+is a binding and begins a longer one runs its action at once and keeps the
+chord open. A single press thus has no delay, and a second press inside the
+time runs the action of the chord. The `surface` mode binds single keys only,
+because a program that holds the keys cannot lose the first key of a chord.
+
+A terminal without the kitty keyboard protocol cannot send some keys:
+`fytim_key_available()` says so for a name, with the capabilities known now.
 
 The core takes the key before the frame does, through a filter that is a local
 delta of the core: see `vendor-deltas.md`.

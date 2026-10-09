@@ -176,12 +176,12 @@ the focused widget in the same pass.
 character before a widget, a key query or the input log does. A key for which
 the filter returns nonzero is taken, and nothing of the frame sees it. A paste
 does not pass through the filter. libfytimui installs it for
-`fytim_set_key_bindings()`, and passes every key while a surface holds the
-keys.
+the keymap of its modes (`fytim_mode_bind()`), and passes every key while a
+surface holds the keys, but for the keys of the `surface` mode.
 
 Covered by `fytim.band.bound_keys_leave_the_prompt`,
-`fytim.band.key_bindings_are_checked` and
-`fytim.band.a_surface_with_the_keys_ignores_bindings`. Worth upstreaming: any
+`fytim.band.key_bindings_are_checked`, `fytim.band.a_mode_inherits_its_parent`
+and `fytim.band.a_surface_with_the_keys_ignores_bindings`. Worth upstreaming: any
 host that binds keys beside a text area has the need.
 
 ## A click is on the row of the screen the band is on
