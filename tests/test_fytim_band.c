@@ -1652,6 +1652,27 @@ static void test_the_poll_timeout_counts_a_chord(void)
     h_close(&h);
 }
 
+/* An idle UI asks the host to wake at the idle interval, which the host sets
+ * or turns off. A deadline of the UI itself comes first. */
+static void test_the_idle_poll_interval(void)
+{
+    struct harness h;
+
+    if(!chord_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_poll_timeout_ms(h.ft) == FYTIM_IDLE_POLL_MS);
+    CHECK(fytim_set_idle_poll_ms(h.ft, 100) == FYTIM_OK);
+    CHECK(fytim_poll_timeout_ms(h.ft) == 100);
+    CHECK(fytim_set_idle_poll_ms(h.ft, -1) == FYTIM_OK);
+    CHECK(fytim_poll_timeout_ms(h.ft) == -1);
+    CHECK(bind_one(&h, "prompt", "Ctrl-x Ctrl-e", "host.edit") == FYTIM_OK);
+    CHECK(!strcmp(typed(&h, "\x18"), "C:Ctrl-x"));
+    CHECK(fytim_poll_timeout_ms(h.ft) >= 0 &&
+          fytim_poll_timeout_ms(h.ft) <= FYTIM_CHORD_TIMEOUT_MS);
+    CHECK(fytim_set_idle_poll_ms(h.ft, 0) == FYTIM_ERR_INVALID);
+    CHECK(fytim_set_idle_poll_ms(NULL, 100) == FYTIM_ERR_INVALID);
+    h_close(&h);
+}
+
 /* Every entry point survives NULL/degenerate arguments. */
 static void test_null_safety(void)
 {
@@ -1760,6 +1781,7 @@ int main(int argc, char **argv)
         { "a_key_may_not_be_sendable", test_a_key_may_not_be_sendable },
         { "the_poll_timeout_counts_a_chord",
           test_the_poll_timeout_counts_a_chord },
+        { "the_idle_poll_interval", test_the_idle_poll_interval },
         { "a_surface_with_the_keys_ignores_bindings",
           test_a_surface_with_the_keys_ignores_bindings },
         { "ctrl_t_focus_next", test_ctrl_t_focus_next },

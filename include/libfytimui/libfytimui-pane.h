@@ -96,9 +96,21 @@ bool fytim_mouse_enabled(const struct fytim *ft) FYTIM_EXPORT;
 int fytim_poll_fd(const struct fytim *ft) FYTIM_EXPORT;
 
 /* Maximum milliseconds the host may block before calling fytim_pump again and
- * still have animation and escape-sequence timeouts advance correctly. It is 0
- * when the last pump left input or a completion for the next frame. */
+ * still have escape-sequence and chord timeouts advance correctly. It is 0
+ * when the last pump left input or a completion for the next frame, the time
+ * left of the nearest deadline of the UI otherwise, and the idle interval
+ * below when the UI has none. It is -1 when there is nothing to wait for. */
 int fytim_poll_timeout_ms(const struct fytim *ft) FYTIM_EXPORT;
+
+/* The default idle interval: the cadence of a UI that polls the host state
+ * on every frame. */
+#define FYTIM_IDLE_POLL_MS 16
+
+/* Set the interval at which an idle UI asks the host to pump again, for a
+ * host that changes state the library cannot see. A negative value asks for no
+ * wake-up: the host then pumps on input and on a deadline of the UI alone.
+ * Zero is not valid. */
+enum fytim_result fytim_set_idle_poll_ms(struct fytim *ft, int ms) FYTIM_EXPORT;
 
 /* Drain pending input, update state, repaint if anything changed. Never
  * blocks: the host's loop owns waiting. Call when poll reports the descriptor

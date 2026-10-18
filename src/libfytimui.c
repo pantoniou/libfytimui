@@ -313,6 +313,7 @@ struct fytim {
     int    comp_rows_max;
     bool   comp_tab;               /* a Tab to act on once the editor ran */
     bool   pump_again;             /* the last frame left work for the next */
+    int    idle_poll_ms;           /* wake-up of an idle UI, -1 for none */
     size_t comp_anchor;            /* byte offset of the completed word */
     bool   comp_anchor_set;
     char  *comp_query;             /* the line the candidates were asked for */
@@ -497,6 +498,7 @@ struct fytim *fytim_create(const struct fytim_cfg *cfg)
     timui_set_key_filter(ft->ui, key_filter_, ft);
 
     ft->chord_timeout_ms = FYTIM_CHORD_TIMEOUT_MS;
+    ft->idle_poll_ms = FYTIM_IDLE_POLL_MS;
     ft->transcript = pane_new(ft, NULL);
     if(!ft->transcript || !modes_init_(ft)){
         if(ft->transcript) pane_free(ft->transcript);
@@ -682,6 +684,7 @@ int fytim_poll_timeout_ms(const struct fytim *ft)
     if(!ft) return -1;
     if(ft->pump_again) return 0;
     t = timui_poll_timeout_ms(ft->ui);
+    if(t < 0) t = ft->idle_poll_ms;
     /* A chord that nobody continues ends in a pump of its own. */
     chord = fytim_chord_remaining_ms(ft);
     if(chord >= 0 && (t < 0 || chord < t)) t = chord;
@@ -3637,6 +3640,13 @@ enum fytim_result fytim_set_mode(struct fytim *ft, const char *mode)
 const char *fytim_mode(const struct fytim *ft)
 {
     return ft && ft->mode ? ft->mode->name : "";
+}
+
+enum fytim_result fytim_set_idle_poll_ms(struct fytim *ft, int ms)
+{
+    if(!ft || ms == 0) return FYTIM_ERR_INVALID;
+    ft->idle_poll_ms = ms < 0 ? -1 : ms;
+    return FYTIM_OK;
 }
 
 enum fytim_result fytim_set_chord_timeout(struct fytim *ft, unsigned ms)
