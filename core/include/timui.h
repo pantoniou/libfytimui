@@ -1147,6 +1147,9 @@ TIMUI_API void   timui_input_init(TimuiInputParser *p);
 TIMUI_API size_t timui_input_feed(TimuiInputParser *p, const void *bytes, size_t len,
                                   TimuiEventFn cb, void *ctx);
 TIMUI_API void    timui_input_set_now(TimuiInputParser *p, uint64_t now_ms);
+/* Milliseconds until a pending Escape or terminal string is given up, 0 when
+ * it is due, or -1 when the parser holds nothing that a clock ends. */
+TIMUI_API int     timui_input_timeout_ms(const TimuiInputParser *p, uint64_t now_ms);
 TIMUI_API void    timui_input_flush_esc(TimuiInputParser *p, uint64_t now_ms, TimuiEventFn cb, void *ctx);
 TIMUI_API uint64_t timui_now_ms(void);   /* monotonic milliseconds */
 /*

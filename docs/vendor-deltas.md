@@ -290,3 +290,4 @@ A terminal sends `CSI Z` for Shift-Tab, and the decoder dropped it. It is now
 moved up. `test_input_invalid_safe` takes `CSI Y` as the unknown final.
 
 Covered by `fytim.vt.completion_popup_keys`.
+| `timui_poll_timeout_ms` returns the next real deadline (`timui_core.c`, `timui_input.c`: `timui_input_timeout_ms`) | The function returned a fixed 16 ms, so a host that polls with it woke and repainted an idle UI 60 times a second. It now returns 0 for input deferred to the next frame, the time left of a pending Escape or terminal string, and -1 when there is nothing to wait for. Tests `test_external_poll_exposes_fd_and_timeout`, `test_external_poll_timeout_follows_pending_escape`. |

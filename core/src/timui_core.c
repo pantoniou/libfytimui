@@ -654,9 +654,12 @@ TIMUI_API int timui_poll_fd(const Timui *ui){
     return ui ? ui->fd.read_fd : -1;
 }
 TIMUI_API int timui_poll_timeout_ms(const Timui *ui){
-    /* Matches the internal cadence timui would otherwise wait for, so a host
-     * loop keeps escape-timeout flushing and animation advancing. */
-    return ui ? 16 : -1;
+    /* The next deadline that the UI itself has: input deferred to the next
+     * frame, or the end of a pending Escape. An idle UI has none, and the
+     * host waits on the descriptor alone. */
+    if(!ui) return -1;
+    if(ui->pending_in_len > 0 || ui->pending_enter_count > 0) return 0;
+    return timui_input_timeout_ms(&ui->input, timui_now_ms());
 }
 TIMUI_API unsigned long timui_input_waits_for_test(const Timui *ui){
     return ui ? ui->input_waits : 0;

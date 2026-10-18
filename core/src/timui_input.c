@@ -210,6 +210,15 @@ static int timui_input_flush_esc_(TimuiInputParser *p, uint64_t now_ms, TimuiEve
     }
     return emitted;
 }
+TIMUI_API int timui_input_timeout_ms(const TimuiInputParser *p, uint64_t now_ms){
+    uint64_t limit, elapsed;
+    if(!p) return -1;
+    if(p->state == 6 || p->state == 7) limit = TIMUI_STRING_TIMEOUT_MS;
+    else if(p->state == 1 || p->state == 2 || p->state == 3 || p->state == 5) limit = TIMUI_ESC_TIMEOUT_MS;
+    else return -1;
+    elapsed = now_ms - p->esc_since_ms;
+    return elapsed >= limit ? 0 : (int)(limit - elapsed);
+}
 TIMUI_API void timui_input_flush_esc(TimuiInputParser *p, uint64_t now_ms, TimuiEventFn cb, void *ctx){
     (void)timui_input_flush_esc_(p, now_ms, cb, ctx);
 }
