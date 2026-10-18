@@ -387,7 +387,8 @@ endif()
 
 foreach(t resize_is_seen resize_is_seen_with_keys
           granted_rows_follow_the_window
-          clear_screen_erases_the_screen ctrl_l_is_reported)
+          clear_screen_erases_the_screen ctrl_l_is_reported
+          output_tap_sees_the_bytes)
     add_test(NAME fytim.resize.${t} COMMAND test_fytim_resize ${t})
 endforeach()
 

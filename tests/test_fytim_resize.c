@@ -280,6 +280,45 @@ static void test_ctrl_l_is_reported(void)
     h_close(&h);
 }
 
+/* The tap sees the bytes the library writes, before the terminal does. */
+struct tapped {
+    char text[8192];
+    size_t used;
+};
+
+static void tap_cb(const void *data, size_t len, void *user)
+{
+    struct tapped *t = user;
+
+    if(len > sizeof t->text - 1 - t->used) len = sizeof t->text - 1 - t->used;
+    memcpy(t->text + t->used, data, len);
+    t->used += len;
+    t->text[t->used] = 0;
+}
+
+static void test_output_tap_sees_the_bytes(void)
+{
+    static struct tapped t;
+    struct pty_h h;
+    static const char line[] = "tapped line\n";
+
+    if(!h_open(&h, "output_tap")) return;
+    memset(&t, 0, sizeof t);
+    CHECK(fytim_set_output_tap(h.ft, tap_cb, &t) == FYTIM_OK);
+    CHECK(fytim_commit(h.ft, line, sizeof line - 1) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(strstr(t.text, "tapped line") != NULL);
+    /* A removed tap sees no more. */
+    CHECK(fytim_set_output_tap(h.ft, NULL, NULL) == FYTIM_OK);
+    t.used = 0;
+    t.text[0] = 0;
+    CHECK(fytim_commit(h.ft, "second\n", 7) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(t.used == 0);
+    CHECK(fytim_set_output_tap(NULL, tap_cb, &t) == FYTIM_ERR_INVALID);
+    h_close(&h);
+}
+
 struct case_ent { const char *name; void (*fn)(void); };
 static const struct case_ent cases[] = {
     { "resize_is_seen",              test_resize_is_seen },
@@ -289,6 +328,7 @@ static const struct case_ent cases[] = {
     { "resize_repaints_blank_cells", test_resize_repaints_blank_cells },
     { "clear_screen_erases_the_screen", test_clear_screen_erases_the_screen },
     { "ctrl_l_is_reported",            test_ctrl_l_is_reported },
+    { "output_tap_sees_the_bytes",     test_output_tap_sees_the_bytes },
 };
 
 int main(int argc, char **argv)
