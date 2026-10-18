@@ -238,7 +238,10 @@ static int fd_flush(TimuiTransport *t){
     TimuiFdCtx *c = (TimuiFdCtx *)t->ctx;
     if(c->olen){
         size_t want = c->olen;
-        int r = timui_write_all_(c->write_fd, c->obuf, c->olen);
+        int r;
+
+        if(c->tap) c->tap(c->obuf, c->olen, c->tap_user);
+        r = timui_write_all_(c->write_fd, c->obuf, c->olen);
         c->olen = 0;
         if(r < 0 || (size_t)r != want) return -1;
     }
@@ -250,7 +253,10 @@ static int fd_write(TimuiTransport *t, const void *d, size_t n){
     if(n > sizeof c->obuf - c->olen){
         if(fd_flush(t) != 0) return -1;
         if(n > sizeof c->obuf){
-            int r = timui_write_all_(c->write_fd, d, n);
+            int r;
+
+            if(c->tap) c->tap(d, n, c->tap_user);
+            r = timui_write_all_(c->write_fd, d, n);
             return (r < 0 || (size_t)r != n) ? -1 : (int)n;
         }
     }
@@ -1335,6 +1341,11 @@ TIMUI_API int timui_char_pressed(const TimuiFrame *f, char ch){
 }
 /* Programmatic focus: focus the widget with `id` (persists until a click or Tab
  * moves it — call once, e.g. `if(!timui_focus(f)) timui_set_focus(f, id);`). */
+TIMUI_API void timui_set_output_tap(Timui *ui, TimuiOutputTap fn, void *user){
+    if(!ui) return;
+    ui->fd.tap = fn;
+    ui->fd.tap_user = fn ? user : NULL;
+}
 TIMUI_API void timui_set_key_filter(Timui *ui, TimuiKeyFilter fn, void *user){
     if(!ui) return;
     ui->key_filter = fn;

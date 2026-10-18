@@ -2562,6 +2562,14 @@ static bool header_act_click(struct fytim *ft, int x, int y)
     return false;
 }
 
+enum fytim_result fytim_set_output_tap(struct fytim *ft, fytim_output_tap tap,
+                                       void *user)
+{
+    if(!ft) return FYTIM_ERR_INVALID;
+    timui_set_output_tap(ft->ui, tap, user);
+    return FYTIM_OK;
+}
+
 enum fytim_result fytim_set_header_rows(struct fytim *ft, int rows)
 {
     if(!ft || rows < 1 || rows > 4) return FYTIM_ERR_INVALID;

@@ -24,6 +24,9 @@ typedef struct {
     int write_fd;
     unsigned char obuf[TIMUI_FD_OBUF_CAP];
     size_t olen;
+    /* Local delta: sees every byte written to the terminal. */
+    void (*tap)(const void *data, size_t len, void *user);
+    void *tap_user;
 } TimuiFdCtx;
 
 enum { TIMUI_EDIT_TEXT = 1, TIMUI_EDIT_KEY = 2 };

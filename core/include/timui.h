@@ -1270,6 +1270,12 @@ typedef int (*TimuiKeyFilter)(void *user, TimuiKey key, uint32_t codepoint,
                               uint32_t mods);
 TIMUI_API void timui_set_key_filter(Timui *ui, TimuiKeyFilter fn, void *user);
 
+/* Local delta. Called with each run of bytes just before it is written to the
+ * terminal, in the order they are written. The bytes are only valid for the
+ * call. NULL removes the tap. */
+typedef void (*TimuiOutputTap)(const void *data, size_t len, void *user);
+TIMUI_API void timui_set_output_tap(Timui *ui, TimuiOutputTap fn, void *user);
+
 typedef struct { TimuiKey key; uint32_t mods; int action; } TimuiKeyBinding;
 typedef struct { TimuiKeyBinding bindings[32]; int count; } TimuiKeymap;
 TIMUI_API void timui_keymap_bind(TimuiKeymap *km, TimuiKey key, uint32_t mods, int action);

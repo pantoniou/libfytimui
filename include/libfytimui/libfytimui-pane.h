@@ -65,6 +65,13 @@ void          fytim_destroy(struct fytim *ft) FYTIM_EXPORT;
  * committed lines arrive hard-wrapped and never soft-wrap. Either out
  * pointer may be NULL. */
 enum fytim_result fytim_size(const struct fytim *ft, int *w, int *h) FYTIM_EXPORT;
+/* A host that records the session sees each run of bytes that the library
+ * writes to the terminal, in the order they are written and just before the
+ * write. The bytes are valid for the call only, and the tap must not call
+ * into the library. A NULL tap removes it. */
+typedef void (*fytim_output_tap)(const void *data, size_t len, void *user);
+enum fytim_result fytim_set_output_tap(struct fytim *ft, fytim_output_tap tap,
+                                       void *user) FYTIM_EXPORT;
 /* Whether the terminal takes 24-bit colour, which mixing a ground needs. */
 bool fytim_truecolor(const struct fytim *ft) FYTIM_EXPORT;
 
