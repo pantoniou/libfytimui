@@ -157,7 +157,36 @@ TIMUI_TEST(test_external_poll_exposes_fd_and_timeout){
         return;
     }
     TIMUI_CHECK(timui_poll_fd(ui) == rfd);
-    TIMUI_CHECK(timui_poll_timeout_ms(ui) >= 0);
+    /* An idle UI has no deadline: the host waits on the descriptor alone. */
+    TIMUI_CHECK(timui_poll_timeout_ms(ui) == -1);
+    timui_close(ui);
+    close(rfd);
+    close(wfd);
+}
+
+/* A lone Escape is resolved after a window, and the host needs a wake-up at
+ * its end: the timeout is the time that is left, and it is gone once the
+ * Escape was reported. */
+TIMUI_TEST(test_external_poll_timeout_follows_pending_escape){
+    Timui *ui = NULL;
+    TimuiFrame *f = NULL;
+    int rfd = -1, wfd = -1;
+    int t;
+    if(open_over_pipe_(&ui, TIMUI_FLAG_EXTERNAL_POLL, &rfd, &wfd) != TIMUI_OK){
+        if(rfd >= 0) close(rfd);
+        if(wfd >= 0) close(wfd);
+        return;
+    }
+    TIMUI_CHECK(write(wfd, "\x1b", 1) == 1);
+    if(timui_begin_result(ui, &f) == TIMUI_OK) timui_end(f);
+    t = timui_poll_timeout_ms(ui);
+    TIMUI_CHECK(t >= 0 && t <= 50);
+    usleep(80 * 1000);
+    if(timui_begin_result(ui, &f) == TIMUI_OK){
+        TIMUI_CHECK(timui_key_pressed(f, TIMUI_KEY_ESCAPE));
+        timui_end(f);
+    }
+    TIMUI_CHECK(timui_poll_timeout_ms(ui) == -1);
     timui_close(ui);
     close(rfd);
     close(wfd);

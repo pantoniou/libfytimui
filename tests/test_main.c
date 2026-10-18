@@ -66,6 +66,7 @@ int main(int argc, char **argv){
         { "test_external_poll_survives_blocking_fd", test_external_poll_survives_blocking_fd },
         { "test_external_poll_still_reads_ready_input", test_external_poll_still_reads_ready_input },
         { "test_external_poll_exposes_fd_and_timeout", test_external_poll_exposes_fd_and_timeout },
+        { "test_external_poll_timeout_follows_pending_escape", test_external_poll_timeout_follows_pending_escape },
         { "test_open_failure_clears_output_handle", test_open_failure_clears_output_handle },
         { "test_open_for_test_failure_does_not_close_injected_transport", test_open_for_test_failure_does_not_close_injected_transport },
         { "test_write_all_under_backpressure", test_write_all_under_backpressure },

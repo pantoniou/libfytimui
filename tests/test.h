@@ -76,6 +76,7 @@ void test_external_poll_never_waits(void);
 void test_external_poll_survives_blocking_fd(void);
 void test_external_poll_still_reads_ready_input(void);
 void test_external_poll_exposes_fd_and_timeout(void);
+void test_external_poll_timeout_follows_pending_escape(void);
 void test_open_failure_clears_output_handle(void);
 void test_open_for_test_failure_does_not_close_injected_transport(void);
 void test_write_all_under_backpressure(void);
