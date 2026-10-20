@@ -126,6 +126,7 @@ endif()
 
 foreach(t create_paints_inline commit_batches_into_pump
           commit_rejects_disallowed line_event_on_enter esc_emits_interrupt
+          esc_holds_what_follows
           page_key_emits_scrollback wheel_emits_scrollback_with_its_direction history_recall completion
           chrome_and_workband chrome_style_contract
           workband_lifecycle workband_caps_last_rows workband_top_bottom

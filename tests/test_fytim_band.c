@@ -162,6 +162,33 @@ static void test_esc_emits_interrupt(void)
     h_close(&h);
 }
 
+/*
+ * Keys typed after Escape wait for the next frame: the host acts on the
+ * input as it stands at the Escape, e.g. clears "ab", and "cd" survives.
+ */
+static void test_esc_holds_what_follows(void)
+{
+    struct harness h;
+    struct fytim_event ev;
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    h_keys(&h, "ab");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!strcmp(fytim_input(h.ft), "ab"));
+    h_keys(&h, "\x1b[27ucd\r");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev));
+    CHECK(ev.type == FYTIM_EVENT_INTERRUPT);
+    CHECK(!fytim_next_event(h.ft, &ev));
+    CHECK(!strcmp(fytim_input(h.ft), "ab"));
+    CHECK(fytim_set_input(h.ft, NULL) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_next_event(h.ft, &ev));
+    CHECK(ev.type == FYTIM_EVENT_LINE);
+    CHECK(ev.text_len == 2 && !memcmp(ev.text, "cd", 2));
+    h_close(&h);
+}
+
 /* Scrollback keys that reach inline mode let the host pause animation. */
 static void test_page_key_emits_scrollback(void)
 {
@@ -1554,8 +1581,12 @@ static void test_a_double_tap_adds_an_action(void)
     fake_now_ms += FYTIM_CHORD_TIMEOUT_MS;
     CHECK(!strcmp(typed(&h, "\x1b[27u"), "C: I C:Escape"));
     CHECK(!strcmp(typed(&h, "\x1b[27u"), "K:host.rewind C:"));
-    /* Another key between the taps. */
-    CHECK(!strcmp(typed(&h, "\x1b[27ux"), "I C:Escape C:"));
+    /* Another key between the taps: it waits for the frame after the
+     * Escape, which the host has acted on by then. */
+    CHECK(!strcmp(typed(&h, "\x1b[27ux"), "I C:Escape"));
+    CHECK(!strcmp(fytim_input(h.ft), ""));
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!strcmp(events_log(&h), "C:"));
     CHECK(!strcmp(fytim_input(h.ft), "x"));
     h_close(&h);
 }
@@ -1736,6 +1767,7 @@ int main(int argc, char **argv)
         { "commit_rejects_disallowed", test_commit_rejects_disallowed },
         { "line_event_on_enter", test_line_event_on_enter },
         { "esc_emits_interrupt", test_esc_emits_interrupt },
+        { "esc_holds_what_follows", test_esc_holds_what_follows },
         { "page_key_emits_scrollback", test_page_key_emits_scrollback },
     { "wheel_emits_scrollback_with_its_direction",
       test_wheel_emits_scrollback_with_its_direction },
