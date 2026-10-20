@@ -2905,10 +2905,16 @@ struct key_ctx {
     uint32_t mods;
 };
 
+/*
+ * The host acts on Escape with the input as it stands at the key: what is
+ * typed after it waits for the next frame, e.g. Escape and "/status" in one
+ * read must not clear "/status".
+ */
 static bool act_interrupt_(struct fytim *ft, const struct key_ctx *kc)
 {
     (void)kc;
     ev_push(ft, FYTIM_EVENT_INTERRUPT, NULL, 0, 0, 0);
+    ft->focus_hold = true;
     return true;
 }
 
