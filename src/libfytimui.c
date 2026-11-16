@@ -317,6 +317,8 @@ struct fytim {
     size_t comp_anchor;            /* byte offset of the completed word */
     bool   comp_anchor_set;
     char  *comp_query;             /* the line the candidates were asked for */
+    char  *comp_missed;            /* the line that was asked for and had none */
+    bool   comp_missed_tab;        /* ... by a Tab, not by an automatic popup */
     char  *comp_mark;              /* before the selected label, or NULL */
     bool   comp_auto;              /* open as the line is typed */
     bool   comp_seen_set;
@@ -625,6 +627,7 @@ void fytim_destroy(struct fytim *ft)
     free(ft->draft);
     comp_free_candidates(ft);
     free(ft->comp_query);
+    free(ft->comp_missed);
     free(ft->comp_mark);
     for(i = 0; i < ft->ev_n; i++)
         free((char *)ft->evq[(ft->ev_head + i) % FYTIM_EVQ_CAP].text);
@@ -2676,6 +2679,9 @@ static void input_load(struct fytim *ft, const char *s)
     ft->input[n] = '\0';
     ft->pst.cursor = n;
     ft->pst.scroll_y = 0;
+    /* A line that the host sets was asked of nobody. */
+    free(ft->comp_missed);
+    ft->comp_missed = NULL;
 }
 
 enum fytim_result fytim_set_input(struct fytim *ft, const char *text)
@@ -3949,7 +3955,7 @@ static void complete_leave(struct fytim *ft)
 }
 
 /* Ask the host for the candidates of the line as it stands. */
-static bool complete_collect(struct fytim *ft)
+static bool complete_collect(struct fytim *ft, bool tab)
 {
     const char *sp;
 
@@ -3967,6 +3973,14 @@ static bool complete_collect(struct fytim *ft)
     }
     ft->comp_idx = 0;
     ft->comp_top = 0;
+    /* Remember a line that had no candidates: the host may have them when
+     * it says so, and fytim_completion_refresh() asks again for that line. */
+    free(ft->comp_missed);
+    ft->comp_missed = NULL;
+    if(!ft->comp_n){
+        ft->comp_missed = strdup(ft->input);
+        ft->comp_missed_tab = tab;
+    }
     return ft->comp_n > 0;
 }
 
@@ -4009,7 +4023,7 @@ static bool complete_extend(struct fytim *ft)
 static void complete_tab(struct fytim *ft)
 {
     if(!ft->complete_fn) return;
-    if(!complete_collect(ft)){                    /* nothing matches */
+    if(!complete_collect(ft, true)){              /* nothing matches */
         complete_leave(ft);
         return;
     }
@@ -4049,7 +4063,8 @@ static void complete_refresh(struct fytim *ft)
        !strcmp(ft->comp_query, ft->input))
         return;
     complete_seen(ft);
-    if(!complete_collect(ft) || complete_only_line(ft)) complete_leave(ft);
+    if(!complete_collect(ft, false) || complete_only_line(ft))
+        complete_leave(ft);
 }
 
 /* An automatic popup opens on each edit of the line that has a candidate
@@ -4059,9 +4074,35 @@ static void complete_auto(struct fytim *ft)
     if(!ft->comp_auto || ft->comp_active || !ft->complete_fn) return;
     if(ft->comp_seen_set && !strcmp(ft->comp_seen, ft->input)) return;
     complete_seen(ft);
-    if(complete_collect(ft) && !complete_only_line(ft))
+    if(complete_collect(ft, false) && !complete_only_line(ft))
         ft->comp_active = 1;
     else complete_leave(ft);
+}
+
+enum fytim_result fytim_completion_refresh(struct fytim *ft)
+{
+    bool tab;
+
+    if(!ft) return FYTIM_ERR_INVALID;
+    if(!ft->complete_fn || ft->comp_collecting) return FYTIM_OK;
+    if(ft->comp_active){                  /* the popup stands: ask again */
+        if(!complete_collect(ft, false) || complete_only_line(ft))
+            complete_leave(ft);
+        return FYTIM_OK;
+    }
+    /* Only the line that found nothing is served, and once. */
+    if(!ft->comp_missed || strcmp(ft->comp_missed, ft->input))
+        return FYTIM_OK;
+    tab = ft->comp_missed_tab;
+    free(ft->comp_missed);
+    ft->comp_missed = NULL;
+    if(tab){
+        complete_tab(ft);
+    } else if(ft->comp_auto){
+        ft->comp_seen_set = false;
+        complete_auto(ft);
+    }
+    return FYTIM_OK;
 }
 
 static void complete_move(struct fytim *ft, int delta)

@@ -419,6 +419,14 @@ enum fytim_result fytim_completion_add_item(struct fytim_completions *c,
  * the last blank. */
 enum fytim_result fytim_completion_set_anchor(struct fytim_completions *c,
                                               size_t offset) FYTIM_EXPORT;
+/* Ask the host again for the line as it stands, because it has candidates
+ * that it did not have when it was asked last. Call it from the host's own
+ * code, outside the callback, when an answer arrives that the callback could
+ * not give at once. A popup that is open asks again and closes when nothing
+ * is left. A Tab or an automatic popup that found nothing for this line is
+ * served now, as it would have been then. A line that changed since, and a
+ * popup that Escape closed, ask nothing. */
+enum fytim_result fytim_completion_refresh(struct fytim *ft) FYTIM_EXPORT;
 /* Rows of candidates the popup shows at most; it scrolls through the rest.
  * The default is FYTIM_COMPLETION_ROWS. */
 #define FYTIM_COMPLETION_ROWS 8

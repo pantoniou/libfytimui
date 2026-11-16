@@ -128,6 +128,9 @@ foreach(t create_paints_inline commit_batches_into_pump
           commit_rejects_disallowed line_event_on_enter esc_emits_interrupt
           esc_holds_what_follows
           page_key_emits_scrollback wheel_emits_scrollback_with_its_direction history_recall completion
+          completion_refresh_after_tab completion_refresh_unique
+          completion_refresh_other_line completion_refresh_auto
+          completion_refresh_open_popup completion_refresh_escape
           chrome_and_workband chrome_style_contract
           workband_lifecycle workband_caps_last_rows workband_top_bottom
           workband_trailing_newline_not_a_row

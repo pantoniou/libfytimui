@@ -309,6 +309,169 @@ static void test_completion(void)
     h_close(&h);
 }
 
+static int event_after(struct harness *h, const char *bytes);
+
+/* A host whose candidates are not there yet: it asks a service, and the
+ * answer comes later. */
+struct late {
+    bool ready;
+    int asked;
+};
+
+static void late_cb(void *user, const char *text, struct fytim_completions *c)
+{
+    struct late *l = user;
+
+    l->asked++;
+    if(!l->ready) return;
+    if(strncmp("/help", text, strlen(text)) == 0)
+        CHECK(fytim_completion_add(c, "/help") == FYTIM_OK);
+    if(strncmp("/history", text, strlen(text)) == 0)
+        CHECK(fytim_completion_add(c, "/history") == FYTIM_OK);
+}
+
+/* A Tab that found nothing is answered when the host says that it has the
+ * candidates: the popup opens, or the one candidate completes the line. */
+static void test_completion_refresh_after_tab(void)
+{
+    struct harness h;
+    struct late l = { false, 0 };
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, late_cb, &l) == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "/h") == FYTIM_OK);
+    h_keys(&h, "\t");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(l.asked == 1);
+    /* The answer came: the Tab that asked for it is served. */
+    l.ready = true;
+    CHECK(fytim_completion_refresh(h.ft) == FYTIM_OK);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(strcmp(fytim_input(h.ft), "/h") == 0);
+    /* The same word does not ask for a Tab that was served. */
+    CHECK(fytim_completion_refresh(h.ft) == FYTIM_OK);
+    CHECK(fytim_completion_active(h.ft));
+    h_close(&h);
+}
+
+/* One candidate completes outright, as the Tab would have. */
+static void test_completion_refresh_unique(void)
+{
+    struct harness h;
+    struct late l = { false, 0 };
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, late_cb, &l) == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "/he") == FYTIM_OK);
+    h_keys(&h, "\t");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(strcmp(fytim_input(h.ft), "/he") == 0);
+    l.ready = true;
+    CHECK(fytim_completion_refresh(h.ft) == FYTIM_OK);
+    CHECK(strcmp(fytim_input(h.ft), "/help") == 0);
+    CHECK(!fytim_completion_active(h.ft));
+    h_close(&h);
+}
+
+/* The line moved on: the Tab of the old line is not served on the new. */
+static void test_completion_refresh_other_line(void)
+{
+    struct harness h;
+    struct late l = { false, 0 };
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, late_cb, &l) == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "/h") == FYTIM_OK);
+    h_keys(&h, "\t");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_keys(&h, "e");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    l.ready = true;
+    CHECK(fytim_completion_refresh(h.ft) == FYTIM_OK);
+    CHECK(strcmp(fytim_input(h.ft), "/he") == 0);
+    CHECK(!fytim_completion_active(h.ft));
+    h_close(&h);
+}
+
+/* An automatic popup that found nothing opens when the host has more, and
+ * stays closed after Escape. */
+static void test_completion_refresh_auto(void)
+{
+    struct harness h;
+    struct late l = { false, 0 };
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, late_cb, &l) == FYTIM_OK);
+    CHECK(fytim_set_completion_auto(h.ft, true) == FYTIM_OK);
+    h_keys(&h, "/h");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!fytim_completion_active(h.ft));
+    l.ready = true;
+    CHECK(fytim_completion_refresh(h.ft) == FYTIM_OK);
+    CHECK(fytim_completion_active(h.ft));
+    /* Escape closes it until the line changes: a refresh does not open it. */
+    CHECK(event_after(&h, "\x1b[27u") != FYTIM_EVENT_LINE);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(fytim_completion_refresh(h.ft) == FYTIM_OK);
+    CHECK(!fytim_completion_active(h.ft));
+    h_close(&h);
+}
+
+/* A line that found nothing and then found candidates by itself is not owed
+ * a popup: Escape closed it, and a refresh leaves it closed. */
+static void test_completion_refresh_escape(void)
+{
+    struct harness h;
+    struct late l = { false, 0 };
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, late_cb, &l) == FYTIM_OK);
+    CHECK(fytim_set_completion_auto(h.ft, true) == FYTIM_OK);
+    h_keys(&h, "/h");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(!fytim_completion_active(h.ft));
+    /* The candidates are there when the line is edited. */
+    l.ready = true;
+    h_keys(&h, "e");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    h_keys(&h, "\x7f");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(strcmp(fytim_input(h.ft), "/h") == 0);
+    CHECK(fytim_completion_active(h.ft));
+    CHECK(event_after(&h, "\x1b[27u") != FYTIM_EVENT_LINE);
+    CHECK(!fytim_completion_active(h.ft));
+    CHECK(fytim_completion_refresh(h.ft) == FYTIM_OK);
+    CHECK(!fytim_completion_active(h.ft));
+    h_close(&h);
+}
+
+/* A popup that stands asks again, and closes when nothing is left. */
+static void test_completion_refresh_open_popup(void)
+{
+    struct harness h;
+    struct late l = { true, 0 };
+
+    if(!h_open(&h)){ CHECK(0); return; }
+    CHECK(fytim_set_complete_fn(h.ft, late_cb, &l) == FYTIM_OK);
+    CHECK(fytim_set_input(h.ft, "/h") == FYTIM_OK);
+    h_keys(&h, "\t");
+    CHECK(fytim_pump(h.ft) == FYTIM_OK);
+    CHECK(fytim_completion_active(h.ft));
+    l.asked = 0;
+    CHECK(fytim_completion_refresh(h.ft) == FYTIM_OK);
+    CHECK(l.asked == 1);
+    CHECK(fytim_completion_active(h.ft));
+    l.ready = false;
+    CHECK(fytim_completion_refresh(h.ft) == FYTIM_OK);
+    CHECK(!fytim_completion_active(h.ft));
+    h_close(&h);
+}
+
 /* Two whole-line candidates that share a prefix longer than the line. */
 static void prefix_cb(void *user, const char *text,
                       struct fytim_completions *c)
@@ -1731,6 +1894,7 @@ static void test_null_safety(void)
     CHECK(fytim_history_add(NULL, "x") == FYTIM_ERR_INVALID);
     CHECK(fytim_history_set_max_len(NULL, 8) == FYTIM_ERR_INVALID);
     CHECK(fytim_set_complete_fn(NULL, NULL, NULL) == FYTIM_ERR_INVALID);
+    CHECK(fytim_completion_refresh(NULL) == FYTIM_ERR_INVALID);
     CHECK(fytim_completion_add(NULL, "x") == FYTIM_ERR_INVALID);
     fytim_destroy(NULL);
 }
@@ -1774,6 +1938,12 @@ int main(int argc, char **argv)
         { "history_recall", test_history_recall },
         { "completion", test_completion },
         { "completion_auto_prefix", test_completion_auto_prefix },
+        { "completion_refresh_after_tab", test_completion_refresh_after_tab },
+        { "completion_refresh_unique", test_completion_refresh_unique },
+        { "completion_refresh_other_line", test_completion_refresh_other_line },
+        { "completion_refresh_auto", test_completion_refresh_auto },
+        { "completion_refresh_escape", test_completion_refresh_escape },
+        { "completion_refresh_open_popup", test_completion_refresh_open_popup },
         { "chrome_and_workband", test_chrome_and_workband },
         { "workband_lifecycle", test_workband_lifecycle },
         { "workband_caps_last_rows", test_workband_caps_last_rows },
